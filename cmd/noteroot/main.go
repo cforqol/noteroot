@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"$MOD/internal/config"
-	"$MOD/internal/httpapi"
-	"$MOD/internal/log"
-	"$MOD/internal/notebooks"
+	"noteroot/internal/config"
+	"noteroot/internal/httpapi"
+	"noteroot/internal/log"
+	"noteroot/internal/notebooks"
 )
 
 func main() {

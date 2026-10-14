@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"$MOD/internal/config"
+	"noteroot/internal/config"
 )
 
 type ctxKey string
@@ -42,13 +42,24 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.code = code
+	sw.ResponseWriter.WriteHeader(code)
+}
+
 func Log(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			next.ServeHTTP(w, r)
+			sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+			next.ServeHTTP(sw, r)
 			log.Info("req", "method", r.Method, "path", r.URL.Path,
-				"dur_ms", time.Since(start).Milliseconds())
+				"status", sw.code, "dur_ms", time.Since(start).Milliseconds())
 		})
 	}
 }

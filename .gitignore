@@ -6,3 +6,5 @@
 /bin/
 /data/
 *.corrupt
+
+.serena/

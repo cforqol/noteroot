@@ -32,6 +32,7 @@ func Open(ctx context.Context, path string) (*sql.DB, bool, error) {
 		rebuilt = true
 	}
 	if err := Migrate(ctx, db); err != nil {
+		_ = db.Close()
 		return nil, rebuilt, err
 	}
 	return db, rebuilt, nil

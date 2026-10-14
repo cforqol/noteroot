@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"$MOD/internal/config"
-	"$MOD/internal/notebooks"
+	"noteroot/internal/config"
+	"noteroot/internal/notebooks"
 )
 
 type Server struct {
@@ -24,10 +24,10 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
-	mux.HandleFunc("GET /api/v1/notebooks", s.listNotebooks)
-	mux.HandleFunc("GET /n/{slug}/", s.notebookRoot)
+	mux.Handle("GET /api/v1/notebooks", Chain(http.HandlerFunc(s.listNotebooks), Auth(cfg.AuthMode)))
+	mux.Handle("GET /n/{slug}/", Chain(http.HandlerFunc(s.notebookRoot), Auth(cfg.AuthMode)))
 
-	h := Chain(mux, RequestID, Recover(log), Log(log), Auth(cfg.AuthMode))
+	h := Chain(mux, RequestID, Recover(log), Log(log))
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           h,
@@ -37,7 +37,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	return s
 }
 
-func (s *Server) ListenAndServe() error           { return s.http.ListenAndServe() }
+func (s *Server) ListenAndServe() error              { return s.http.ListenAndServe() }
 func (s *Server) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -53,9 +53,9 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) listNotebooks(w http.ResponseWriter, _ *http.Request) {
 	type item struct {
-		Slug    string \`json:"slug"\`
-		Name    string \`json:"name"\`
-		Profile string \`json:"profile"\`
+		Slug    string `json:"slug"`
+		Name    string `json:"name"`
+		Profile string `json:"profile"`
 	}
 	out := make([]item, 0)
 	for _, nb := range s.reg.List() {

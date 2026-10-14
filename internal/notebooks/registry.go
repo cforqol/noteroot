@@ -12,7 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-var slugRe = regexp.MustCompile(\`^[a-z0-9][a-z0-9-]{0,63}\$\`)
+var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
 
 var (
 	ErrBadSlug       = errors.New("invalid slug")
@@ -20,13 +20,13 @@ var (
 )
 
 type Manifest struct {
-	ID            string    \`toml:"id"\`
-	Slug          string    \`toml:"slug"\`
-	Name          string    \`toml:"name"\`
-	Profile       string    \`toml:"profile"\`
-	LayoutVersion int       \`toml:"layout_version"\`
-	QuotaMB       int       \`toml:"quota_mb"\`
-	Created       time.Time \`toml:"created"\`
+	ID            string    `toml:"id"`
+	Slug          string    `toml:"slug"`
+	Name          string    `toml:"name"`
+	Profile       string    `toml:"profile"`
+	LayoutVersion int       `toml:"layout_version"`
+	QuotaMB       int       `toml:"quota_mb"`
+	Created       time.Time `toml:"created"`
 }
 
 type Notebook struct {
