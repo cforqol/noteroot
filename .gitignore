@@ -1,0 +1,8 @@
+.devdata/
+
+.direnv/
+.envrc.local
+
+/bin/
+/data/
+*.corrupt
