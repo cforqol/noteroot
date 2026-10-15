@@ -11,8 +11,8 @@ database holds primary data.
 ## 1. Topology
 
 Single Go binary in Docker behind Traefik (TLS, forward-auth). Vault on a bind
-mount. Object storage is stage 7. Backup sidecar. Everything below HTTP is
-instantiated per notebook.
+mount. Optional S3-compatible object storage with presigned URLs (stage 7).
+Backup sidecar. Everything below HTTP is instantiated per notebook.
 
 ## 2. Auth
 

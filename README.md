@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 6 complete — Transforms: ffmpeg-based image resize (no-upscale, aspect-preserving) and video poster frames, disk-cached derived outputs, thumbnail URL rewriting in note rendering.
+> **Status:** stage 7 complete — Object storage: S3Store with SigV4 presigned URLs (stdlib-only, no SDK), presigned direct-to-S3 upload flow with journal confirm, presigned reads, config-gated store selection (local vs S3).
 
 ---
 
@@ -67,7 +67,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 4 | Vim mode (wasi-vim in a sandboxed iframe) | ✓ done |
 | 5 | Resources: policy, local store, upload journal | ✓ done |
 | 6 | Transforms: image resize, video posters | ✓ done |
-| 7 | Remote object storage | — |
+| 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
 | 8 | Dedup, bulk ops, quota, backups, import/export | — |
 | 9 | Plugins and integrations | — |
 
@@ -105,6 +105,8 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 **Resources**
 - Drag-and-drop upload into content-addressed storage
 - Local-first with a strict size policy; object storage when configured
+- S3-compatible backend: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm
+- Presigned read URLs for authenticated downloads
 - Automatic image resize and video poster frames
 - Upload journal with resume, verification, and crash recovery
 - Per-notebook dedup by content hash
@@ -133,7 +135,7 @@ Client → Traefik (TLS, forward-auth) → noteroot
                                             │
                     ────────────────────────────────────────────
                     │                       │                   │
-                  vault/               .notebook/      object store (stage 7)
+                  vault/               .notebook/      object store (stage 7, optional)
               (markdown, git)     (resources, db, cache)
 ```
 
@@ -294,6 +296,13 @@ All configuration is environment variables.
 | `NOTEROOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `NOTEROOT_AUTH_MODE` | `forward` | `forward` trusts `X-Auth-User`. `none` is dev only. |
 | `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | Exact `scheme://host` mutations must come from. Empty means the request's own host. |
+| `NOTEROOT_S3_ENDPOINT` | `` (disabled) | S3-compatible endpoint URL. S3 config is all-or-nothing: all five `NOTEROOT_S3_*` required together. |
+| `NOTEROOT_S3_BUCKET` | `` | Bucket name. |
+| `NOTEROOT_S3_REGION` | `` | Region (part of the SigV4 scope; any value works for MinIO). |
+| `NOTEROOT_S3_ACCESS_KEY` | `` | Access key ID. |
+| `NOTEROOT_S3_SECRET_KEY` | `` | Secret access key. |
+| `NOTEROOT_S3_PATH_STYLE` | `false` | `true` = path-style URLs (MinIO), `false` = virtual-hosted (AWS). |
+| `NOTEROOT_S3_PRESIGN_TTL` | `15m` | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 
 **Authentication.** noteroot does not implement a login page. Traefik performs forward-auth against your identity provider and sets `X-Auth-User` on success, stripping any client-supplied value. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
 
