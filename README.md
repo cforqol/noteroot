@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 5 complete — Resources: content-addressed LocalStore, pure policy layer, upload journal with crash recovery, HTTP upload/serve API, drag-and-drop frontend with markdown embed.
+> **Status:** stage 6 complete — Transforms: ffmpeg-based image resize (no-upscale, aspect-preserving) and video poster frames, disk-cached derived outputs, thumbnail URL rewriting in note rendering.
 
 ---
 
@@ -66,7 +66,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 3 | Write path, buffer/lock, crash pad, phone editor | ✓ done |
 | 4 | Vim mode (wasi-vim in a sandboxed iframe) | ✓ done |
 | 5 | Resources: policy, local store, upload journal | ✓ done |
-| 6 | Transforms: image resize, video posters | — |
+| 6 | Transforms: image resize, video posters | ✓ done |
 | 7 | Remote object storage | — |
 | 8 | Dedup, bulk ops, quota, backups, import/export | — |
 | 9 | Plugins and integrations | — |
