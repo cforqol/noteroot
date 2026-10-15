@@ -1,5 +1,5 @@
 import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
-import { uploadURL, markdownFor } from '/lib/upload.js';
+import { uploadURL, markdownFor, rewriteImageThumbs } from '/lib/upload.js';
 import {
   getVimModeState,
   setVimModeState,
@@ -65,7 +65,7 @@ async function openNote(path, btn) {
     let html = "";
     if (n.frontmatterError) html += `<div class="warn">frontmatter: ${esc(n.frontmatterError)}</div>`;
     if (n.renderError) html += `<div class="warn">render: ${esc(n.renderError)}</div>`;
-    html += n.html;
+    html += rewriteImageThumbs(n.html, slug, { maxWidth: 800, maxHeight: 600 });
     $("note").innerHTML = html;
     $("note").append(linksPanels(n));
     $("note").scrollTop = 0;

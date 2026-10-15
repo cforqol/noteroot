@@ -41,3 +41,61 @@ export function isImage(mime, filename) {
   if (!filename) return false;
   return /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(filename);
 }
+
+/**
+ * Build the thumbnail URL for an image blob.
+ * @param {string} slug notebook slug
+ * @param {string} sha blob sha
+ * @param {number} [w] max width (default 400)
+ * @param {number} [h] max height (default 400)
+ */
+export function thumbURL(slug, sha, w = 400, h = 400) {
+  const base = resourceURL(slug, sha);
+  return `${base}/thumb?w=${w}&h=${h}`;
+}
+
+/**
+ * Build the poster URL for a video blob.
+ */
+export function posterURL(slug, sha) {
+  return `${resourceURL(slug, sha)}/poster`;
+}
+
+/**
+ * Rewrite resource <img> tags in rendered HTML to use thumbnails.
+ * Only images whose src points at /n/{slug}/resources/{sha} (without a
+ * transform suffix) are rewritten. Images already pointing at /thumb or
+ * /poster are left alone.
+ *
+ * @param {string} html rendered note HTML
+ * @param {string} slug notebook slug
+ * @param {object} [opts]
+ * @param {number} [opts.maxWidth] thumbnail max width
+ * @param {number} [opts.maxHeight] thumbnail max height
+ */
+export function rewriteImageThumbs(html, slug, opts = {}) {
+  const { maxWidth = 800, maxHeight = 800 } = opts;
+  const escapedSlug = slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `(<img\\b[^>]*\\bsrc=")(/n/${escapedSlug}/resources/([a-f0-9]{64}))(")`,
+    "gi",
+  );
+  return html.replace(re, (_m, pre, _orig, sha, post) => {
+    return `${pre}${thumbURL(slug, sha, maxWidth, maxHeight)}${post}`;
+  });
+}
+
+/**
+ * Given rendered HTML, find video resource links and return their sha
+ * list so the caller can fetch poster frames if desired.
+ */
+export function findVideoResources(html, slug) {
+  const escapedSlug = slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`/n/${escapedSlug}/resources/([a-f0-9]{64})`, "gi");
+  const shas = new Set();
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    shas.add(m[1]);
+  }
+  return [...shas];
+}
