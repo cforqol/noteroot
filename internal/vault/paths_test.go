@@ -104,3 +104,19 @@ func TestIsNote(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckSegment_empty(t *testing.T) {
+	// Unreachable via Rel (path.Clean removes empty segments), but the guard
+	// protects the invariant for any future caller.
+	if err := checkSegment(""); err == nil {
+		t.Error("checkSegment(\"\"): expected error")
+	}
+}
+
+func TestRel_rejectsGit(t *testing.T) {
+	for _, input := range []string{".git", ".git/config", "a/.git", "a/.git/x.md"} {
+		if _, err := Rel(input); err == nil {
+			t.Errorf("Rel(%q): expected error", input)
+		}
+	}
+}

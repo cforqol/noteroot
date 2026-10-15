@@ -17,8 +17,10 @@ instantiated per notebook.
 ## 2. Auth
 
 Forward-auth sets `X-Auth-User`; Traefik strips client-supplied values.
-`/healthz` and `/readyz` are unauthenticated. Session cookie and CSRF land at
-stage 3 with writes. Scoped API tokens on `/api/v1`.
+`/healthz` and `/readyz` are unauthenticated. CSRF is enforced on mutating
+routes: form content types rejected, Origin/Referer allowlist checked, no
+CORS granted, no application session cookie. Scoped API tokens on
+`/api/v1` (planned, stage 9).
 
 ## 3. Data model
 
@@ -45,11 +47,17 @@ All writes through `vault.Write(path, content, opts{BaseSha, Actor})`.
 Serialized per path. `BaseSha` mismatch → 412. Forced writes emit
 `note.external_change`; the editor reloads if clean, banners if dirty.
 
-**Buffer/lock** — desktop uses a buffer with draft autosave and a swap file.
-Phone autosaves directly plus the crash pad. Locks are TTL'd; `If-Match` is the
+**Git autocommit** — per-notebook flusher coalesces write/delete/restore
+marks into at most one commit per 60 s window. Commit failures restore the
+pending ops and retry on the next window; they never fail the HTTP write.
+
+**Buffer/lock** — desktop buffer with draft autosave and swap file ships
+with vim mode (stage 4). Phone autosaves directly (`If-Match` on every
+save) plus the crash pad. Locks are advisory and TTL'd; `If-Match` is the
 correctness backstop.
 
-**Crash pad** — IndexedDB, tab-scoped, stores base sha, cleared on save.
+**Crash pad** — `localStorage` (quota-guarded), keyed per notebook+path,
+stores base sha; cleared only on HTTP 200/201. Restorable from any tab.
 
 **Bulk ops** — rename/move is a journaled transaction; with ULIDs no link
 rewriting is needed. Imports use bulk mode with batched commits.
@@ -74,8 +82,9 @@ Canonicalization is explicit and keeps originals in git.
 ## 8. Editor
 
 Two modes. Desktop vim mode in a sandboxed iframe (wasi-vim; nvim fallback),
-source view, circuit breaker with auto-fallback. Phone normal mode in the
-shell. Textarea last resort. Buffer mirror in the shell.
+source view, circuit breaker with auto-fallback (stage 4). Phone/shell mode
+is a plain textarea with debounced autosave, crash pad, and advisory locks
+(shipped in stage 3).
 
 ## 9. Extensibility
 

@@ -14,18 +14,20 @@ const (
 )
 
 type Config struct {
-	DataDir    string
-	ListenAddr string
-	LogLevel   string
-	AuthMode   AuthMode
+	DataDir      string
+	ListenAddr   string
+	LogLevel     string
+	AuthMode     AuthMode
+	PublicOrigin string
 }
 
 func Load() (Config, error) {
 	c := Config{
-		DataDir:    env("NOTEROOT_DATA_DIR", defaultDataDir()),
-		ListenAddr: env("NOTEROOT_LISTEN", ":8080"),
-		LogLevel:   env("NOTEROOT_LOG_LEVEL", "info"),
-		AuthMode:   AuthMode(env("NOTEROOT_AUTH_MODE", string(AuthForward))),
+		DataDir:      env("NOTEROOT_DATA_DIR", defaultDataDir()),
+		ListenAddr:   env("NOTEROOT_LISTEN", ":8080"),
+		LogLevel:     env("NOTEROOT_LOG_LEVEL", "info"),
+		AuthMode:     AuthMode(env("NOTEROOT_AUTH_MODE", string(AuthForward))),
+		PublicOrigin: env("NOTEROOT_PUBLIC_ORIGIN", ""),
 	}
 	if !strings.HasPrefix(c.DataDir, "/") {
 		return c, fmt.Errorf("NOTEROOT_DATA_DIR must be absolute, got %q", c.DataDir)

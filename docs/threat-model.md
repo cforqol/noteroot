@@ -47,5 +47,8 @@ consequences for design decisions elsewhere.
   rather than breaking links outright.
 - Plugins are untrusted by default even though we write them — the sandbox is
   cheap and removes a class of "which plugin did that" debugging.
+- Cross-site request forgery is blocked by content-type and origin checks on
+  every mutating route; no CORS is ever granted and the app mints no ambient
+  cookie, so a malicious page cannot ride a forward-auth session into a write.
 - `/healthz` stays unauthenticated, accepting that it reveals that the service
   is running.

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"noteroot/internal/config"
@@ -88,4 +90,50 @@ func Chain(h http.Handler, mw ...func(http.Handler) http.Handler) http.Handler {
 		h = mw[i](h)
 	}
 	return h
+}
+
+// CSRF guards mutating routes against cross-site form and fetch attacks.
+// Browsers cannot send these content types cross-origin without a CORS
+// preflight, which the server never grants; top-level navigations and forms
+// always carry an Origin or Referer that must match. Bare API clients send
+// neither header and pass through.
+func CSRF(publicOrigin string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if ct := r.Header.Get("Content-Type"); ct != "" {
+				media := ct
+				if i := strings.IndexByte(ct, ';'); i >= 0 {
+					media = ct[:i]
+				}
+				if media = strings.TrimSpace(media); media == "application/x-www-form-urlencoded" ||
+					media == "multipart/form-data" {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden content type"})
+					return
+				}
+			}
+			if origin := r.Header.Get("Origin"); origin != "" {
+				if !originAllowed(origin, publicOrigin, r.Host) {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin forbidden"})
+					return
+				}
+			} else if ref := r.Header.Get("Referer"); ref != "" {
+				if !originAllowed(ref, publicOrigin, r.Host) {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin forbidden"})
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func originAllowed(value, publicOrigin, host string) bool {
+	if publicOrigin != "" {
+		return value == publicOrigin
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Host == host
 }

@@ -60,6 +60,7 @@ func TestLoad_overrides(t *testing.T) {
 	setenv(t, "NOTEROOT_LISTEN", ":9090")
 	setenv(t, "NOTEROOT_LOG_LEVEL", "debug")
 	setenv(t, "NOTEROOT_AUTH_MODE", "none")
+	setenv(t, "NOTEROOT_PUBLIC_ORIGIN", "https://notes.example.com")
 
 	cfg, err := Load()
 	if err != nil {
@@ -76,6 +77,9 @@ func TestLoad_overrides(t *testing.T) {
 	}
 	if cfg.AuthMode != AuthNone {
 		t.Errorf("AuthMode = %q, want %q", cfg.AuthMode, AuthNone)
+	}
+	if cfg.PublicOrigin != "https://notes.example.com" {
+		t.Errorf("PublicOrigin = %q", cfg.PublicOrigin)
 	}
 }
 

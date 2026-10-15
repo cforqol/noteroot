@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noteroot</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <span class="brand">noteroot</span>
+  <select id="notebooks" aria-label="Notebook"></select>
+  <input id="q" type="search" placeholder="Search…" aria-label="Search notes" autocomplete="off">
+  <button id="editbtn" class="btn" hidden>Edit</button>
+</header>
+<main>
+  <nav id="tree" aria-label="Notes"></nav>
+  <div id="content">
+    <article id="note"><p class="muted">Select a note.</p></article>
+    <section id="editor" hidden>
+      <div id="banner"></div>
+      <div class="toolbar">
+        <span id="lockstate" class="muted"></span>
+        <span class="spacer"></span>
+        <span id="savestate" class="muted"></span>
+        <button id="savebtn" class="btn">Save</button>
+        <button id="closebtn" class="btn">Close</button>
+      </div>
+      <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
+    </section>
+  </div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -16,6 +16,9 @@ var reserved = map[string]bool{
 	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 }
 
+// maxDepth caps folder nesting: user → notebook → folders → notes.
+const maxDepth = 5
+
 // Rel validates and normalizes a vault-relative path.
 func Rel(p string) (string, error) {
 	p = norm.NFC.String(strings.TrimSpace(p))
@@ -33,7 +36,11 @@ func Rel(p string) (string, error) {
 	if p == "." || strings.HasPrefix(p, "../") || p == ".." {
 		return "", fmt.Errorf("path escapes vault: %q", p)
 	}
-	for _, seg := range strings.Split(p, "/") {
+	segs := strings.Split(p, "/")
+	if len(segs) > maxDepth {
+		return "", fmt.Errorf("path too deep (max %d levels)", maxDepth)
+	}
+	for _, seg := range segs {
 		if err := checkSegment(seg); err != nil {
 			return "", fmt.Errorf("%q: %w", seg, err)
 		}
@@ -44,6 +51,11 @@ func Rel(p string) (string, error) {
 func checkSegment(seg string) error {
 	if seg == "" {
 		return fmt.Errorf("empty segment")
+	}
+	// The vault root is a git repo; .git must never be addressable, or a
+	// write could corrupt version history. Listing already skips it.
+	if seg == ".git" {
+		return fmt.Errorf("reserved name")
 	}
 	for _, r := range seg {
 		if r < 0x20 || r == 0x7f {

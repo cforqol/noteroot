@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 0 — skeleton. Builds, serves health endpoints, scans notebooks. Not yet usable for real notes.
+> **Status:** stage 3 — read-write notebook. Vault read/write path, markdown rendering, full-text search, trash, advisory locks, git autocommit, CSRF-gated mutations, phone editor with crash pad. Vim mode next.
 
 ---
 
@@ -61,10 +61,10 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | Stage | Scope | State |
 |-------|-------|-------|
 | 0 | Skeleton, layout, registry, health, auth | ✓ done |
-| 1 | Vault read path, markdown rendering, read-only UI | → next |
-| 2 | Full-text index, search | — |
-| 3 | Write path, buffer/lock, crash pad, phone editor | — |
-| 4 | Vim mode (wasi-vim in a sandboxed iframe) | — |
+| 1 | Vault read path, markdown rendering, read-only UI | ✓ done |
+| 2 | Full-text index, search | ✓ done |
+| 3 | Write path, buffer/lock, crash pad, phone editor | ✓ done |
+| 4 | Vim mode (wasi-vim in a sandboxed iframe) | → next |
 | 5 | Resources: policy, local store, upload journal | — |
 | 6 | Transforms: image resize, video posters | — |
 | 7 | Remote object storage | — |
@@ -76,10 +76,14 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 ### Working today
 
 - Notebook registry discovered from disk; **one broken notebook never takes down the app**
-- `/healthz` (unauthenticated) and `/readyz` (unauthenticated, currently a stub)
+- `/healthz` (unauthenticated) and `/readyz` (unauthenticated, returns notebook count)
 - Forward-auth integration via Traefik
 - Structured JSON logging, request IDs, panic recovery
 - Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
+- Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
+- Minimal read-only web UI (notebook picker, tree, rendered note)
+- Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
+- Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad
 - Embedded, forward-only, idempotent migrations (schema only — nothing calls them yet)
 - Corrupt databases quarantined rather than repaired
 - Graceful shutdown with a drain timeout
@@ -87,21 +91,15 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 ### Planned
 
 **Notes**
-- Markdown rendering with a strict sanitizer and HTML allowlist
-- Frontmatter: `id`, `title`, `aliases`, `tags`, `collections`, `pinned`
 - Stable ULID identity — links survive renames and moves
 - Wikilinks and backlinks
-- Notebooks, nested folders, virtual collections
+- Virtual collections (folders already work)
 
 **Editor**
 - Vim mode: real Vim (WASM) in an isolated iframe, with automatic fallback on failure
-- Phone mode: plain CodeMirror, no vim layer
-- Buffer model with draft autosave and swap files
-- Editing locks with TTL, plus `If-Match` as the correctness backstop
-- Crash pad for tab crash, browser close, and offline
+- Buffer model with draft autosave and swap files (desktop vim mode)
 
 **Search**
-- SQLite FTS5, per notebook, with ranking and snippets
 - Optional semantic search via embeddings
 
 **Resources**
@@ -113,9 +111,6 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Near-duplicate detection for notes (SimHash)
 
 **Safety**
-- Atomic writes everywhere (temp → fsync → rename)
-- Git autocommit with coalesced commits
-- Trash instead of unlink, with a restore window
 - Per-notebook circuit breakers
 - Integrity checks and a boot-time rebuildability guard
 - `state.db` rebuild from disk, git, and object storage
@@ -197,8 +192,11 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 
 | Library | Purpose | Wired up |
 |---|---|---|
-| `modernc.org/sqlite` | Pure-Go SQLite driver | no — nothing opens a DB yet |
+| `modernc.org/sqlite` | Pure-Go SQLite driver (FTS5 search index) | yes |
 | `github.com/BurntSushi/toml` | `notebook.toml` parsing | yes |
+| `github.com/yuin/goldmark` | Markdown rendering (GFM + footnotes) | yes |
+| `github.com/microcosm-cc/bluemonday` | HTML sanitization | yes |
+| `gopkg.in/yaml.v3` | Frontmatter YAML parsing | yes |
 | `golang.org/x/text/unicode/norm` | NFC path normalization | yes |
 | `net/http` (stdlib) | Router, using 1.22+ method patterns | yes |
 | `log/slog` (stdlib) | Structured logging | yes |
@@ -207,14 +205,11 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 
 | Library / tool | Purpose |
 |---|---|
-| `yuin/goldmark` | Markdown rendering |
-| `microcosm-cc/bluemonday` | HTML sanitization |
 | `oklog/ulid` | Note identity |
 | `fsnotify/fsnotify` | Vault watching (hint only; mtime scan is truth) |
 | `golang.org/x/sync/singleflight` | Cache stampede protection |
 | `hashicorp/golang-lru` | In-process cache |
 | `yuin/gopher-lua` | Plugin sandbox |
-| CodeMirror 6 | Phone editor |
 | xterm.js | Terminal rendering for vim mode |
 | wasi-vim | Real Vim compiled to WebAssembly |
 | `libvips` (`vipsthumbnail`) | Still-image resize, HEIC, AVIF |
@@ -223,7 +218,7 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 
 ### Why these
 
-- **Pure Go, no cgo** — cross-compiles cleanly, static binaries, trivial containers. `modernc.org/sqlite` over `mattn/go-sqlite3` specifically for this. *Note: verify FTS5 is enabled in the driver's build before relying on it in stage 2.*
+- **Pure Go, no cgo** — cross-compiles cleanly, static binaries, trivial containers. `modernc.org/sqlite` over `mattn/go-sqlite3` specifically for this; FTS5 is enabled and in use since stage 2.
 - **`libvips` over `ffmpeg` for stills** — correct EXIF orientation, ICC profiles, HEIC, and AVIF, at far lower memory than ffmpeg's full-frame decode. ffmpeg still handles video.
 - **WASM Vim over embedding Neovim** — no subprocess, no RPC, no session manager; typing latency stays local. Neovim remains the documented fallback behind the same interface.
 
@@ -298,8 +293,9 @@ All configuration is environment variables.
 | `NOTEROOT_LISTEN` | `:8080` | Listen address. |
 | `NOTEROOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `NOTEROOT_AUTH_MODE` | `forward` | `forward` trusts `X-Auth-User`. `none` is dev only. |
+| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | Exact `scheme://host` mutations must come from. Empty means the request's own host. |
 
-**Authentication.** noteroot does not implement a login page. Traefik performs forward-auth against your identity provider and sets `X-Auth-User` on success, stripping any client-supplied value. An application-level session cookie and CSRF protection are planned for stage 3, when writes appear. `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
+**Authentication.** noteroot does not implement a login page. Traefik performs forward-auth against your identity provider and sets `X-Auth-User` on success, stripping any client-supplied value. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
 
 ## Extensibility
 

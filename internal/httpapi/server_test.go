@@ -1,16 +1,21 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"noteroot/internal/config"
 	"noteroot/internal/notebooks"
+	"noteroot/internal/vault"
 
 	"github.com/BurntSushi/toml"
 )
@@ -203,6 +208,18 @@ func TestNotebookRoot_requiresAuth_in_forward_mode(t *testing.T) {
 	}
 }
 
+// --- lifecycle ---
+
+func TestListenAndServe_afterShutdown(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, nil)
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown = %v", err)
+	}
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		t.Errorf("ListenAndServe = %v, want ErrServerClosed", err)
+	}
+}
+
 // --- content-type ---
 
 func TestWriteJSON_contentType(t *testing.T) {
@@ -213,5 +230,108 @@ func TestWriteJSON_contentType(t *testing.T) {
 	ct := rec.Header().Get("Content-Type")
 	if ct != "application/json; charset=utf-8" {
 		t.Errorf("Content-Type = %q, want application/json; charset=utf-8", ct)
+	}
+}
+
+func TestNew_purgesOldTrash(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"a.md": "content\n"})
+	nb, _ := reg.Get("work")
+	v := vault.Open(nb.Layout.Vault())
+	entries, err := vault.OpenTrash(v, nb.Layout.Trash()).Put("a.md", vault.WriteOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageSidecar(t, nb.Layout.Trash(), entries[0].Name, -31*24)
+	newTestServer(t, config.AuthNone, reg)
+	rest, err := vault.OpenTrash(v, nb.Layout.Trash()).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("entries = %+v, want purged", rest)
+	}
+	if _, err := v.Read("a.md"); err == nil {
+		t.Error("purged note must not be restored")
+	}
+}
+
+// ageSidecar backdates a trash sidecar by hours. White-box on the sidecar
+// format, which the vault package owns and versions with it.
+func ageSidecar(t *testing.T, trashDir, name string, hours int) {
+	t.Helper()
+	p := filepath.Join(trashDir, name+".json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["deletedAt"] = time.Now().Add(time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
+	b, err = json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGitAutocommit_endToEnd(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary missing:", err)
+	}
+	reg := notesFixture(t, map[string]string{"keep.md": "x"})
+	nb, _ := reg.Get("work")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", nb.Layout.Vault()}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	srv := newTestServer(t, config.AuthNone, reg)
+	if rec := put(t, srv, putNotePath("gone.md"), []byte("bye\n"), nil); rec.Code != http.StatusCreated {
+		t.Fatalf("put status = %d", rec.Code)
+	}
+	etag := get(t, srv, notePath("gone.md"), nil).Header().Get("ETag")
+	if rec := deleteNote(t, srv, putNotePath("gone.md"), map[string]string{"If-Match": etag}); rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d", rec.Code)
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", nb.Layout.Vault(), "log", "--format=%s")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "noteroot: unknown write gone.md") {
+		t.Fatalf("log = %q, want one coalesced commit", out)
+	}
+}
+
+func TestShutdown_gitFailureDoesNotFail(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary missing:", err)
+	}
+	reg := notesFixture(t, map[string]string{"keep.md": "x"})
+	nb, _ := reg.Get("work")
+	cmd := exec.Command("git", "-C", nb.Layout.Vault(), "init", "-q")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	srv := newTestServer(t, config.AuthNone, reg)
+	if rec := put(t, srv, putNotePath("n.md"), []byte("x\n"), nil); rec.Code != http.StatusCreated {
+		t.Fatalf("put status = %d", rec.Code)
+	}
+	if err := os.RemoveAll(filepath.Join(nb.Layout.Vault(), ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown = %v, want nil despite git failure", err)
 	}
 }
