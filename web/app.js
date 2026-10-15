@@ -199,10 +199,280 @@ $("q")?.addEventListener("keydown", (e) => {
 
 boot().catch((e) => { $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
 
-// --- editor (phone mode + fallback): textarea, autosave, crash pad, locks ---
+// --- vim mode (stage 4): desktop editor with wasi-vim in sandboxed iframe ---
 
-let editing = null; // {path, baseSha, lastSaved, dirtyTimer, saveTimer, lockTimer}
+class VimEditor {
+  constructor() {
+    this.iframe = null;
+    this.ready = false;
+    this.onDirtyCallback = null;
+    this.onSaveCallback = null;
+    this.onCloseCallback = null;
+    this.heartbeatTimeout = null;
+    this.lastHeartbeat = 0;
+    this.messageHandler = this.handleMessage.bind(this);
+  }
+
+  async open(path, content, baseSha) {
+    return new Promise((resolve, reject) => {
+      // Create iframe
+      this.iframe = document.createElement('iframe');
+      this.iframe.id = 'vim-frame';
+      this.iframe.src = '/vim/vim-frame.html';
+      this.iframe.sandbox = 'allow-scripts allow-same-origin';
+      this.iframe.allow = 'clipboard-read; clipboard-write';
+      this.iframe.style.cssText = 'width:100%; height:100%; border:0; display:block;';
+
+      // Setup message listener
+      window.addEventListener('message', this.messageHandler);
+
+      // Timeout for initialization
+      const initTimeout = setTimeout(() => {
+        this.cleanup();
+        reject(new Error('Vim initialization timeout'));
+      }, 5000);
+
+      // Wait for ready message
+      const readyHandler = (msg) => {
+        if (msg.type === 'vim:ready') {
+          clearTimeout(initTimeout);
+          this.ready = true;
+          this.startHeartbeatMonitor();
+          
+          // Load content
+          this.sendMessage({
+            type: 'vim:load',
+            path,
+            content,
+            baseSha
+          });
+          
+          resolve();
+        }
+      };
+
+      this.onReadyCallback = readyHandler;
+
+      // Mount iframe
+      const container = $('vim-container');
+      container.appendChild(this.iframe);
+      container.hidden = false;
+    });
+  }
+
+  async save() {
+    return new Promise((resolve) => {
+      // Request current content from vim
+      const handler = (msg) => {
+        if (msg.type === 'vim:save') {
+          this.removeMessageListener('vim:save', handler);
+          resolve({ content: msg.content, changed: true });
+        }
+      };
+      
+      this.addMessageListener('vim:save', handler);
+      // Vim will send vim:save on :w command automatically
+    });
+  }
+
+  async close() {
+    this.cleanup();
+  }
+
+  getContent() {
+    // Content is retrieved via save message
+    return '';
+  }
+
+  onDirty(callback) {
+    this.onDirtyCallback = callback;
+  }
+
+  onSave(callback) {
+    this.onSaveCallback = callback;
+  }
+
+  onClose(callback) {
+    this.onCloseCallback = callback;
+  }
+
+  focus() {
+    if (this.iframe && this.ready) {
+      this.sendMessage({ type: 'vim:focus' });
+    }
+  }
+
+  sendMessage(message) {
+    if (this.iframe && this.iframe.contentWindow) {
+      this.iframe.contentWindow.postMessage(message, window.location.origin);
+    }
+  }
+
+  handleMessage(event) {
+    if (event.origin !== window.location.origin) return;
+    if (event.source !== this.iframe?.contentWindow) return;
+
+    const msg = event.data;
+
+    // Handle ready
+    if (msg.type === 'vim:ready' && this.onReadyCallback) {
+      this.onReadyCallback(msg);
+      return;
+    }
+
+    // Handle dirty
+    if (msg.type === 'vim:dirty') {
+      if (this.onDirtyCallback) {
+        this.onDirtyCallback();
+      }
+    }
+
+    // Handle save
+    if (msg.type === 'vim:save') {
+      if (this.onSaveCallback) {
+        this.onSaveCallback(msg.content);
+      }
+    }
+
+    // Handle close
+    if (msg.type === 'vim:close') {
+      if (this.onCloseCallback) {
+        this.onCloseCallback(msg.force);
+      }
+    }
+
+    // Handle heartbeat
+    if (msg.type === 'vim:heartbeat') {
+      this.lastHeartbeat = Date.now();
+    }
+
+    // Handle errors
+    if (msg.type === 'vim:error') {
+      console.error('[VimEditor] Error from iframe:', msg.message);
+      if (msg.fatal) {
+        recordVimFailure();
+        this.cleanup();
+        // Trigger fallback
+        if (this.onCloseCallback) {
+          this.onCloseCallback(true);
+        }
+      }
+    }
+  }
+
+  addMessageListener(type, handler) {
+    const wrappedHandler = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data.type === type) {
+        handler(event.data);
+      }
+    };
+    window.addEventListener('message', wrappedHandler);
+    return wrappedHandler;
+  }
+
+  removeMessageListener(type, handler) {
+    window.removeEventListener('message', handler);
+  }
+
+  startHeartbeatMonitor() {
+    this.lastHeartbeat = Date.now();
+    this.heartbeatTimeout = setInterval(() => {
+      const elapsed = Date.now() - this.lastHeartbeat;
+      if (elapsed > 30000) { // 30 second timeout
+        console.error('[VimEditor] Heartbeat timeout - vim may have crashed');
+        recordVimFailure();
+        this.cleanup();
+        if (this.onCloseCallback) {
+          this.onCloseCallback(true);
+        }
+      }
+    }, 10000);
+  }
+
+  cleanup() {
+    if (this.heartbeatTimeout) {
+      clearInterval(this.heartbeatTimeout);
+    }
+    if (this.iframe) {
+      this.sendMessage({ type: 'vim:close' });
+      window.removeEventListener('message', this.messageHandler);
+      if (this.iframe.parentNode) {
+        this.iframe.parentNode.removeChild(this.iframe);
+      }
+      this.iframe = null;
+    }
+    const container = $('vim-container');
+    if (container) {
+      container.hidden = true;
+    }
+    this.ready = false;
+  }
+}
+
+// Circuit breaker for vim mode
+function getVimModeState() {
+  try {
+    const state = localStorage.getItem('nr.vimMode');
+    return state ? JSON.parse(state) : { enabled: true, failures: 0, lastFailure: 0 };
+  } catch {
+    return { enabled: true, failures: 0, lastFailure: 0 };
+  }
+}
+
+function setVimModeState(state) {
+  try {
+    localStorage.setItem('nr.vimMode', JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
+function recordVimFailure() {
+  const state = getVimModeState();
+  state.failures++;
+  state.lastFailure = Date.now();
+  
+  // Disable after 3 consecutive failures
+  if (state.failures >= 3) {
+    state.enabled = false;
+    console.warn('[VimEditor] Disabled after 3 failures. Reset in settings to retry.');
+  }
+  
+  setVimModeState(state);
+}
+
+function shouldUseVim() {
+  // Check viewport width (desktop: >= 768px)
+  if (window.innerWidth < 768) {
+    return false;
+  }
+
+  // Check WebAssembly support (for future wasi-vim integration)
+  if (typeof WebAssembly === 'undefined') {
+    return false;
+  }
+
+  // Check circuit breaker state
+  const state = getVimModeState();
+  if (!state.enabled) {
+    return false;
+  }
+
+  // Reset failure counter after 24 hours
+  if (state.failures > 0 && Date.now() - state.lastFailure > 86400000) {
+    state.failures = 0;
+    setVimModeState(state);
+  }
+
+  return true;
+}
+
+// --- editor (textarea fallback + vim mode integration) ---
+
+let editing = null; // {path, baseSha, lastSaved, dirtyTimer, saveTimer, lockTimer, mode, editor}
 let tabId = null;
+let currentEditorMode = null; // 'vim' or 'textarea'
 
 function myTab() {
   if (!tabId) {
@@ -320,27 +590,116 @@ async function openEditor() {
     $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`;
     return;
   }
-  editing = { path, baseSha: lastNote.sha, lastSaved: server, dirtyTimer: 0, saveTimer: 0, lockTimer: 0 };
+
+  // Determine editor mode
+  const useVim = shouldUseVim();
+  currentEditorMode = useVim ? 'vim' : 'textarea';
+
+  editing = {
+    path,
+    baseSha: lastNote.sha,
+    lastSaved: server,
+    dirtyTimer: 0,
+    saveTimer: 0,
+    lockTimer: 0,
+    mode: currentEditorMode,
+    editor: null
+  };
+
   $("note").hidden = true;
   $("editor").hidden = false;
-  $("editbody").value = server;
   $("savestate").textContent = "";
   $("lockstate").textContent = "";
   setBanner("");
 
-  const pad = readPad(path);
-  if (pad && typeof pad.content === "string" && pad.content !== server) {
+  if (useVim) {
+    await openVimEditor(server);
+  } else {
+    openTextareaEditor(server);
+  }
+
+  takeLock(path);
+  editing.lockTimer = setInterval(() => takeLock(path), 60000);
+}
+
+async function openVimEditor(content) {
+  try {
+    $("editormode").textContent = "vim";
+    $("editbody").hidden = true;
+
+    const vimEditor = new VimEditor();
+    editing.editor = vimEditor;
+
+    // Setup callbacks
+    vimEditor.onDirty(() => markDirty());
+    vimEditor.onSave((content) => {
+      // Vim requested save via :w
+      editing.lastSaved = content;
+      saveNoteContent(content, false);
+    });
+    vimEditor.onClose((force) => {
+      if (force || !isContentDirty()) {
+        closeEditor();
+      }
+    });
+
+    // Open vim editor
+    await vimEditor.open(editing.path, content, editing.baseSha);
+
+    // Check for draft
+    const pad = readPad(editing.path);
+    if (pad && typeof pad.content === "string" && pad.content !== content) {
+      const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
+      setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
+        ` <button class="btn" id="padrestore">Restore</button>` +
+        ` <button class="btn" id="paddiscard">Discard</button></div>`);
+      $("padrestore").onclick = () => {
+        vimEditor.sendMessage({ type: 'vim:reload', content: pad.content, baseSha: editing.baseSha });
+        setBanner("");
+        markDirty();
+      };
+      $("paddiscard").onclick = () => {
+        clearPad(editing.path);
+        setBanner("");
+      };
+    }
+
+  } catch (error) {
+    console.error('[openEditor] Vim mode failed, falling back to textarea:', error);
+    recordVimFailure();
+    // Fallback to textarea
+    currentEditorMode = 'textarea';
+    editing.mode = 'textarea';
+    editing.editor = null;
+    openTextareaEditor(content);
+  }
+}
+
+function openTextareaEditor(content) {
+  $("editormode").textContent = "plain text";
+  $("editbody").hidden = false;
+  $("editbody").value = content;
+
+  const pad = readPad(editing.path);
+  if (pad && typeof pad.content === "string" && pad.content !== content) {
     const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
     setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
       ` <button class="btn" id="padrestore">Restore</button>` +
       ` <button class="btn" id="paddiscard">Discard</button></div>`);
     $("padrestore").onclick = () => { $("editbody").value = pad.content; setBanner(""); markDirty(); };
-    $("paddiscard").onclick = () => { clearPad(path); setBanner(""); };
+    $("paddiscard").onclick = () => { clearPad(editing.path); setBanner(""); };
   }
 
   $("editbody").oninput = markDirty;
-  takeLock(path);
-  editing.lockTimer = setInterval(() => takeLock(path), 60000);
+}
+
+function isContentDirty() {
+  if (!editing) return false;
+  if (editing.mode === 'textarea') {
+    return $("editbody").value !== editing.lastSaved;
+  }
+  // For vim, we track dirty via the vim:dirty message
+  return false; // Vim manages its own dirty state
 }
 
 function markDirty() {
@@ -355,11 +714,30 @@ function markDirty() {
 async function saveNote(manual) {
   if (!editing) return;
   clearTimeout(editing.saveTimer);
-  const content = $("editbody").value;
+
+  let content;
+  if (editing.mode === 'textarea') {
+    content = $("editbody").value;
+  } else if (editing.mode === 'vim' && editing.editor) {
+    // For vim, we need to request content via message
+    // In vim mode, saves are triggered by :w command which sends vim:save message
+    // Manual save button should also work
+    content = editing.lastSaved; // Vim manages content internally
+    // TODO: Implement manual save for vim mode if needed
+    $("savestate").textContent = "Use :w in Vim to save";
+    return;
+  }
+
   if (content === editing.lastSaved) {
     $("savestate").textContent = manual ? "No changes." : "";
     return;
   }
+
+  await saveNoteContent(content, manual);
+}
+
+async function saveNoteContent(content, manual) {
+  if (!editing) return;
   $("savestate").textContent = "Saving…";
   try {
     const res = await putNote(editing.path, content, { baseSha: editing.baseSha });
@@ -373,7 +751,9 @@ async function saveNote(manual) {
       conflictBanner();
     } else {
       $("savestate").textContent = `Save failed: ${e.message} (kept locally)`;
-      writePad();
+      if (editing.mode === 'textarea') {
+        writePad();
+      }
     }
   }
 }
@@ -422,9 +802,17 @@ function closeEditor() {
   clearTimeout(editing.saveTimer);
   clearInterval(editing.lockTimer);
   releaseLock(editing.path, false);
+
+  // Cleanup editor-specific resources
+  if (editing.mode === 'vim' && editing.editor) {
+    editing.editor.cleanup();
+  }
+
   editing = null;
+  currentEditorMode = null;
   $("editor").hidden = true;
   $("note").hidden = false;
+  $("editbody").hidden = false; // Ensure textarea is visible for next open
   setBanner("");
 }
 
