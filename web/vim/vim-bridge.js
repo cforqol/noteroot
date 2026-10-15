@@ -300,6 +300,10 @@ window.addEventListener('message', async (event) => {
       case 'vim:reload':
         await reloadBuffer(msg.content, msg.baseSha);
         break;
+      case 'vim:get-content':
+        // Send current buffer content back to parent (for draft autosave)
+        sendToParent({ type: 'vim:content', content: lines.join('\n') });
+        break;
       case 'vim:close':
         cleanup();
         break;

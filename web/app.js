@@ -279,9 +279,23 @@ class VimEditor {
     this.cleanup();
   }
 
-  getContent() {
-    // Content is retrieved via save message
-    return '';
+  async getContent() {
+    // Request current buffer content for draft autosave
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.removeMessageListener('vim:content', handler);
+        resolve(''); // Return empty on timeout
+      }, 1000);
+      
+      const handler = (msg) => {
+        clearTimeout(timeout);
+        this.removeMessageListener('vim:content', handler);
+        resolve(msg.content || '');
+      };
+      
+      this.addMessageListener('vim:content', handler);
+      this.sendMessage({ type: 'vim:get-content' });
+    });
   }
 
   onDirty(callback) {
@@ -344,6 +358,11 @@ class VimEditor {
     // Handle heartbeat
     if (msg.type === 'vim:heartbeat') {
       this.lastHeartbeat = Date.now();
+    }
+
+    // Handle content response
+    if (msg.type === 'vim:content') {
+      // Handled by getContent() promise
     }
 
     // Handle errors
@@ -443,8 +462,17 @@ function recordVimFailure() {
 }
 
 function shouldUseVim() {
+  // Check user preference
+  const pref = localStorage.getItem('nr.editorPref') || 'auto';
+  
+  // If user explicitly chose textarea, respect that
+  if (pref === 'textarea') {
+    return false;
+  }
+
   // Check viewport width (desktop: >= 768px)
-  if (window.innerWidth < 768) {
+  // Skip this check if user explicitly chose vim
+  if (pref !== 'vim' && window.innerWidth < 768) {
     return false;
   }
 
@@ -498,13 +526,22 @@ function readPad(path) {
   }
 }
 
-function writePad() {
+async function writePad() {
   if (!editing) return;
   try {
+    let content;
+    if (editing.mode === 'vim' && editing.editor) {
+      // Get content from vim asynchronously
+      content = await editing.editor.getContent();
+    } else {
+      // Get content from textarea
+      content = $("editbody").value;
+    }
+    
     localStorage.setItem(padKey(editing.path), JSON.stringify({
       tab: myTab(),
       baseSha: editing.baseSha,
-      content: $("editbody").value,
+      content: content,
       savedAt: Date.now(),
     }));
   } catch {
@@ -762,6 +799,7 @@ function conflictBanner() {
   setBanner(`<div class="warn">Changed on server by someone or something else.` +
     ` <button class="btn" id="cfreload">Reload (lose mine)</button>` +
     ` <button class="btn" id="cfforce">Force save (keep mine)</button></div>`);
+  
   $("cfreload").onclick = async () => {
     try {
       const server = await apiRaw(editing.path);
@@ -769,7 +807,14 @@ function conflictBanner() {
       if (!editing) return;
       editing.baseSha = n.sha || null;
       editing.lastSaved = server;
-      $("editbody").value = server;
+      
+      // Update editor content based on mode
+      if (editing.mode === 'vim' && editing.editor) {
+        editing.editor.sendMessage({ type: 'vim:reload', content: server, baseSha: editing.baseSha });
+      } else {
+        $("editbody").value = server;
+      }
+      
       clearPad(editing.path);
       setBanner("");
       $("savestate").textContent = "";
@@ -777,10 +822,16 @@ function conflictBanner() {
       $("savestate").textContent = `Reload failed: ${e.message}`;
     }
   };
+  
   $("cfforce").onclick = async () => {
-    // Read the live textarea: the user may have kept typing since the
-    // conflict was detected — force-save must not resurrect a stale snapshot.
-    const live = $("editbody").value;
+    // Get current content from editor
+    let live;
+    if (editing.mode === 'vim' && editing.editor) {
+      live = await editing.editor.getContent();
+    } else {
+      live = $("editbody").value;
+    }
+    
     try {
       const res = await putNote(editing.path, live, { baseSha: editing.baseSha, force: true });
       if (!editing) return;
@@ -793,6 +844,7 @@ function conflictBanner() {
       $("savestate").textContent = `Force save failed: ${e.message}`;
     }
   };
+  
   writePad();
 }
 
@@ -830,5 +882,70 @@ window.addEventListener("pagehide", () => {
   if (editing) {
     writePad();
     releaseLock(editing.path, true);
+  }
+});
+
+// --- Settings Modal ---
+
+function openSettingsModal() {
+  const modal = $("settings-modal");
+  modal.hidden = false;
+  
+  // Load current preference
+  const pref = localStorage.getItem('nr.editorPref') || 'auto';
+  document.querySelector(`input[name="editor-mode"][value="${pref}"]`).checked = true;
+  
+  // Update circuit breaker status
+  updateVimStatus();
+}
+
+function closeSettingsModal() {
+  $("settings-modal").hidden = true;
+}
+
+function updateVimStatus() {
+  const state = getVimModeState();
+  
+  $("cb-status").textContent = state.enabled ? "Enabled" : "Disabled";
+  $("cb-status").className = state.enabled ? "status-value enabled" : "status-value disabled";
+  
+  $("cb-failures").textContent = String(state.failures);
+  
+  if (state.lastFailure) {
+    const date = new Date(state.lastFailure);
+    $("cb-lastfail").textContent = date.toLocaleString();
+  } else {
+    $("cb-lastfail").textContent = "Never";
+  }
+}
+
+function saveEditorPreference() {
+  const selected = document.querySelector('input[name="editor-mode"]:checked');
+  if (selected) {
+    localStorage.setItem('nr.editorPref', selected.value);
+  }
+}
+
+function resetCircuitBreaker() {
+  setVimModeState({ enabled: true, failures: 0, lastFailure: 0 });
+  updateVimStatus();
+  alert("Circuit breaker has been reset. Vim mode is now enabled.");
+}
+
+// Settings event listeners
+$("settingsbtn")?.addEventListener("click", openSettingsModal);
+$("settings-close")?.addEventListener("click", closeSettingsModal);
+$("settings-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeSettingsModal);
+$("reset-vim")?.addEventListener("click", resetCircuitBreaker);
+
+// Save preference when radio buttons change
+document.querySelectorAll('input[name="editor-mode"]').forEach(radio => {
+  radio.addEventListener("change", saveEditorPreference);
+});
+
+// Close modal with Escape key
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("settings-modal").hidden) {
+    closeSettingsModal();
   }
 });
