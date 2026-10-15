@@ -57,6 +57,13 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))
 	mux.Handle("DELETE /n/{slug}/lock", mutating(s.deleteLock))
 
+	// Resources (stage 5) — uploads allow multipart via CSRFAllowMultipart.
+	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
+	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
+	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
+	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
+
 	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,

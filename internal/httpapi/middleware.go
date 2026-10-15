@@ -98,6 +98,18 @@ func Chain(h http.Handler, mw ...func(http.Handler) http.Handler) http.Handler {
 // always carry an Origin or Referer that must match. Bare API clients send
 // neither header and pass through.
 func CSRF(publicOrigin string) func(http.Handler) http.Handler {
+	return csrfWithOpts(publicOrigin, false)
+}
+
+// CSRFAllowMultipart is like CSRF but permits multipart/form-data. File
+// uploads (drag-and-drop) use multipart from same-origin fetch, which
+// carries a matching Origin; the content-type block only guards against
+// cross-origin HTML forms, which the Origin check already covers.
+func CSRFAllowMultipart(publicOrigin string) func(http.Handler) http.Handler {
+	return csrfWithOpts(publicOrigin, true)
+}
+
+func csrfWithOpts(publicOrigin string, allowMultipart bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if ct := r.Header.Get("Content-Type"); ct != "" {
@@ -106,7 +118,7 @@ func CSRF(publicOrigin string) func(http.Handler) http.Handler {
 					media = ct[:i]
 				}
 				if media = strings.TrimSpace(media); media == "application/x-www-form-urlencoded" ||
-					media == "multipart/form-data" {
+					(!allowMultipart && media == "multipart/form-data") {
 					writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden content type"})
 					return
 				}
