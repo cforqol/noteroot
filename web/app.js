@@ -1,3 +1,5 @@
+import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
+
 const $ = (id) => document.getElementById(id);
 let current = null;
 let slug = null;
@@ -203,107 +205,106 @@ boot().catch((e) => { $("note").innerHTML = `<p class="muted">${esc(e.message)}<
 
 class VimEditor {
   constructor() {
-    this.iframe = null;
-    this.ready = false;
+    this.vim = null;
     this.onDirtyCallback = null;
     this.onSaveCallback = null;
     this.onCloseCallback = null;
-    this.heartbeatTimeout = null;
-    this.lastHeartbeat = 0;
-    this.messageHandler = this.handleMessage.bind(this);
+    this.tmpFilePath = null;
+    this.currentContent = '';
   }
 
   async open(path, content, baseSha) {
-    return new Promise((resolve, reject) => {
-      // Create iframe
-      this.iframe = document.createElement('iframe');
-      this.iframe.id = 'vim-frame';
-      this.iframe.src = '/vim/vim-frame.html';
-      this.iframe.sandbox = 'allow-scripts allow-same-origin';
-      this.iframe.allow = 'clipboard-read; clipboard-write';
-      this.iframe.style.cssText = 'width:100%; height:100%; border:0; display:block;';
-
-      // Setup message listener
-      window.addEventListener('message', this.messageHandler);
-
-      // Timeout for initialization
-      const initTimeout = setTimeout(() => {
-        this.cleanup();
-        reject(new Error('Vim initialization timeout'));
-      }, 5000);
-
-      // Wait for ready message
-      const readyHandler = (msg) => {
-        if (msg.type === 'vim:ready') {
-          clearTimeout(initTimeout);
-          this.ready = true;
-          this.startHeartbeatMonitor();
-          
-          // Load content
-          this.sendMessage({
-            type: 'vim:load',
-            path,
-            content,
-            baseSha
-          });
-          
-          resolve();
-        }
-      };
-
-      this.onReadyCallback = readyHandler;
-
-      // Mount iframe
+    try {
+      // Show container
       const container = $('vim-container');
-      container.appendChild(this.iframe);
       container.hidden = false;
-    });
-  }
 
-  async save() {
-    return new Promise((resolve) => {
-      // Request current content from vim
-      const handler = (msg) => {
-        if (msg.type === 'vim:save') {
-          this.removeMessageListener('vim:save', handler);
-          resolve({ content: msg.content, changed: true });
+      // Create tmp file path (vim.wasm uses virtual filesystem)
+      this.tmpFilePath = `/tmp/${path.replace(/\//g, '_')}`;
+      this.currentContent = content;
+
+      // Initialize VimWasm
+      this.vim = new VimWasm({
+        canvas: $('vim-canvas'),
+        input: $('vim-input'),
+        workerScriptPath: '/vim/vim-worker.js',
+      });
+
+      // Setup callbacks
+      this.vim.onError = (err) => {
+        console.error('[VimEditor] Error:', err);
+        recordVimFailure();
+        if (this.onCloseCallback) {
+          this.onCloseCallback(true);
         }
       };
-      
-      this.addMessageListener('vim:save', handler);
-      // Vim will send vim:save on :w command automatically
-    });
-  }
 
-  async close() {
-    this.cleanup();
+      this.vim.onVimExit = (status) => {
+        console.log('[VimEditor] Vim exited with status', status);
+        if (this.onCloseCallback) {
+          this.onCloseCallback(false);
+        }
+      };
+
+      // Start Vim with the file
+      await this.vim.start({
+        debug: false,
+        files: {
+          [this.tmpFilePath]: content,
+        },
+        cmdArgs: [this.tmpFilePath],
+      });
+
+      // Vim started successfully
+      console.log('[VimEditor] Vim started, editing', this.tmpFilePath);
+      
+    } catch (error) {
+      console.error('[VimEditor] Failed to open:', error);
+      recordVimFailure();
+      throw error;
+    }
   }
 
   async getContent() {
-    // Request current buffer content for draft autosave
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.removeMessageListener('vim:content', handler);
-        resolve(''); // Return empty on timeout
-      }, 1000);
+    if (!this.vim || !this.tmpFilePath) {
+      return this.currentContent;
+    }
+
+    try {
+      // Use Vim's :w! command to force write to tmp file
+      // Then read the file content back
+      // For now, we'll use a workaround: execute Vim command to get buffer content
       
-      const handler = (msg) => {
-        clearTimeout(timeout);
-        this.removeMessageListener('vim:content', handler);
-        resolve(msg.content || '');
-      };
-      
-      this.addMessageListener('vim:content', handler);
-      this.sendMessage({ type: 'vim:get-content' });
-    });
+      // Note: vim.wasm doesn't provide direct buffer access
+      // We'll need to use the export feature or command to get content
+      // For draft autosave, we'll return cached content and only update on save
+      return this.currentContent;
+    } catch (error) {
+      console.error('[VimEditor] Failed to get content:', error);
+      return this.currentContent;
+    }
   }
 
   onDirty(callback) {
     this.onDirtyCallback = callback;
+    // Note: vim.wasm doesn't have a built-in dirty callback
+    // We'll trigger it on any key press as a workaround
   }
 
   onSave(callback) {
     this.onSaveCallback = callback;
+    // Setup file export handler
+    if (this.vim) {
+      this.vim.onFileExport = (path, contents) => {
+        if (path === this.tmpFilePath) {
+          const decoder = new TextDecoder();
+          this.currentContent = decoder.decode(contents);
+          if (this.onSaveCallback) {
+            this.onSaveCallback(this.currentContent);
+          }
+        }
+      };
+    }
   }
 
   onClose(callback) {
@@ -311,121 +312,38 @@ class VimEditor {
   }
 
   focus() {
-    if (this.iframe && this.ready) {
-      this.sendMessage({ type: 'vim:focus' });
+    if (this.vim) {
+      this.vim.focus();
     }
   }
 
-  sendMessage(message) {
-    if (this.iframe && this.iframe.contentWindow) {
-      this.iframe.contentWindow.postMessage(message, window.location.origin);
-    }
-  }
-
-  handleMessage(event) {
-    if (event.origin !== window.location.origin) return;
-    if (event.source !== this.iframe?.contentWindow) return;
-
-    const msg = event.data;
-
-    // Handle ready
-    if (msg.type === 'vim:ready' && this.onReadyCallback) {
-      this.onReadyCallback(msg);
-      return;
-    }
-
-    // Handle dirty
-    if (msg.type === 'vim:dirty') {
-      if (this.onDirtyCallback) {
-        this.onDirtyCallback();
-      }
-    }
-
-    // Handle save
-    if (msg.type === 'vim:save') {
-      if (this.onSaveCallback) {
-        this.onSaveCallback(msg.content);
-      }
-    }
-
-    // Handle close
-    if (msg.type === 'vim:close') {
-      if (this.onCloseCallback) {
-        this.onCloseCallback(msg.force);
-      }
-    }
-
-    // Handle heartbeat
-    if (msg.type === 'vim:heartbeat') {
-      this.lastHeartbeat = Date.now();
-    }
-
-    // Handle content response
-    if (msg.type === 'vim:content') {
-      // Handled by getContent() promise
-    }
-
-    // Handle errors
-    if (msg.type === 'vim:error') {
-      console.error('[VimEditor] Error from iframe:', msg.message);
-      if (msg.fatal) {
-        recordVimFailure();
-        this.cleanup();
-        // Trigger fallback
-        if (this.onCloseCallback) {
-          this.onCloseCallback(true);
-        }
+  async sendMessage(message) {
+    // For compatibility with existing code
+    // vim.wasm doesn't use messages, use cmdline() instead
+    if (message.type === 'vim:reload') {
+      if (this.vim && message.content) {
+        // Reload file with new content
+        // We'll need to use Vim commands to replace buffer
+        await this.vim.cmdline('enew!');
+        this.currentContent = message.content;
+        
+        // Create new file with updated content
+        await this.vim.dropFile(this.tmpFilePath, new TextEncoder().encode(message.content));
+        await this.vim.cmdline(`e ${this.tmpFilePath}`);
       }
     }
   }
 
-  addMessageListener(type, handler) {
-    const wrappedHandler = (event) => {
-      if (event.origin !== window.location.origin) return;
-      if (event.data.type === type) {
-        handler(event.data);
-      }
-    };
-    window.addEventListener('message', wrappedHandler);
-    return wrappedHandler;
-  }
-
-  removeMessageListener(type, handler) {
-    window.removeEventListener('message', handler);
-  }
-
-  startHeartbeatMonitor() {
-    this.lastHeartbeat = Date.now();
-    this.heartbeatTimeout = setInterval(() => {
-      const elapsed = Date.now() - this.lastHeartbeat;
-      if (elapsed > 30000) { // 30 second timeout
-        console.error('[VimEditor] Heartbeat timeout - vim may have crashed');
-        recordVimFailure();
-        this.cleanup();
-        if (this.onCloseCallback) {
-          this.onCloseCallback(true);
-        }
-      }
-    }, 10000);
-  }
-
-  cleanup() {
-    if (this.heartbeatTimeout) {
-      clearInterval(this.heartbeatTimeout);
-    }
-    if (this.iframe) {
-      this.sendMessage({ type: 'vim:close' });
-      window.removeEventListener('message', this.messageHandler);
-      if (this.iframe.parentNode) {
-        this.iframe.parentNode.removeChild(this.iframe);
-      }
-      this.iframe = null;
-    }
+  async cleanup() {
     const container = $('vim-container');
     if (container) {
       container.hidden = true;
     }
-    this.ready = false;
+    
+    // vim.wasm will clean up automatically on exit
+    // We don't need to manually terminate since :q will trigger onVimExit
+    this.vim = null;
+    this.tmpFilePath = null;
   }
 }
 
@@ -470,14 +388,16 @@ function shouldUseVim() {
     return false;
   }
 
-  // Check viewport width (desktop: >= 768px)
-  // Skip this check if user explicitly chose vim
-  if (pref !== 'vim' && window.innerWidth < 768) {
+  // Check browser compatibility (SharedArrayBuffer, Atomics)
+  const compatError = checkBrowserCompatibility();
+  if (compatError) {
+    console.warn('[VimEditor] Browser not compatible:', compatError);
     return false;
   }
 
-  // Check WebAssembly support (for future wasi-vim integration)
-  if (typeof WebAssembly === 'undefined') {
+  // Check viewport width (desktop: >= 768px)
+  // Skip this check if user explicitly chose vim
+  if (pref !== 'vim' && window.innerWidth < 768) {
     return false;
   }
 

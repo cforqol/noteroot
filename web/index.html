@@ -28,7 +28,10 @@
         <button id="savebtn" class="btn">Save</button>
         <button id="closebtn" class="btn">Close</button>
       </div>
-      <div id="vim-container" hidden></div>
+      <div id="vim-container" hidden>
+        <canvas id="vim-canvas"></canvas>
+        <input id="vim-input" autocomplete="off" style="position:absolute;left:-9999px" />
+      </div>
       <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
     </section>
   </div>
@@ -94,6 +97,6 @@
   </div>
 </div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
