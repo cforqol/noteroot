@@ -263,3 +263,14 @@ func (s *LocalStore) GC(grace time.Duration) (int, error) {
 	}
 	return removed, nil
 }
+
+// NewStore returns the appropriate Store backend. When s3Cfg.Enabled()
+// is true it returns an S3Store; otherwise a LocalStore rooted at
+// localRoot. This is the single factory the HTTP layer uses so store
+// selection lives in one place.
+func NewStore(localRoot string, s3Cfg S3Config) (Store, error) {
+	if s3Cfg.Enabled() {
+		return NewS3Store(s3Cfg)
+	}
+	return NewLocalStore(localRoot)
+}

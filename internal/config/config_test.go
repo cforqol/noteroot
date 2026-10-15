@@ -148,3 +148,98 @@ func TestEnv_emptyUsesDefault(t *testing.T) {
 		t.Errorf("got %q, want default (empty string should use default)", got)
 	}
 }
+
+// --- S3 config (stage 7) ---
+
+func s3EnvKeys() []string {
+	return []string{
+		"NOTEROOT_S3_ENDPOINT", "NOTEROOT_S3_BUCKET", "NOTEROOT_S3_REGION",
+		"NOTEROOT_S3_ACCESS_KEY", "NOTEROOT_S3_SECRET_KEY",
+		"NOTEROOT_S3_PATH_STYLE", "NOTEROOT_S3_PRESIGN_TTL",
+	}
+}
+
+func TestLoad_s3DisabledByDefault(t *testing.T) {
+	for _, k := range s3EnvKeys() {
+		unsetenv(t, k)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.S3Enabled() {
+		t.Error("S3 should be disabled by default")
+	}
+}
+
+func TestLoad_s3AllSet(t *testing.T) {
+	setenv(t, "NOTEROOT_S3_ENDPOINT", "https://s3.amazonaws.com")
+	setenv(t, "NOTEROOT_S3_BUCKET", "mybucket")
+	setenv(t, "NOTEROOT_S3_REGION", "us-east-1")
+	setenv(t, "NOTEROOT_S3_ACCESS_KEY", "AKID")
+	setenv(t, "NOTEROOT_S3_SECRET_KEY", "SECRET")
+	setenv(t, "NOTEROOT_S3_PATH_STYLE", "true")
+	setenv(t, "NOTEROOT_S3_PRESIGN_TTL", "30m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.S3Enabled() {
+		t.Error("S3 should be enabled")
+	}
+	if cfg.S3Endpoint != "https://s3.amazonaws.com" {
+		t.Errorf("S3Endpoint = %q", cfg.S3Endpoint)
+	}
+	if !cfg.S3PathStyle {
+		t.Error("S3PathStyle = false, want true")
+	}
+	if cfg.S3PresignTTL != "30m" {
+		t.Errorf("S3PresignTTL = %q", cfg.S3PresignTTL)
+	}
+}
+
+func TestLoad_s3PartialRejected(t *testing.T) {
+	// Set only 2 of 5 required fields.
+	setenv(t, "NOTEROOT_S3_ENDPOINT", "https://s3.amazonaws.com")
+	setenv(t, "NOTEROOT_S3_BUCKET", "mybucket")
+	unsetenv(t, "NOTEROOT_S3_REGION")
+	unsetenv(t, "NOTEROOT_S3_ACCESS_KEY")
+	unsetenv(t, "NOTEROOT_S3_SECRET_KEY")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("want error for partial S3 config")
+	}
+}
+
+func TestS3Enabled_partialFalse(t *testing.T) {
+	c := Config{S3Endpoint: "x", S3Bucket: "y"}
+	if c.S3Enabled() {
+		t.Error("partial config should not be enabled")
+	}
+	c = Config{
+		S3Endpoint: "x", S3Bucket: "y", S3Region: "z",
+		S3AccessKey: "a", S3SecretKey: "b",
+	}
+	if !c.S3Enabled() {
+		t.Error("full config should be enabled")
+	}
+}
+
+func TestEnvBool(t *testing.T) {
+	cases := map[string]bool{
+		"true": true, "1": true, "yes": true, "on": true,
+		"false": false, "0": false, "no": false, "off": false,
+	}
+	for in, want := range cases {
+		setenv(t, "TEST_BOOL", in)
+		if got := envBool("TEST_BOOL", false); got != want {
+			t.Errorf("envBool(%q) = %v, want %v", in, got, want)
+		}
+	}
+	unsetenv(t, "TEST_BOOL")
+	if got := envBool("TEST_BOOL", true); !got {
+		t.Error("missing env should use default")
+	}
+}
