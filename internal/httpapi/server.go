@@ -62,6 +62,8 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/thumb", auth(s.thumbResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/poster", auth(s.posterResource))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
 
 	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)

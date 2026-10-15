@@ -3,10 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -309,4 +313,160 @@ func TestUploadCSRF_rejectedWithoutOrigin(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rec.Code)
 	}
+}
+
+// --- Transform endpoints (stage 6) ---
+
+func TestThumb_imageThumbnail(t *testing.T) {
+	hasFFmpegForTest(t)
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+
+	// Upload a real image via ffmpeg-generated PNG.
+	img := generateTestPNG(t, 640, 480)
+	up := postResource(t, srv, "work", "photo.png", "image/png", img)
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+sha+"/thumb?w=320&h=240", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want image/jpeg", ct)
+	}
+	body := rec.Body.Bytes()
+	if len(body) < 3 || body[0] != 0xFF || body[1] != 0xD8 {
+		t.Errorf("not a JPEG response")
+	}
+}
+
+func TestThumb_cacheHit(t *testing.T) {
+	hasFFmpegForTest(t)
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	img := generateTestPNG(t, 320, 240)
+	up := postResource(t, srv, "work", "p.png", "image/png", img)
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	url := "/n/work/resources/" + sha + "/thumb?w=100&h=100"
+	// First request: MISS
+	req1 := httptest.NewRequest(http.MethodGet, url, nil)
+	rec1 := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec1, req1)
+	if rec1.Header().Get("X-Cache") != "MISS" {
+		t.Errorf("first X-Cache = %q, want MISS", rec1.Header().Get("X-Cache"))
+	}
+	// Second request: HIT
+	req2 := httptest.NewRequest(http.MethodGet, url, nil)
+	rec2 := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec2, req2)
+	if rec2.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("second X-Cache = %q, want HIT", rec2.Header().Get("X-Cache"))
+	}
+	// Same body both times.
+	if !bytes.Equal(rec1.Body.Bytes(), rec2.Body.Bytes()) {
+		t.Error("cached body differs from fresh body")
+	}
+}
+
+func TestThumb_videoPoster(t *testing.T) {
+	hasFFmpegForTest(t)
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+
+	// Generate a tiny test video.
+	vid := generateTestVideo(t)
+	up := postResource(t, srv, "work", "clip.mp4", "video/mp4", vid)
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+sha+"/poster", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	body := rec.Body.Bytes()
+	if len(body) < 3 || body[0] != 0xFF || body[1] != 0xD8 {
+		t.Error("poster is not JPEG")
+	}
+}
+
+func TestThumb_notFound(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	fake := strings.Repeat("a", 64)
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+fake+"/thumb", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestThumb_unsupportedMIME(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	up := postResource(t, srv, "work", "doc.pdf", "application/pdf", []byte("%PDF-1.4"))
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+sha+"/thumb", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415", rec.Code)
+	}
+}
+
+// --- Helpers for transform tests ---
+
+func hasFFmpegForTest(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available")
+	}
+}
+
+func generateTestPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "test.png")
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i",
+		fmt.Sprintf("color=c=red:s=%dx%d", w, h),
+		"-frames:v", "1", out,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, output)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func generateTestVideo(t *testing.T) []byte {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "test.mp4")
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10",
+		"-pix_fmt", "yuv420p", out,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, output)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
