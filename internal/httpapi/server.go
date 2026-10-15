@@ -57,7 +57,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))
 	mux.Handle("DELETE /n/{slug}/lock", mutating(s.deleteLock))
 
-	h := Chain(mux, RequestID, Recover(log), Log(log))
+	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           h,

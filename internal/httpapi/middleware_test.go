@@ -173,3 +173,29 @@ func TestChain_order(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedArrayBuffer_setsHeaders(t *testing.T) {
+	h := SharedArrayBuffer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Header().Get("Cross-Origin-Opener-Policy") != "same-origin" {
+		t.Errorf("COOP = %q, want same-origin", rec.Header().Get("Cross-Origin-Opener-Policy"))
+	}
+	if rec.Header().Get("Cross-Origin-Embedder-Policy") != "credentialless" {
+		t.Errorf("COEP = %q, want credentialless", rec.Header().Get("Cross-Origin-Embedder-Policy"))
+	}
+}
+
+func TestSharedArrayBuffer_callsNext(t *testing.T) {
+	called := false
+	h := SharedArrayBuffer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !called {
+		t.Error("next handler not called")
+	}
+}

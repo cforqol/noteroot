@@ -12,3 +12,10 @@
 # Web test dependencies
 web/node_modules/
 web/package-lock.json
+
+# Test artifacts
+web/coverage/
+web/test-results/
+web/playwright-report/
+node_modules/
+package-lock.json

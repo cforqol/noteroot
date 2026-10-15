@@ -489,20 +489,21 @@ func TestNote_wikilinkHTMLStructure(t *testing.T) {
 	if len(resp.Outgoing) != 2 {
 		t.Fatalf("outgoing count = %d, want 2", len(resp.Outgoing))
 	}
-	
+
 	var resolved, unresolved *struct {
 		Target string `json:"target"`
 		Path   string `json:"path"`
 		Label  string `json:"label"`
 	}
 	for i := range resp.Outgoing {
-		if resp.Outgoing[i].Target == "target" {
+		switch resp.Outgoing[i].Target {
+		case "target":
 			resolved = &resp.Outgoing[i]
-		} else if resp.Outgoing[i].Target == "nowhere" {
+		case "nowhere":
 			unresolved = &resp.Outgoing[i]
 		}
 	}
-	
+
 	if resolved == nil || resolved.Path != "target.md" || resolved.Label != "custom label" {
 		t.Errorf("resolved link = %+v, want {target target.md custom label}", resolved)
 	}
@@ -544,13 +545,13 @@ func TestNote_backlinksOutgoingJSONShape(t *testing.T) {
 	if !ok || len(outgoing) != 2 {
 		t.Fatalf("outgoing = %v, want array with 2 items", resp["outgoing"])
 	}
-	
+
 	aliasLink := outgoing[0].(map[string]interface{})
 	if aliasLink["target"] != "A" || aliasLink["path"] != "alpha.md" ||
 		aliasLink["title"] != "Alpha" || aliasLink["label"] != "alias link" {
 		t.Errorf("outgoing[0] = %+v, want alias resolution with label", aliasLink)
 	}
-	
+
 	deadLink := outgoing[1].(map[string]interface{})
 	if deadLink["target"] != "missing" || deadLink["path"] != "" || deadLink["title"] != "" {
 		t.Errorf("outgoing[1] = %+v, want unresolved {target:missing path: title:}", deadLink)

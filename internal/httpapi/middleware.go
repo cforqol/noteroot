@@ -137,3 +137,14 @@ func originAllowed(value, publicOrigin, host string) bool {
 	}
 	return u.Host == host
 }
+
+// SharedArrayBuffer enables SharedArrayBuffer for vim.wasm (Web Worker +
+// Atomics blocking wait). Browsers require Cross-Origin-Opener-Policy and
+// Cross-Origin-Embedder-Policy headers to expose SharedArrayBuffer.
+func SharedArrayBuffer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "credentialless")
+		next.ServeHTTP(w, r)
+	})
+}

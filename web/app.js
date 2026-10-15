@@ -1,4 +1,13 @@
 import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
+import {
+  getVimModeState,
+  setVimModeState,
+  recordVimFailure,
+  shouldUseVim as shouldUseVimCore,
+  resetVimCircuitBreaker,
+  getEditorPreference,
+  setEditorPreference,
+} from '/lib/vim-mode.js';
 
 const $ = (id) => document.getElementById(id);
 let current = null;
@@ -358,73 +367,17 @@ class VimEditor {
   }
 }
 
-// Circuit breaker for vim mode
-function getVimModeState() {
-  try {
-    const state = localStorage.getItem('nr.vimMode');
-    return state ? JSON.parse(state) : { enabled: true, failures: 0, lastFailure: 0 };
-  } catch {
-    return { enabled: true, failures: 0, lastFailure: 0 };
-  }
-}
-
-function setVimModeState(state) {
-  try {
-    localStorage.setItem('nr.vimMode', JSON.stringify(state));
-  } catch {
-    // ignore
-  }
-}
-
-function recordVimFailure() {
-  const state = getVimModeState();
-  state.failures++;
-  state.lastFailure = Date.now();
-  
-  // Disable after 3 consecutive failures
-  if (state.failures >= 3) {
-    state.enabled = false;
-    console.warn('[VimEditor] Disabled after 3 failures. Reset in settings to retry.');
-  }
-  
-  setVimModeState(state);
-}
+// Circuit breaker for vim mode (logic lives in lib/vim-mode.js)
 
 function shouldUseVim() {
-  // Check user preference
-  const pref = localStorage.getItem('nr.editorPref') || 'auto';
-  
-  // If user explicitly chose textarea, respect that
-  if (pref === 'textarea') {
-    return false;
+  const use = shouldUseVimCore({ checkCompatibility: checkBrowserCompatibility });
+  if (!use) {
+    const state = getVimModeState();
+    if (!state.enabled) {
+      console.warn('[VimEditor] Disabled after failures. Reset in settings to retry.');
+    }
   }
-
-  // Check browser compatibility (SharedArrayBuffer, Atomics)
-  const compatError = checkBrowserCompatibility();
-  if (compatError) {
-    console.warn('[VimEditor] Browser not compatible:', compatError);
-    return false;
-  }
-
-  // Check viewport width (desktop: >= 768px)
-  // Skip this check if user explicitly chose vim
-  if (pref !== 'vim' && window.innerWidth < 768) {
-    return false;
-  }
-
-  // Check circuit breaker state
-  const state = getVimModeState();
-  if (!state.enabled) {
-    return false;
-  }
-
-  // Reset failure counter after 24 hours
-  if (state.failures > 0 && Date.now() - state.lastFailure > 86400000) {
-    state.failures = 0;
-    setVimModeState(state);
-  }
-
-  return true;
+  return use;
 }
 
 // --- editor (textarea fallback + vim mode integration) ---
@@ -823,8 +776,9 @@ function openSettingsModal() {
   modal.hidden = false;
   
   // Load current preference
-  const pref = localStorage.getItem('nr.editorPref') || 'auto';
-  document.querySelector(`input[name="editor-mode"][value="${pref}"]`).checked = true;
+  const pref = getEditorPreference();
+  const radio = document.querySelector(`input[name="editor-mode"][value="${pref}"]`);
+  if (radio) radio.checked = true;
   
   // Update circuit breaker status
   updateVimStatus();
@@ -853,12 +807,12 @@ function updateVimStatus() {
 function saveEditorPreference() {
   const selected = document.querySelector('input[name="editor-mode"]:checked');
   if (selected) {
-    localStorage.setItem('nr.editorPref', selected.value);
+    setEditorPreference(selected.value);
   }
 }
 
 function resetCircuitBreaker() {
-  setVimModeState({ enabled: true, failures: 0, lastFailure: 0 });
+  resetVimCircuitBreaker();
   updateVimStatus();
   alert("Circuit breaker has been reset. Vim mode is now enabled.");
 }
