@@ -275,6 +275,45 @@ function markDirty() {
   }
 }
 
+/**
+ * Insert text at the current cursor position (used for resource embeds).
+ */
+function insertAtCursor(text) {
+  if (!text) return;
+  // Ensure lines array has content
+  if (lines.length === 0) lines = [''];
+
+  const line = lines[cursorLine] ?? '';
+  const before = line.slice(0, cursorCol);
+  const after = line.slice(cursorCol);
+
+  // If text contains newlines, split into multiple lines
+  const parts = text.split('\n');
+  if (parts.length === 1) {
+    lines[cursorLine] = before + text + after;
+    cursorCol += text.length;
+  } else {
+    const newLines = [
+      before + parts[0],
+      ...parts.slice(1, -1),
+      parts[parts.length - 1] + after,
+    ];
+    lines.splice(cursorLine, 1, ...newLines);
+    cursorLine += parts.length - 1;
+    cursorCol = parts[parts.length - 1].length;
+  }
+
+  markDirty();
+
+  // Re-render the buffer
+  term.clear();
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    term.writeln(lines[i]);
+  }
+  // Position cursor hint
+  term.write(`\x1b[${Math.min(cursorLine + 1, 30)};${cursorCol + 1}H`);
+}
+
 function updateStatusLine() {
   const modeText = vimMode === 'NORMAL' ? '' : `-- ${vimMode} --`;
   statusEl.textContent = modeText;
@@ -309,6 +348,9 @@ window.addEventListener('message', async (event) => {
         break;
       case 'vim:focus':
         term.focus();
+        break;
+      case 'vim:insert':
+        insertAtCursor(msg.content || '');
         break;
       default:
         console.warn('Unknown message type:', msg.type);

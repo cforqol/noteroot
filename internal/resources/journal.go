@@ -157,7 +157,7 @@ func (j *Journal) List(state string, limit int) ([]JournalEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("journal list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []JournalEntry
 	for rows.Next() {
@@ -245,7 +245,7 @@ func (j *Journal) CountByState() (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]int{}
 	for rows.Next() {
 		var state string

@@ -1,4 +1,5 @@
 import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
+import { uploadURL, markdownFor } from '/lib/upload.js';
 import {
   getVimModeState,
   setVimModeState,
@@ -751,6 +752,119 @@ function closeEditor() {
   $("editbody").hidden = false; // Ensure textarea is visible for next open
   setBanner("");
 }
+
+// --- Resource Upload (stage 5) ---
+
+async function uploadResource(file) {
+  if (!slug) throw new Error("no notebook selected");
+  const url = uploadURL(slug, file.name);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) {
+    let msg = `upload failed (${res.status})`;
+    try {
+      const j = await res.json();
+      if (j.error) msg = j.error;
+    } catch (_) { /* non-JSON error body */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// insertAtCursor inserts text into the textarea at the current selection.
+function insertAtCursor(text) {
+  const ta = $("editbody");
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+  ta.value = before + text + after;
+  const pos = start + text.length;
+  ta.selectionStart = ta.selectionEnd = pos;
+  ta.focus();
+}
+
+// insertIntoEditor inserts text at the cursor for whichever editor is active.
+async function insertIntoEditor(text) {
+  if (!editing) return;
+  if (editing.mode === 'textarea') {
+    insertAtCursor(text);
+    markDirty();
+  } else if (editing.mode === 'vim' && editing.editor) {
+    // Vim: send the text as an insert command via the bridge.
+    // The vim bridge supports vim:insert messages.
+    editing.editor.sendMessage({ type: 'vim:insert', content: text });
+    markDirty();
+  }
+}
+
+// handleFileUpload uploads a file and inserts the embed at the cursor.
+async function handleFileUpload(file) {
+  if (!editing) return;
+  $("savestate").textContent = `Uploading ${file.name}…`;
+  try {
+    const res = await uploadResource(file);
+    const md = markdownFor(slug, res);
+    await insertIntoEditor(md);
+    $("savestate").textContent = res.created
+      ? `Uploaded ${file.name} (${res.sha.slice(0, 8)}…)`
+      : `${file.name} already uploaded (dedup)`;
+  } catch (e) {
+    $("savestate").textContent = `Upload failed: ${e.message}`;
+  }
+}
+
+// setupDropZone wires drag-and-drop onto the editor container.
+function setupDropZone() {
+  const editorEl = $("editor");
+  if (!editorEl) return;
+
+  editorEl.addEventListener("dragover", (e) => {
+    if (!editing) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    editorEl.classList.add("drag-over");
+  });
+
+  editorEl.addEventListener("dragleave", (e) => {
+    // Only remove highlight when leaving the editor entirely.
+    if (e.target === editorEl) {
+      editorEl.classList.remove("drag-over");
+    }
+  });
+
+  editorEl.addEventListener("drop", (e) => {
+    if (!editing) return;
+    e.preventDefault();
+    editorEl.classList.remove("drag-over");
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    for (const file of files) {
+      handleFileUpload(file);
+    }
+  });
+
+  // Paste image from clipboard.
+  editorEl.addEventListener("paste", (e) => {
+    if (!editing) return;
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          handleFileUpload(file);
+        }
+      }
+    }
+  });
+}
+
+setupDropZone();
 
 $("editbtn")?.addEventListener("click", openEditor);
 $("savebtn")?.addEventListener("click", () => saveNote(true));

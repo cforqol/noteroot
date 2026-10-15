@@ -87,7 +87,7 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file field"})
 			return
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		filename = header.Filename
 		size = header.Size
 		mime = header.Header.Get("Content-Type")
@@ -199,7 +199,7 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read failed"})
 		return
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	// Look up the recorded MIME from the journal's committed entries.
 	mime := "application/octet-stream"

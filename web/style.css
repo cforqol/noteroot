@@ -54,6 +54,7 @@ article th, article td { border: 1px solid var(--line); padding: 4px 8px; }
 #content article { overflow-y: auto; }
 #editor { display: flex; flex-direction: column; height: 100%; padding: 12px 16px; gap: 8px; }
 #editor[hidden] { display: none; }
+#editor.drag-over { outline: 2px dashed var(--accent, #4a9eff); outline-offset: -4px; background: rgba(74, 158, 255, 0.05); }
 .toolbar { display: flex; align-items: center; gap: 10px; }
 .spacer { flex: 1; }
 #editbody { flex: 1; resize: none; background: var(--bg); color: var(--fg);

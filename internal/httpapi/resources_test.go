@@ -69,14 +69,6 @@ func TestUpload_rawBody(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var resp struct {
-		ID      string `json:"id"`
-		SHA     string `json:"sha"`
-		created bool   `json:"created"`
-		Size    int64  `json:"size"`
-		MIME    string `json:"mime"`
-	}
-	// Use map for created field (lowercase in JSON).
 	var raw map[string]any
 	decodeJSON(t, rec, &raw)
 	sha, _ := raw["sha"].(string)
@@ -89,7 +81,6 @@ func TestUpload_rawBody(t *testing.T) {
 	if raw["mime"] != "text/plain" {
 		t.Errorf("mime = %v", raw["mime"])
 	}
-	_ = resp
 }
 
 func TestUpload_multipart(t *testing.T) {
