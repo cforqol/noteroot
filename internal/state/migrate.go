@@ -29,6 +29,17 @@ var migrations = []string{
 		acquired_at INTEGER NOT NULL,
 		expires_at  INTEGER NOT NULL
 	);`,
+	`CREATE TABLE IF NOT EXISTS upload_journal (
+		id          TEXT PRIMARY KEY,
+		filename    TEXT NOT NULL,
+		size        INTEGER NOT NULL,
+		mime        TEXT NOT NULL,
+		sha         TEXT,
+		state       TEXT NOT NULL,
+		created_at  INTEGER NOT NULL,
+		updated_at  INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS upload_journal_state ON upload_journal(state);`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
