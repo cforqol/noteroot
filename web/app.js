@@ -215,9 +215,11 @@ class VimEditor {
 
   async open(path, content, baseSha) {
     try {
-      // Show container
+      // Show container and loading indicator
       const container = $('vim-container');
+      const loading = $('vim-loading');
       container.hidden = false;
+      loading.hidden = false;
 
       // Create tmp file path (vim.wasm uses virtual filesystem)
       this.tmpFilePath = `/tmp/${path.replace(/\//g, '_')}`;
@@ -234,9 +236,16 @@ class VimEditor {
       this.vim.onError = (err) => {
         console.error('[VimEditor] Error:', err);
         recordVimFailure();
+        loading.hidden = true;
         if (this.onCloseCallback) {
           this.onCloseCallback(true);
         }
+      };
+
+      this.vim.onVimInit = () => {
+        // Hide loading indicator when Vim is ready
+        loading.hidden = true;
+        console.log('[VimEditor] Vim initialized and ready');
       };
 
       this.vim.onVimExit = (status) => {
@@ -260,6 +269,8 @@ class VimEditor {
       
     } catch (error) {
       console.error('[VimEditor] Failed to open:', error);
+      const loading = $('vim-loading');
+      loading.hidden = true;
       recordVimFailure();
       throw error;
     }

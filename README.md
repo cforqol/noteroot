@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 4 (in progress) — Vim mode Phase 1 complete: desktop editor with iframe sandbox, postMessage bridge, mode detection, circuit breaker, fallback to textarea. Mock vim implementation; WASI-vim integration in Phase 3.
+> **Status:** stage 4 complete — Vim mode with real WASI-vim (rhysd/vim.wasm): desktop editor with Web Worker isolation, full Vim functionality, circuit breaker with automatic fallback, settings UI for mode preferences, SharedArrayBuffer + Atomics for blocking wait, mobile-optimized textarea fallback.
 
 ---
 
