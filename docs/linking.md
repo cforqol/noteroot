@@ -4,7 +4,7 @@ Design for note identity and `[[wikilinks]]` with backlinks and forward
 links, in the spirit of Joplin and SilverBullet. Lands the two items
 deferred from stage 3: server-side ULID minting and wikilinks/backlinks.
 
-Status: in progress.
+Status: backend complete (slices 1–5) and UI complete (slice 6).
 
 ## 1. Why identity comes first
 
@@ -99,15 +99,24 @@ CREATE TABLE links (
 );
 ```
 
-`docs` gains `id` and `aliases` columns (space-joined) for the
-resolution map. Both are derived — the index stays fully disposable
-(ADR 0002 unchanged).
+`docs` gains `id` and `aliases` columns for the resolution map; `links`
+gains a `label` column (the wikilink label text, `''` when absent).
+Aliases are stored **newline-joined** (`strings.Join(aliases, "\n")`),
+not space-joined as first drafted — alias values may contain spaces, and
+newline is the only delimiter that cannot appear inside a single alias.
+All columns are derived — the index stays fully disposable (ADR 0002
+unchanged).
 
-Build/Update: each changed note's body is scanned for `[[...]]` targets;
-after all docs are read, a resolution map (id → path, path → path, title
-→ path, alias → path) is built from the current vault state and each raw
-target is resolved. Rows for changed notes are replaced; rows for gone
-notes are deleted.
+Build/Update: each changed note's body is scanned for `[[...]]`
+targets; after all docs are read, a resolution map is built from the
+current vault state (uid → path from `note_identity`, restricted to
+paths still indexed; then unique docs.id → path, path/stem → path,
+unique title → path, unique alias → path; per-doc aliases are deduped,
+first match wins, later classes never override earlier ones) and each
+raw target is resolved. Rows for changed notes are replaced; rows for
+gone notes are deleted; whenever anything changed, `to_path` for *all*
+rows is reconciled so renamed/moved/retitled targets re-resolve (stale
+links die visibly instead of silently pointing at old paths).
 
 ## 7. API
 

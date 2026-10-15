@@ -29,12 +29,16 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	idx, _, err := index.Open(ctx, nb.Layout.IndexDB())
+	idx, _, err := index.Open(ctx, nb.Layout.IndexDB(), nb.Layout.StateDB())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "index unavailable"})
 		return
 	}
-	defer idx.Close()
+	defer func() {
+		if err := idx.Close(); err != nil {
+			s.log.Warn("index close failed", "notebook", slug, "err", err)
+		}
+	}()
 	if _, err := idx.Update(ctx, v); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "index update failed"})
 		return

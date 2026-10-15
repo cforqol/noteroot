@@ -30,6 +30,7 @@ var migrations = []string{
 		to_path   TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (from_path, target)
 	);`,
+	`ALTER TABLE links ADD COLUMN label TEXT NOT NULL DEFAULT '';`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {

@@ -29,7 +29,7 @@ func writeTestManifest(t *testing.T, dir string, slug string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	m := notebooks.Manifest{
 		ID:            "id-" + slug,
 		Slug:          slug,

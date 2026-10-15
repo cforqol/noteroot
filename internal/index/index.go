@@ -8,6 +8,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"noteroot/internal/frontmatter"
+	"noteroot/internal/markdown"
 	"noteroot/internal/state"
 	"noteroot/internal/vault"
 )
@@ -22,24 +24,39 @@ import (
 // Index is a per-notebook FTS5 search index over vault notes.
 type Index struct {
 	db *state.DB
+	st *state.DB
 }
 
 // Open creates or opens the index database, quarantining corrupt files.
-// The parent directory is created when missing.
-func Open(ctx context.Context, dbPath string) (*Index, bool, error) {
+// The parent directory is created when missing. stateDBPath is the
+// notebook's durable state.db: the index holds it open because link
+// resolution reads note_identity (design §5.1) and the backfill pass
+// (design §3) writes it during Build/Update.
+func Open(ctx context.Context, dbPath, stateDBPath string) (*Index, bool, error) {
 	if dir := filepath.Dir(dbPath); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, false, err
 		}
 	}
-	db, rebuilt, err := state.OpenDB(ctx, dbPath, Migrate)
+	st, stRebuilt, err := state.Open(ctx, stateDBPath)
 	if err != nil {
 		return nil, false, err
 	}
-	return &Index{db: db}, rebuilt, nil
+	db, rebuilt, err := state.OpenDB(ctx, dbPath, Migrate)
+	if err != nil {
+		_ = st.Close()
+		return nil, false, err
+	}
+	return &Index{db: db, st: st}, rebuilt || stRebuilt, nil
 }
 
-func (x *Index) Close() error { return x.db.Close() }
+func (x *Index) Close() error {
+	err := x.db.Close()
+	if stErr := x.st.Close(); err == nil {
+		err = stErr
+	}
+	return err
+}
 
 // Stats reports what a Build or Update did. Files is notes scanned;
 // Updated, Deleted and Skipped classify the notes that needed action.
@@ -73,6 +90,19 @@ func (x *Index) Build(ctx context.Context, v *vault.Vault) (Stats, error) {
 	if err := ctx.Err(); err != nil {
 		return Stats{}, err
 	}
+	// Backfill note_identity before resolving: the durable map feeds id
+	// links (design §5.1) and a full rebuild is the one moment where a
+	// full vault pass is cheap enough to be free (design §3).
+	if _, err := x.st.SyncIdentityFromVault(ctx, v); err != nil {
+		return Stats{}, err
+	}
+	if err := x.metaSet(ctx, metaIdentitySynced, "1"); err != nil {
+		return Stats{}, err
+	}
+	idMap, err := x.st.IdentityMap(ctx)
+	if err != nil {
+		return Stats{}, err
+	}
 	tx, err := x.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Stats{}, err
@@ -96,7 +126,7 @@ func (x *Index) Build(ctx context.Context, v *vault.Vault) (Stats, error) {
 		}
 	}
 	// Build resolution map and store links
-	resolver := buildResolver(docs)
+	resolver := buildResolver(docs, idMap)
 	for _, d := range docs {
 		if err := storeLinks(ctx, tx, d, resolver); err != nil {
 			_ = tx.Rollback()
@@ -146,6 +176,12 @@ func (x *Index) Update(ctx context.Context, v *vault.Vault) (Stats, error) {
 			gone = append(gone, p)
 		}
 	}
+	// Keep note_identity in step with what this Update already knows
+	// changed or vanished (design §3 backfill): nothing else can differ
+	// from the vault without tripping the mtime/size comparison above.
+	if err := x.syncIdentity(ctx, v, changed, gone, len(notes) > 0); err != nil {
+		return Stats{}, err
+	}
 	if len(changed) == 0 && len(gone) == 0 {
 		return stats, nil
 	}
@@ -173,26 +209,36 @@ func (x *Index) Update(ctx context.Context, v *vault.Vault) (Stats, error) {
 			return Stats{}, err
 		}
 	}
-	// Rebuild links for changed docs
-	if len(changed) > 0 {
-		// Build resolver from ALL current docs (changed + unchanged) for accurate resolution
-		allDocs, err := x.loadAllDocs(ctx, tx)
-		if err != nil {
+	// Rebuild links for changed docs from a resolver over ALL current
+	// docs (changed + unchanged) plus the durable identity map, then
+	// reconcile every stored row: an edit that never touched the linking
+	// note can still re-point or dead-end its targets (title change,
+	// rename, deletion).
+	allDocs, err := x.loadAllDocs(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback()
+		return Stats{}, err
+	}
+	idMap, err := x.st.IdentityMap(ctx)
+	if err != nil {
+		_ = tx.Rollback()
+		return Stats{}, err
+	}
+	resolver := buildResolver(allDocs, idMap)
+	for _, d := range changed {
+		// Delete old links first
+		if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE from_path = ?`, d.path); err != nil {
 			_ = tx.Rollback()
 			return Stats{}, err
 		}
-		resolver := buildResolver(allDocs)
-		for _, d := range changed {
-			// Delete old links first
-			if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE from_path = ?`, d.path); err != nil {
-				_ = tx.Rollback()
-				return Stats{}, err
-			}
-			if err := storeLinks(ctx, tx, d, resolver); err != nil {
-				_ = tx.Rollback()
-				return Stats{}, err
-			}
+		if err := storeLinks(ctx, tx, d, resolver); err != nil {
+			_ = tx.Rollback()
+			return Stats{}, err
 		}
+	}
+	if err := reconcileLinks(ctx, tx, resolver); err != nil {
+		_ = tx.Rollback()
+		return Stats{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Stats{}, err
@@ -200,6 +246,98 @@ func (x *Index) Update(ctx context.Context, v *vault.Vault) (Stats, error) {
 	stats.Updated = len(changed)
 	stats.Deleted = len(gone)
 	return stats, nil
+}
+
+// metaIdentitySynced marks the one-time full backfill of note_identity
+// as done; after that only changed/gone paths are synced.
+const metaIdentitySynced = "identity_synced"
+
+func (x *Index) metaSet(ctx context.Context, key, value string) error {
+	_, err := x.db.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// syncIdentity applies the identity backfill rules to one Update round.
+// A full vault pass runs when the marker is missing (first run after an
+// upgrade or index rebuild) or when the map is empty while notes exist
+// (state.db recreated under a healthy index.db); otherwise only the
+// changed and gone paths are touched.
+func (x *Index) syncIdentity(ctx context.Context, v *vault.Vault, changed []doc, gone []string, hasNotes bool) error {
+	marker, err := x.metaGet(ctx, metaIdentitySynced)
+	if err != nil {
+		return err
+	}
+	full := marker != "1"
+	if !full {
+		var n int
+		if err := x.st.QueryRowContext(ctx, `SELECT COUNT(*) FROM note_identity`).Scan(&n); err != nil {
+			return err
+		}
+		full = n == 0 && hasNotes
+	}
+	if full {
+		if _, err := x.st.SyncIdentityFromVault(ctx, v); err != nil {
+			return err
+		}
+		return x.metaSet(ctx, metaIdentitySynced, "1")
+	}
+	updates := make(map[string]string, len(changed))
+	for _, d := range changed {
+		updates[d.path] = d.id
+	}
+	_, err = x.st.SyncIdentityPaths(ctx, updates, gone)
+	return err
+}
+
+func (x *Index) metaGet(ctx context.Context, key string) (string, error) {
+	var v string
+	err := x.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	return v, nil
+}
+
+// reconcileLinks re-resolves every stored link row against resolver and
+// rewrites the rows whose to_path drifted. Stale to_path is a correctness
+// bug, not a freshness nicety: a deleted target must become a dead link,
+// a renamed title must re-point, and the rendered HTML — which reads
+// these rows — must agree with the panels.
+func reconcileLinks(ctx context.Context, tx *sql.Tx, resolver map[string]string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT from_path, target, to_path FROM links`)
+	if err != nil {
+		return err
+	}
+	type drift struct{ from, target, want string }
+	var fixes []drift
+	for rows.Next() {
+		var from, target, cur string
+		if err := rows.Scan(&from, &target, &cur); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if want := resolver[target]; want != cur {
+			fixes = append(fixes, drift{from, target, want})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, f := range fixes {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE links SET to_path = ? WHERE from_path = ? AND target = ?`,
+			f.want, f.from, f.target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const defaultLimit = 50
@@ -218,7 +356,7 @@ func (x *Index) Search(ctx context.Context, query string, limit int) ([]Hit, err
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var hits []Hit
 	for rows.Next() {
 		var h Hit
@@ -240,7 +378,7 @@ type doc struct {
 	aliases string
 	tags    string
 	body    string
-	links   []string // raw wikilink targets extracted from body
+	links   []markdown.Wikilink // parsed by the same extension that renders them
 	mtime   int64
 	size    int64
 }
@@ -299,45 +437,13 @@ func readOne(v *vault.Vault, n *vault.Node) (doc, bool) {
 		path:    rel,
 		title:   title,
 		id:      parsed.ID,
-		aliases: strings.Join(aliases, " "),
+		aliases: strings.Join(aliases, "\n"),
 		tags:    strings.Join(frontmatter.Strings(parsed.Meta, "tags"), " "),
 		body:    string(parsed.Body),
-		links:   extractWikilinks(parsed.Body),
+		links:   markdown.ExtractWikilinks(parsed.Body),
 		mtime:   n.ModTime,
 		size:    n.Size,
 	}, true
-}
-
-// extractWikilinks scans markdown for [[target]] and [[target|label]]
-// patterns and returns unique targets. Does not resolve; stores raw text.
-func extractWikilinks(body []byte) []string {
-	var targets []string
-	seen := make(map[string]bool)
-	s := string(body)
-	for i := 0; i < len(s); {
-		if i+4 < len(s) && s[i:i+2] == "[[" {
-			end := strings.Index(s[i+2:], "]]")
-			if end < 0 {
-				i++
-				continue
-			}
-			content := s[i+2 : i+2+end]
-			// Extract target (before pipe if present)
-			target := content
-			if pipe := strings.IndexByte(content, '|'); pipe >= 0 {
-				target = content[:pipe]
-			}
-			target = strings.TrimSpace(target)
-			if target != "" && !seen[target] {
-				targets = append(targets, target)
-				seen[target] = true
-			}
-			i += 2 + end + 2
-		} else {
-			i++
-		}
-	}
-	return targets
 }
 
 func insertDoc(ctx context.Context, tx *sql.Tx, d doc) error {
@@ -378,7 +484,7 @@ func (x *Index) known(ctx context.Context) (map[string]stored, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]stored{}
 	for rows.Next() {
 		var p string
@@ -398,7 +504,7 @@ func (x *Index) loadAllDocs(ctx context.Context, tx *sql.Tx) ([]doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var docs []doc
 	for rows.Next() {
 		var d doc
@@ -410,39 +516,101 @@ func (x *Index) loadAllDocs(ctx context.Context, tx *sql.Tx) ([]doc, error) {
 	return docs, rows.Err()
 }
 
-// buildResolver creates a resolution map from docs: id→path, path→path,
-// title→path, alias→path. Only unique matches are added; ambiguous titles
-// or aliases are omitted.
-func buildResolver(docs []doc) map[string]string {
+// buildResolver creates the resolution map in design §5 order — exact
+// id, path stem, unique title, unique alias — first match wins, so a
+// later class can never shadow an earlier one.
+//
+// idMap is the durable note_identity map (uid→path) behind §5.1: ids it
+// owns resolve even when the frontmatter id was lost, as long as the
+// path is still indexed. Ids parsed from frontmatter count only when
+// they are well-formed and unique across the vault — two notes sharing
+// an id is ambiguous and renders dead rather than guessing.
+//
+// Aliases are newline-joined in doc.aliases (one entry per line) so a
+// multi-word alias stays one alias; each doc counts an alias at most
+// once, and only aliases unique across docs resolve.
+func buildResolver(docs []doc, idMap map[string]string) map[string]string {
 	res := make(map[string]string)
-	titleCount := make(map[string]int)
-	aliasCount := make(map[string]int)
-	
-	// Count occurrences first
+
+	have := make(map[string]bool, len(docs))
 	for _, d := range docs {
-		titleCount[d.title]++
-		for _, a := range strings.Fields(d.aliases) {
-			aliasCount[a]++
+		have[d.path] = true
+	}
+
+	// 1. Exact id: durable map first, then unique frontmatter ids that
+	// the map does not already own.
+	for uid, p := range idMap {
+		if !frontmatter.ValidID(uid) || !have[p] {
+			continue
+		}
+		if _, exists := res[uid]; !exists {
+			res[uid] = p
 		}
 	}
-	
-	// Build map with uniqueness check
+	idCount := make(map[string]int, len(docs))
 	for _, d := range docs {
-		// ID → path (always unique by database constraint)
-		if d.id != "" {
+		if d.id != "" && frontmatter.ValidID(d.id) {
+			idCount[d.id]++
+		}
+	}
+	for _, d := range docs {
+		if d.id == "" || idCount[d.id] != 1 {
+			continue
+		}
+		if _, exists := res[d.id]; !exists {
 			res[d.id] = d.path
 		}
-		// path stem → path (with and without .md)
+	}
+
+	// 2. Path stem and full path.
+	for _, d := range docs {
 		stem := strings.TrimSuffix(d.path, ".md")
-		res[stem] = d.path
-		res[d.path] = d.path
-		// title → path (only if unique)
-		if titleCount[d.title] == 1 {
+		if _, exists := res[stem]; !exists {
+			res[stem] = d.path
+		}
+		if _, exists := res[d.path]; !exists {
+			res[d.path] = d.path
+		}
+	}
+
+	// 3. Unique titles (case-sensitive, per design §5), as a full class
+	// before aliases so a title never loses to another note's alias.
+	titleCount := make(map[string]int, len(docs))
+	for _, d := range docs {
+		titleCount[d.title]++
+	}
+	for _, d := range docs {
+		if titleCount[d.title] != 1 {
+			continue
+		}
+		if _, exists := res[d.title]; !exists {
 			res[d.title] = d.path
 		}
-		// alias → path (only if unique)
-		for _, a := range strings.Fields(d.aliases) {
-			if aliasCount[a] == 1 {
+	}
+
+	// 4. Unique aliases, counted per doc so one note repeating an alias
+	// cannot make its own alias ambiguous; they only fill keys the
+	// earlier classes left open.
+	aliasCount := make(map[string]int)
+	aliasSets := make([]map[string]bool, len(docs))
+	for i, d := range docs {
+		set := make(map[string]bool)
+		for _, a := range strings.Split(d.aliases, "\n") {
+			a = strings.TrimSpace(a)
+			if a == "" || set[a] {
+				continue
+			}
+			set[a] = true
+			aliasCount[a]++
+		}
+		aliasSets[i] = set
+	}
+	for i, d := range docs {
+		for a := range aliasSets[i] {
+			if aliasCount[a] != 1 {
+				continue
+			}
+			if _, exists := res[a]; !exists {
 				res[a] = d.path
 			}
 		}
@@ -450,24 +618,28 @@ func buildResolver(docs []doc) map[string]string {
 	return res
 }
 
-// storeLinks resolves each wikilink target in doc and inserts a links row.
+// storeLinks resolves each wikilink in doc and inserts a links row,
+// keeping the display label so the outgoing panel can show it.
 func storeLinks(ctx context.Context, tx *sql.Tx, d doc, resolver map[string]string) error {
-	for _, target := range d.links {
-		toPath := resolver[target]
+	for _, wl := range d.links {
+		toPath := resolver[wl.Target]
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO links(from_path, target, to_path) VALUES (?, ?, ?)`,
-			d.path, target, toPath); err != nil {
+			`INSERT INTO links(from_path, target, to_path, label) VALUES (?, ?, ?, ?)`,
+			d.path, wl.Target, toPath, wl.Label); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Link describes one wikilink with its resolution status.
+// Link describes one wikilink with its resolution status. JSON tags pin
+// the API shape of design §7 (lowercase keys; label only when the
+// source wikilink set one).
 type Link struct {
-	Target string // raw wikilink text
-	Path   string // resolved path, empty if unresolved
-	Title  string // title of resolved note, empty if unresolved
+	Target string `json:"target,omitempty"` // raw wikilink target text
+	Path   string `json:"path"`             // resolved path, "" if unresolved
+	Title  string `json:"title"`            // title of resolved note, "" if unresolved
+	Label  string `json:"label,omitempty"`  // display text when the source used [[target|label]]
 }
 
 // Backlinks returns notes that link to the given path (incoming).
@@ -481,7 +653,7 @@ func (x *Index) Backlinks(ctx context.Context, targetPath string) ([]Link, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var links []Link
 	for rows.Next() {
 		var link Link
@@ -496,7 +668,7 @@ func (x *Index) Backlinks(ctx context.Context, targetPath string) ([]Link, error
 // Outgoing returns wikilinks from the given path with resolution (forward).
 func (x *Index) Outgoing(ctx context.Context, fromPath string) ([]Link, error) {
 	rows, err := x.db.QueryContext(ctx, `
-		SELECT l.target, l.to_path, COALESCE(d.title, '') AS title
+		SELECT l.target, l.to_path, COALESCE(d.title, '') AS title, l.label
 		FROM links l
 		LEFT JOIN docs d ON d.path = l.to_path
 		WHERE l.from_path = ?
@@ -504,42 +676,14 @@ func (x *Index) Outgoing(ctx context.Context, fromPath string) ([]Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var links []Link
 	for rows.Next() {
 		var link Link
-		if err := rows.Scan(&link.Target, &link.Path, &link.Title); err != nil {
+		if err := rows.Scan(&link.Target, &link.Path, &link.Title, &link.Label); err != nil {
 			return nil, err
 		}
 		links = append(links, link)
 	}
 	return links, rows.Err()
-}
-
-// Resolver builds and returns a function that resolves wikilink targets to
-// paths using the current index state.
-func (x *Index) Resolver(ctx context.Context) (func(target string) (string, bool), error) {
-	rows, err := x.db.QueryContext(ctx, `SELECT path, id, title, aliases FROM docs`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	
-	var docs []doc
-	for rows.Next() {
-		var d doc
-		if err := rows.Scan(&d.path, &d.id, &d.title, &d.aliases); err != nil {
-			return nil, err
-		}
-		docs = append(docs, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	
-	resMap := buildResolver(docs)
-	return func(target string) (string, bool) {
-		path, ok := resMap[target]
-		return path, ok
-	}, nil
 }

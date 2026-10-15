@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -8,8 +9,27 @@ import (
 
 	"noteroot/internal/frontmatter"
 	"noteroot/internal/git"
+	"noteroot/internal/notebooks"
+	"noteroot/internal/state"
 	"noteroot/internal/vault"
 )
+
+// upsertIdentity records the note's durable id after a successful write
+// (design §3). Failure is logged, never surfaced: the note is already
+// saved, and the backfill pass on index Update repairs the map. A uid
+// already bound to another path (copy-pasted frontmatter) lands here
+// too — the UNIQUE index keeps the first mapping.
+func (s *Server) upsertIdentity(ctx context.Context, nb *notebooks.Notebook, rel, id string) {
+	db, _, err := state.Open(ctx, nb.Layout.StateDB())
+	if err != nil {
+		s.log.Warn("identity open failed", "notebook", nb.Manifest.Slug, "err", err)
+		return
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.UpsertIdentity(ctx, rel, id); err != nil {
+		s.log.Warn("identity upsert failed", "notebook", nb.Manifest.Slug, "path", rel, "err", err)
+	}
+}
 
 func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
@@ -37,6 +57,17 @@ func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 	}
 	force := isForce(r)
 
+	// Mint a durable identity when the note has none (design §3): no
+	// frontmatter block, no id line, or a malformed id. Existing valid
+	// ids are never rewritten. Textual injection preserves the author's
+	// formatting — the id line is the only thing touched.
+	fm := frontmatter.Parse(body)
+	id := fm.ID
+	if !frontmatter.ValidID(id) {
+		id = frontmatter.NewID()
+		body = frontmatter.WithID(body, id)
+	}
+
 	actor, _ := r.Context().Value(keyUser).(string)
 	res, err := v.Write(rel, body, vault.WriteOpts{BaseSha: base, Actor: actor})
 	external := false
@@ -56,10 +87,11 @@ func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.upsertIdentity(r.Context(), nb, rel, id)
 	s.reindex(r, nb, v)
 	s.markGitDirty(nb, git.Op{Action: "write", Path: rel, Actor: actor})
 
-	resp := map[string]any{"path": rel, "sha": res.Sha, "mtime": res.ModTime.Unix()}
+	resp := map[string]any{"path": rel, "id": id, "sha": res.Sha, "mtime": res.ModTime.Unix()}
 	if external {
 		resp["externalChange"] = true
 	}

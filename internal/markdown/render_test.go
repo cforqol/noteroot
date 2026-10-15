@@ -21,7 +21,8 @@ func render(t *testing.T, src string) string {
 }
 
 func TestNew_singleton(t *testing.T) {
-	if New() != New() {
+	first := New()
+	if New() != first {
 		t.Error("New should return the shared renderer")
 	}
 }

@@ -2,13 +2,17 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"noteroot/internal/config"
+	"noteroot/internal/frontmatter"
+	"noteroot/internal/state"
 )
 
 func put(t *testing.T, srv *Server, target string, body []byte, hdr map[string]string) *httptest.ResponseRecorder {
@@ -24,6 +28,21 @@ func put(t *testing.T, srv *Server, target string, body []byte, hdr map[string]s
 
 func putNotePath(p string) string { return "/n/work/note?path=" + p }
 
+// wantMintedRaw asserts the stored note carries a fresh valid id in a
+// frontmatter block plus the submitted body — design §3 mint-on-write.
+// Returns the stored id.
+func wantMintedRaw(t *testing.T, raw, wantBody string) string {
+	t.Helper()
+	doc := frontmatter.Parse([]byte(raw))
+	if !frontmatter.ValidID(doc.ID) {
+		t.Fatalf("raw = %q, want a fresh valid id (design §3)", raw)
+	}
+	if !strings.Contains(raw, wantBody) {
+		t.Errorf("raw = %q, want it to contain %q", raw, wantBody)
+	}
+	return doc.ID
+}
+
 func TestPut_create(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"keep.md": "x"}))
 	rec := put(t, srv, putNotePath("n.md"), []byte("# New\n"),
@@ -33,6 +52,7 @@ func TestPut_create(t *testing.T) {
 	}
 	var body struct {
 		Path string `json:"path"`
+		Id   string `json:"id"`
 		Sha  string `json:"sha"`
 	}
 	_ = json.NewDecoder(rec.Body).Decode(&body)
@@ -40,8 +60,12 @@ func TestPut_create(t *testing.T) {
 		t.Errorf("body = %+v", body)
 	}
 	raw := get(t, srv, "/n/work/raw?path=n.md", nil)
-	if raw.Code != http.StatusOK || raw.Body.String() != "# New\n" {
-		t.Errorf("raw = %d %q", raw.Code, raw.Body)
+	if raw.Code != http.StatusOK {
+		t.Fatalf("raw = %d %s", raw.Code, raw.Body)
+	}
+	storedID := wantMintedRaw(t, raw.Body.String(), "# New\n")
+	if body.Id != storedID {
+		t.Errorf("response id = %q, want stored id %q", body.Id, storedID)
 	}
 }
 
@@ -52,9 +76,7 @@ func TestPut_updateWithMatchingBase(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}
-	if raw := get(t, srv, "/n/work/raw?path=n.md", nil); raw.Body.String() != "v2\n" {
-		t.Errorf("raw = %q", raw.Body)
-	}
+	wantMintedRaw(t, get(t, srv, "/n/work/raw?path=n.md", nil).Body.String(), "v2\n")
 }
 
 func TestPut_staleBaseConflict(t *testing.T) {
@@ -88,9 +110,7 @@ func TestPut_forceWins(t *testing.T) {
 	if !body.ExternalChange {
 		t.Error("expected externalChange=true")
 	}
-	if raw := get(t, srv, "/n/work/raw?path=n.md", nil); raw.Body.String() != "v2\n" {
-		t.Errorf("raw = %q", raw.Body)
-	}
+	wantMintedRaw(t, get(t, srv, "/n/work/raw?path=n.md", nil).Body.String(), "v2\n")
 }
 
 func TestPut_preconditions(t *testing.T) {
@@ -188,9 +208,7 @@ func TestPut_indexFailureStillWrites(t *testing.T) {
 	if rec := put(t, srv, putNotePath("n.md"), []byte("hello\n"), nil); rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: index failure must not fail the write", rec.Code)
 	}
-	if raw := get(t, srv, "/n/work/raw?path=n.md", nil); raw.Body.String() != "hello\n" {
-		t.Errorf("raw = %q", raw.Body)
-	}
+	wantMintedRaw(t, get(t, srv, "/n/work/raw?path=n.md", nil).Body.String(), "hello\n")
 }
 
 func TestPut_preconditionReadError(t *testing.T) {
@@ -208,5 +226,72 @@ func TestPut_preconditionReadError(t *testing.T) {
 	rec := put(t, srv, putNotePath("n.md"), []byte("v2\n"), map[string]string{"If-Match": `"abc"`})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPut_preservesExistingValidID(t *testing.T) {
+	const existing = "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"keep.md": "x"}))
+	rec := put(t, srv, putNotePath("n.md"),
+		[]byte("---\nid: "+existing+"\ntitle: Keep\n---\ncontent\n"), nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	if body.Id != existing {
+		t.Errorf("id = %q, want the existing %q (never rewritten)", body.Id, existing)
+	}
+	raw := get(t, srv, "/n/work/raw?path=n.md", nil).Body.String()
+	if !strings.Contains(raw, "id: "+existing) {
+		t.Errorf("raw = %q, want preserved id line", raw)
+	}
+}
+
+func TestPut_reMintsMalformedID(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"keep.md": "x"}))
+	rec := put(t, srv, putNotePath("n.md"),
+		[]byte("---\nid: nope\n---\ncontent\n"), nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	if !frontmatter.ValidID(body.Id) {
+		t.Fatalf("id = %q, want a fresh valid id", body.Id)
+	}
+	raw := get(t, srv, "/n/work/raw?path=n.md", nil).Body.String()
+	if !strings.Contains(raw, "id: "+body.Id) || strings.Contains(raw, "id: nope") {
+		t.Errorf("raw = %q, want malformed id line replaced", raw)
+	}
+}
+
+func TestPut_recordsIdentityMap(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"keep.md": "x"})
+	srv := newTestServer(t, config.AuthNone, reg)
+	rec := put(t, srv, putNotePath("n.md"), []byte("body\n"), nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	if !frontmatter.ValidID(body.Id) {
+		t.Fatalf("id = %q, want valid", body.Id)
+	}
+	nb, _ := reg.Get("work")
+	db, _, err := state.Open(context.Background(), nb.Layout.StateDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	uid, ok, err := db.UIDByPath(context.Background(), "n.md")
+	if err != nil || !ok || uid != body.Id {
+		t.Errorf("UIDByPath(n.md) = %q,%v,%v; want %q,true,nil", uid, ok, err, body.Id)
 	}
 }

@@ -55,6 +55,7 @@ async function openNote(path, btn) {
     if (n.renderError) html += `<div class="warn">render: ${esc(n.renderError)}</div>`;
     html += n.html;
     $("note").innerHTML = html;
+    $("note").append(linksPanels(n));
     $("note").scrollTop = 0;
     $("editbtn").hidden = false;
   } catch (e) {
@@ -62,6 +63,70 @@ async function openNote(path, btn) {
     $("editbtn").hidden = true;
   }
 }
+
+// --- linking panels (design §8): outgoing + backlinks below the note ---
+
+function panel(title, items, makeItem) {
+  if (!items || !items.length) return null;
+  const sec = document.createElement("section");
+  sec.className = "links-panel";
+  const h = document.createElement("h2");
+  h.textContent = title;
+  sec.append(h);
+  const ul = document.createElement("ul");
+  for (const item of items) ul.append(makeItem(item));
+  sec.append(ul);
+  return sec;
+}
+
+function noteLink(path, text) {
+  const a = document.createElement("a");
+  a.href = `/n/${encodeURIComponent(slug)}/note?path=${encodeURIComponent(path)}`;
+  a.className = "wikilink";
+  a.dataset.path = path;
+  a.textContent = text;
+  return a;
+}
+
+function linksPanels(n) {
+  const frag = document.createDocumentFragment();
+  const out = panel("Outgoing links", n.outgoing, (l) => {
+    const li = document.createElement("li");
+    if (l.path) {
+      li.append(noteLink(l.path, l.label || l.title || l.target));
+      const m = document.createElement("span");
+      m.className = "muted";
+      m.textContent = ` — ${l.path}`;
+      li.append(m);
+    } else {
+      const s = document.createElement("span");
+      s.className = "wikilink dead";
+      s.textContent = l.label || l.target;
+      s.title = "unresolved";
+      li.append(s);
+    }
+    return li;
+  });
+  const back = panel("Backlinks", n.backlinks, (l) => {
+    const li = document.createElement("li");
+    li.append(noteLink(l.path, l.title || l.path));
+    return li;
+  });
+  if (out) frag.append(out);
+  if (back) frag.append(back);
+  return frag;
+}
+
+// SPA navigation for resolved wikilinks: plain left-click stays in the
+// app; middle-click / cmd / ctrl / shift keep the browser default
+// (new tab, etc.) because the anchors are real hrefs (no-JS works too).
+$("note").addEventListener("click", (e) => {
+  const a = e.target.closest?.("a.wikilink[data-path]");
+  if (!a) return;
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  openNote(a.dataset.path, null);
+});
 
 async function boot() {
   const { notebooks } = await api("/api/v1/notebooks");

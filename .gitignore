@@ -8,3 +8,7 @@
 *.corrupt
 
 .serena/
+
+# Web test dependencies
+web/node_modules/
+web/package-lock.json

@@ -60,3 +60,10 @@ article th, article td { border: 1px solid var(--line); padding: 4px 8px; }
             border: 1px solid var(--line); border-radius: 6px; padding: 12px;
             font: 14px/1.6 ui-monospace, monospace; }
 #banner:empty { display: none; }
+article a.wikilink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+article .wikilink.dead { color: var(--muted); text-decoration: underline dotted; cursor: help; }
+.links-panel { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 14px; }
+.links-panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+                  color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+.links-panel ul { margin: 0; padding-left: 18px; }
+.links-panel li { margin: 2px 0; }

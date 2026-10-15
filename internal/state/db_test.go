@@ -14,7 +14,7 @@ func TestOpen_fresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if rebuilt {
 		t.Error("rebuilt = true for a fresh DB, want false")
@@ -30,13 +30,13 @@ func TestOpen_existingIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	db2, rebuilt, err := Open(ctx, path)
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	if rebuilt {
 		t.Error("rebuilt = true for existing intact DB, want false")
@@ -51,7 +51,7 @@ func TestOpen_migratesOnOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Verify note_identity table exists (created by migration)
 	var count int
@@ -70,7 +70,7 @@ func TestNeedsRebuild_noNotesOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	needs, _ := NeedsRebuild(ctx, db, 0)
 	if needs {
@@ -86,7 +86,7 @@ func TestNeedsRebuild_notesExistButDBEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	needs, reason := NeedsRebuild(ctx, db, 5)
 	if !needs {
@@ -105,7 +105,7 @@ func TestNeedsRebuild_populatedDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO note_identity(path, uid, first_seen, last_seen) VALUES ('a.md', 'uid-1', 1, 1)`)

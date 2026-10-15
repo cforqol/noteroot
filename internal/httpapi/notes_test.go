@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -125,7 +126,9 @@ func TestNote_sanitizesHTML(t *testing.T) {
 func TestNote_renderFailureFallsBackToEscapedPre(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": "hi <b>there</b>"}))
 	orig := renderNote
-	renderNote = func([]byte) ([]byte, error) { return nil, errors.New("render exploded") }
+	renderNote = func([]byte, func(string) (string, bool)) ([]byte, error) {
+		return nil, errors.New("render exploded")
+	}
 	t.Cleanup(func() { renderNote = orig })
 
 	rec := get(t, srv, notePath("n.md"), nil)
@@ -180,7 +183,7 @@ func TestNote_tooLarge(t *testing.T) {
 	if err := f.Truncate(vault.MaxReadBytes + 1); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	srv := newTestServer(t, config.AuthNone, reg)
 	rec := get(t, srv, notePath("big.md"), nil)
@@ -233,7 +236,7 @@ func TestRaw_tooLarge(t *testing.T) {
 	if err := f.Truncate(vault.MaxReadBytes + 1); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	srv := newTestServer(t, config.AuthNone, reg)
 	if rec := get(t, srv, "/n/work/raw?path=big.md", nil); rec.Code != http.StatusRequestEntityTooLarge {
@@ -353,5 +356,332 @@ func TestNote_responseCarriesSha(t *testing.T) {
 	}
 	if etag := rec.Header().Get("ETag"); etag != `"`+body.Sha+`"` {
 		t.Errorf("sha %q does not match ETag %q", body.Sha, etag)
+	}
+}
+
+// TestNote_linksIntegration covers design §7 end to end: the note
+// response carries backlinks/outgoing, and the rendered HTML resolves
+// wikilinks against the same links rows the panels read.
+func TestNote_linksIntegration(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"index.md":         "---\ntitle: Home\n---\nSee [[projects/plan|the plan]] and [[missing]].\n",
+		"projects/plan.md": "---\ntitle: Plan\n---\nBack to [[Home]].\n",
+	}))
+
+	// The linking note: outgoing shows resolution + label, backlinks
+	// arrive from the note that links here.
+	rec := get(t, srv, notePath("index.md"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var indexResp struct {
+		HTML      string `json:"html"`
+		Backlinks []struct {
+			Path  string `json:"path"`
+			Title string `json:"title"`
+		} `json:"backlinks"`
+		Outgoing []struct {
+			Target string `json:"target"`
+			Path   string `json:"path"`
+			Title  string `json:"title"`
+			Label  string `json:"label"`
+		} `json:"outgoing"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&indexResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexResp.Backlinks) != 1 ||
+		indexResp.Backlinks[0].Path != "projects/plan.md" ||
+		indexResp.Backlinks[0].Title != "Plan" {
+		t.Errorf("backlinks = %+v, want [{projects/plan.md Plan}]", indexResp.Backlinks)
+	}
+	if len(indexResp.Outgoing) != 2 {
+		t.Fatalf("outgoing = %+v, want 2 links", indexResp.Outgoing)
+	}
+	missing, planned := indexResp.Outgoing[0], indexResp.Outgoing[1]
+	if missing.Target != "missing" || missing.Path != "" {
+		t.Errorf("outgoing[0] = %+v, want unresolved 'missing'", missing)
+	}
+	if planned.Target != "projects/plan" || planned.Path != "projects/plan.md" || planned.Label != "the plan" {
+		t.Errorf("outgoing[1] = %+v, want resolved with label", planned)
+	}
+	// Rendered HTML reads the same rows: live link with SPA data-path,
+	// dead link as an inert span — never literal [[brackets]].
+	if !strings.Contains(indexResp.HTML, `href="/n/work/note?path=projects%2Fplan.md"`) ||
+		!strings.Contains(indexResp.HTML, `data-path="projects/plan.md"`) ||
+		!strings.Contains(indexResp.HTML, `>the plan</a>`) {
+		t.Errorf("html missing resolved wikilink: %s", indexResp.HTML)
+	}
+	if !strings.Contains(indexResp.HTML, `<span class="wikilink dead">missing</span>`) ||
+		strings.Contains(indexResp.HTML, "[[missing]]") {
+		t.Errorf("html missing dead span: %s", indexResp.HTML)
+	}
+
+	// The target note: incoming panel and the reciprocal link.
+	rec = get(t, srv, notePath("projects/plan.md"), nil)
+	var planResp struct {
+		HTML      string `json:"html"`
+		Backlinks []struct {
+			Path  string `json:"path"`
+			Title string `json:"title"`
+		} `json:"backlinks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&planResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(planResp.Backlinks) != 1 || planResp.Backlinks[0].Path != "index.md" {
+		t.Errorf("backlinks = %+v, want [{index.md}]", planResp.Backlinks)
+	}
+	if !strings.Contains(planResp.HTML, `href="/n/work/note?path=index.md"`) {
+		t.Errorf("html missing [[Home]] resolution: %s", planResp.HTML)
+	}
+}
+
+// TestNote_wikilinkHTMLStructure verifies the complete HTML structure
+// for wikilinks: resolved links have proper href, class, and data-path;
+// dead links are spans with appropriate styling hooks.
+func TestNote_wikilinkHTMLStructure(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"source.md": "---\ntitle: Source\n---\nResolved: [[target|custom label]]\nDead: [[nowhere]]\n",
+		"target.md": "---\ntitle: Target\n---\nContent.\n",
+	}))
+
+	rec := get(t, srv, notePath("source.md"), nil)
+	var resp struct {
+		HTML     string `json:"html"`
+		Outgoing []struct {
+			Target string `json:"target"`
+			Path   string `json:"path"`
+			Label  string `json:"label"`
+		} `json:"outgoing"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify resolved wikilink structure
+	tests := []struct {
+		name    string
+		want    string
+		missing string
+	}{
+		{"anchor tag", `<a href="/n/work/note?path=target.md"`, ""},
+		{"wikilink class", `class="wikilink"`, ""},
+		{"data-path attribute", `data-path="target.md"`, ""},
+		{"custom label text", `>custom label</a>`, ""},
+		{"no literal brackets", "", `[[target|custom label]]`},
+		{"dead span class", `<span class="wikilink dead">nowhere</span>`, ""},
+		{"no dead brackets", "", `[[nowhere]]`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.want != "" && !strings.Contains(resp.HTML, tt.want) {
+				t.Errorf("HTML missing %q:\n%s", tt.want, resp.HTML)
+			}
+			if tt.missing != "" && strings.Contains(resp.HTML, tt.missing) {
+				t.Errorf("HTML should not contain %q:\n%s", tt.missing, resp.HTML)
+			}
+		})
+	}
+
+	// Verify outgoing data matches HTML rendering (order may vary)
+	if len(resp.Outgoing) != 2 {
+		t.Fatalf("outgoing count = %d, want 2", len(resp.Outgoing))
+	}
+	
+	var resolved, unresolved *struct {
+		Target string `json:"target"`
+		Path   string `json:"path"`
+		Label  string `json:"label"`
+	}
+	for i := range resp.Outgoing {
+		if resp.Outgoing[i].Target == "target" {
+			resolved = &resp.Outgoing[i]
+		} else if resp.Outgoing[i].Target == "nowhere" {
+			unresolved = &resp.Outgoing[i]
+		}
+	}
+	
+	if resolved == nil || resolved.Path != "target.md" || resolved.Label != "custom label" {
+		t.Errorf("resolved link = %+v, want {target target.md custom label}", resolved)
+	}
+	if unresolved == nil || unresolved.Path != "" {
+		t.Errorf("unresolved link = %+v, want {nowhere  }", unresolved)
+	}
+}
+
+// TestNote_backlinksOutgoingJSONShape verifies the exact JSON structure
+// of backlinks and outgoing fields for UI consumption.
+func TestNote_backlinksOutgoingJSONShape(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"alpha.md": "---\ntitle: Alpha\naliases:\n  - A\n---\n[[beta]]\n",
+		"beta.md":  "---\ntitle: Beta\n---\n[[A|alias link]] and [[missing]].\n",
+	}))
+
+	rec := get(t, srv, notePath("beta.md"), nil)
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify backlinks structure (incoming from alpha)
+	backlinks, ok := resp["backlinks"].([]interface{})
+	if !ok || len(backlinks) != 1 {
+		t.Fatalf("backlinks = %v, want array with 1 item", resp["backlinks"])
+	}
+	bl := backlinks[0].(map[string]interface{})
+	if bl["path"] != "alpha.md" || bl["title"] != "Alpha" {
+		t.Errorf("backlinks[0] = %+v, want {path:alpha.md title:Alpha}", bl)
+	}
+	// Backlinks should not have target/label (omitempty)
+	if _, has := bl["target"]; has {
+		t.Errorf("backlinks should not include 'target' field")
+	}
+
+	// Verify outgoing structure (to alpha via alias, plus dead link)
+	outgoing, ok := resp["outgoing"].([]interface{})
+	if !ok || len(outgoing) != 2 {
+		t.Fatalf("outgoing = %v, want array with 2 items", resp["outgoing"])
+	}
+	
+	aliasLink := outgoing[0].(map[string]interface{})
+	if aliasLink["target"] != "A" || aliasLink["path"] != "alpha.md" ||
+		aliasLink["title"] != "Alpha" || aliasLink["label"] != "alias link" {
+		t.Errorf("outgoing[0] = %+v, want alias resolution with label", aliasLink)
+	}
+	
+	deadLink := outgoing[1].(map[string]interface{})
+	if deadLink["target"] != "missing" || deadLink["path"] != "" || deadLink["title"] != "" {
+		t.Errorf("outgoing[1] = %+v, want unresolved {target:missing path: title:}", deadLink)
+	}
+	// Empty label should be omitted (omitempty)
+	if _, has := deadLink["label"]; has {
+		t.Errorf("outgoing[1] should not include 'label' when empty")
+	}
+}
+
+// TestNote_wikilinkSPAAttributes verifies data-path extraction for the
+// SPA click handler (design §8: middle-click, cmd-click work via href).
+func TestNote_wikilinkSPAAttributes(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"index.md":             "[[nested/deep]]",
+		"nested/deep.md":       "---\ntitle: Deep\n---\nContent",
+		"paths with spaces.md": "[[nested/deep]]",
+	}))
+
+	tests := []struct {
+		notePath string
+		wantHref string
+		wantData string
+	}{
+		{
+			"index.md",
+			`href="/n/work/note?path=nested%2Fdeep.md"`,
+			`data-path="nested/deep.md"`,
+		},
+		{
+			"paths with spaces.md",
+			`href="/n/work/note?path=nested%2Fdeep.md"`,
+			`data-path="nested/deep.md"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.notePath, func(t *testing.T) {
+			rec := get(t, srv, notePath(tt.notePath), nil)
+			var resp struct{ HTML string }
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+
+			if !strings.Contains(resp.HTML, tt.wantHref) {
+				t.Errorf("HTML missing encoded href %q:\n%s", tt.wantHref, resp.HTML)
+			}
+			if !strings.Contains(resp.HTML, tt.wantData) {
+				t.Errorf("HTML missing data-path %q:\n%s", tt.wantData, resp.HTML)
+			}
+
+			// Verify it's a real anchor (middle-click and no-JS work)
+			if !strings.Contains(resp.HTML, `<a href=`) {
+				t.Errorf("resolved wikilink must be an anchor tag for href navigation")
+			}
+		})
+	}
+}
+
+// TestNote_panelDataConsistency verifies that the outgoing/backlinks
+// JSON data matches what the HTML renderer used (design §7: display
+// and data never disagree).
+func TestNote_panelDataConsistency(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"a.md": "---\ntitle: A\n---\n[[b|link to B]]\n",
+		"b.md": "---\ntitle: B\n---\n[[a]]\n",
+	}))
+
+	rec := get(t, srv, notePath("a.md"), nil)
+	var resp struct {
+		HTML     string `json:"html"`
+		Outgoing []struct {
+			Target string `json:"target"`
+			Path   string `json:"path"`
+			Label  string `json:"label"`
+		} `json:"outgoing"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	// The outgoing panel shows: target="b", path="b.md", label="link to B"
+	if len(resp.Outgoing) != 1 {
+		t.Fatalf("outgoing = %v, want 1 link", resp.Outgoing)
+	}
+	out := resp.Outgoing[0]
+
+	// The HTML must use the same resolution: path b.md
+	expectedHref := fmt.Sprintf(`href="/n/work/note?path=%s"`, url.QueryEscape(out.Path))
+	if !strings.Contains(resp.HTML, expectedHref) {
+		t.Errorf("HTML href disagrees with outgoing.path:\noutgoing: %+v\nHTML: %s",
+			out, resp.HTML)
+	}
+
+	// The label in HTML must match outgoing.label
+	expectedLabel := fmt.Sprintf(`>%s</a>`, out.Label)
+	if !strings.Contains(resp.HTML, expectedLabel) {
+		t.Errorf("HTML label disagrees with outgoing.label:\noutgoing: %+v\nHTML: %s",
+			out, resp.HTML)
+	}
+
+	// The data-path must match
+	expectedData := fmt.Sprintf(`data-path="%s"`, out.Path)
+	if !strings.Contains(resp.HTML, expectedData) {
+		t.Errorf("HTML data-path disagrees with outgoing.path:\noutgoing: %+v\nHTML: %s",
+			out, resp.HTML)
+	}
+}
+
+func TestNote_indexUnavailableStillRenders(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"n.md": "see [[x]] and more\n"})
+	nb, _ := reg.Get("work")
+	// Block the app dir so index.Open fails: opening the note must not.
+	if err := os.WriteFile(nb.Layout.App(), []byte("blocker"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(t, config.AuthNone, reg)
+	rec := get(t, srv, notePath("n.md"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (index trouble never blocks a note)", rec.Code)
+	}
+	var resp map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resp["backlinks"]; ok {
+		t.Error("backlinks must be omitted when the index is unavailable")
+	}
+	var html string
+	_ = json.Unmarshal(resp["html"], &html)
+	if !strings.Contains(html, `class="wikilink dead"`) {
+		t.Errorf("html = %q, want dead-span wikilinks", html)
 	}
 }

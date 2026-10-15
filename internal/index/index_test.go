@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -24,8 +23,8 @@ func writeNote(t *testing.T, root, rel, content string) {
 
 func openTestIndex(t *testing.T) *Index {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "index.db")
-	idx, rebuilt, err := Open(context.Background(), dbPath)
+	dir := t.TempDir()
+	idx, rebuilt, err := Open(context.Background(), filepath.Join(dir, "index.db"), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +62,11 @@ func TestOpen_corruptRebuilt(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("garbage-bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, rebuilt, err := Open(context.Background(), dbPath)
+	idx, rebuilt, err := Open(context.Background(), filepath.Join(dir, "index.db"), filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
+	defer func() { _ = idx.Close() }()
 	if !rebuilt {
 		t.Error("corrupt index.db: expected rebuilt=true")
 	}
@@ -350,7 +349,8 @@ func TestOpen_unwritablePath(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Open(context.Background(), filepath.Join(blocker, "index.db")); err == nil {
+	if _, _, err := Open(context.Background(),
+		filepath.Join(blocker, "index.db"), filepath.Join(blocker, "state.db")); err == nil {
 		t.Error("Open under a regular file: expected error")
 	}
 }
@@ -369,46 +369,23 @@ func TestSearch_defaultLimit(t *testing.T) {
 	}
 }
 
-func TestExtractWikilinks(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want []string
-	}{
-		{"empty", "", nil},
-		{"no links", "just plain text", nil},
-		{"single link", "See [[Other Note]].", []string{"Other Note"}},
-		{"with label", "See [[target|Custom Label]].", []string{"target"}},
-		{"multiple", "[[A]] and [[B]]", []string{"A", "B"}},
-		{"duplicate", "[[A]] and [[A]] again", []string{"A"}},
-		{"whitespace trimmed", "[[  spaced  ]]", []string{"spaced"}},
-		{"incomplete", "broken [[ open", nil},
-		{"nested not supported", "[[outer [[inner]]]]", []string{"outer [[inner"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractWikilinks([]byte(tt.body))
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("extractWikilinks() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuildResolver(t *testing.T) {
 	docs := []doc{
 		{path: "a.md", title: "Note A", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV00", aliases: "alpha"},
-		{path: "b.md", title: "Note B", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV01", aliases: "beta gamma"},
+		{path: "b.md", title: "Note B", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV01", aliases: "beta\ngamma"},
 		{path: "c.md", title: "Duplicate", id: "ID003", aliases: ""},
-		{path: "d.md", title: "Duplicate", id: "ID004", aliases: "alpha"}, // duplicate alias
+		{path: "d.md", title: "Duplicate", id: "", aliases: "alpha"}, // duplicate alias
 	}
-	res := buildResolver(docs)
-	
-	// ID resolution (always works)
+	res := buildResolver(docs, nil)
+
+	// ID resolution (well-formed ids only)
 	if res["01ARZ3NDEKTSV4RRFFQ69G5FAV00"] != "a.md" {
 		t.Errorf("01ARZ3NDEKTSV4RRFFQ69G5FAV00 should resolve to a.md")
 	}
-	
+	if _, ok := res["ID003"]; ok {
+		t.Errorf("malformed id must not resolve")
+	}
+
 	// Path resolution
 	if res["a.md"] != "a.md" {
 		t.Errorf("a.md should resolve to a.md")
@@ -416,45 +393,82 @@ func TestBuildResolver(t *testing.T) {
 	if res["a"] != "a.md" {
 		t.Errorf("a (stem) should resolve to a.md")
 	}
-	
+
 	// Unique title resolution
 	if res["Note A"] != "a.md" {
 		t.Errorf("Note A should resolve to a.md")
 	}
-	
+
 	// Ambiguous title should not resolve
 	if _, ok := res["Duplicate"]; ok {
 		t.Errorf("Duplicate title should not be in resolver")
 	}
-	
-	// Unique alias resolution
+
+	// Unique alias resolution (newline-joined multi-word storage)
 	if res["beta"] != "b.md" {
 		t.Errorf("beta should resolve to b.md")
 	}
-	
+
 	// Ambiguous alias should not resolve
 	if _, ok := res["alpha"]; ok {
 		t.Errorf("Duplicate alias 'alpha' should not be in resolver")
 	}
 }
 
+func TestBuildResolver_identityMapWinsAndFiltersStale(t *testing.T) {
+	docs := []doc{
+		{path: "lost.md", title: "Lost", id: ""}, // frontmatter id lost
+		{path: "other.md", title: "Other", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV09"},
+	}
+	idMap := map[string]string{
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV00": "lost.md",  // resolves despite lost frontmatter id
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV02": "gone.md",  // stale: path not indexed anymore
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV09": "other.md", // map owns the id
+		"not-a-valid-id":               "other.md", // malformed uid is never a key
+	}
+	res := buildResolver(docs, idMap)
+	if res["01ARZ3NDEKTSV4RRFFQ69G5FAV00"] != "lost.md" {
+		t.Errorf("identity map must resolve ids whose frontmatter id was lost, got %q",
+			res["01ARZ3NDEKTSV4RRFFQ69G5FAV00"])
+	}
+	if _, ok := res["01ARZ3NDEKTSV4RRFFQ69G5FAV02"]; ok {
+		t.Error("identity row for a path missing from the index must not resolve")
+	}
+	if _, ok := res["not-a-valid-id"]; ok {
+		t.Error("malformed uid must not become a resolver key")
+	}
+}
+
+func TestBuildResolver_titleBeatsAlias(t *testing.T) {
+	docs := []doc{
+		{path: "alias.md", title: "Alias Note", aliases: "Shared"},
+		{path: "titled.md", title: "Shared"},
+	}
+	res := buildResolver(docs, nil)
+	// Design §5: the title class is consulted before the alias class.
+	if res["Shared"] != "titled.md" {
+		t.Errorf("Shared = %q, want titled.md (title beats another note's alias)", res["Shared"])
+	}
+}
+
 func TestLinks_roundtrip(t *testing.T) {
 	ctx := context.Background()
-	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	idxDir := t.TempDir()
+	idx, _, err := Open(ctx, filepath.Join(idxDir, "index.db"), filepath.Join(idxDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
-	
+	defer func() { _ = idx.Close() }()
+
 	root := t.TempDir()
 	v := vault.Open(root)
 	writeNote(t, root, "index.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Index\n---\nSee [[projects]] and [[missing]].\n")
 	writeNote(t, root, "projects.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Projects\n---\nRefers to [[Index]].\n")
-	
+
 	if _, err := idx.Build(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Test backlinks
 	back, err := idx.Backlinks(ctx, "index.md")
 	if err != nil {
@@ -463,7 +477,7 @@ func TestLinks_roundtrip(t *testing.T) {
 	if len(back) != 1 || back[0].Path != "projects.md" {
 		t.Errorf("Backlinks(index.md) = %+v, want [{Path:projects.md Title:Projects}]", back)
 	}
-	
+
 	// Test outgoing
 	out, err := idx.Outgoing(ctx, "index.md")
 	if err != nil {
@@ -483,12 +497,13 @@ func TestLinks_roundtrip(t *testing.T) {
 
 func TestLinks_resolutionModes(t *testing.T) {
 	ctx := context.Background()
-	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	idxDir := t.TempDir()
+	idx, _, err := Open(ctx, filepath.Join(idxDir, "index.db"), filepath.Join(idxDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
-	
+	defer func() { _ = idx.Close() }()
+
 	root := t.TempDir()
 	v := vault.Open(root)
 	writeNote(t, root, "test.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Test\naliases: [alias1, alias2]\n---\n"+
@@ -498,16 +513,16 @@ func TestLinks_resolutionModes(t *testing.T) {
 		"By title: [[Target Note]]\n"+
 		"By alias: [[myalias]]\n")
 	writeNote(t, root, "target.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Target Note\naliases: [myalias]\n---\nbody\n")
-	
+
 	if _, err := idx.Build(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	out, err := idx.Outgoing(ctx, "test.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// All 5 links should resolve to target.md
 	for _, link := range out {
 		if link.Path != "target.md" {
@@ -518,29 +533,30 @@ func TestLinks_resolutionModes(t *testing.T) {
 
 func TestLinks_updatePreservesLinks(t *testing.T) {
 	ctx := context.Background()
-	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	idxDir := t.TempDir()
+	idx, _, err := Open(ctx, filepath.Join(idxDir, "index.db"), filepath.Join(idxDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
-	
+	defer func() { _ = idx.Close() }()
+
 	root := t.TempDir()
 	v := vault.Open(root)
 	writeNote(t, root, "a.md", "---\ntitle: A\n---\nlinks to [[b]]\n")
 	writeNote(t, root, "b.md", "---\ntitle: B\n---\nno links\n")
-	
+
 	if _, err := idx.Build(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Modify b.md
 	time.Sleep(10 * time.Millisecond)
 	writeNote(t, root, "b.md", "---\ntitle: B Updated\n---\nstill no links\n")
-	
+
 	if _, err := idx.Update(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Links from a.md should still exist and resolve
 	out, err := idx.Outgoing(ctx, "a.md")
 	if err != nil {
@@ -553,32 +569,177 @@ func TestLinks_updatePreservesLinks(t *testing.T) {
 
 func TestDebugResolver(t *testing.T) {
 	ctx := context.Background()
-	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	idxDir := t.TempDir()
+	idx, _, err := Open(ctx, filepath.Join(idxDir, "index.db"), filepath.Join(idxDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
-	
+	defer func() { _ = idx.Close() }()
+
 	root := t.TempDir()
 	v := vault.Open(root)
 	writeNote(t, root, "test.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Test\naliases: [alias1, alias2]\n---\nBy ID: [[01ARZ3NDEKTSV4RRFFQ69G5FAV01]]\n")
 	writeNote(t, root, "target.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Target Note\naliases: [myalias]\n---\nbody\n")
-	
+
 	if _, err := idx.Build(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Check what's in the database
 	rows, err := idx.db.QueryContext(ctx, `SELECT path, id, title, aliases FROM docs`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var path, id, title, aliases string
 		if err := rows.Scan(&path, &id, &title, &aliases); err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("Doc: path=%s, id=%s, title=%s, aliases=%s", path, id, title, aliases)
+	}
+}
+
+func TestUpdate_reResolvesWhenTargetTitleChanges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "a.md", "---\ntitle: A\n---\nsee [[Target Note]]\n")
+	writeNote(t, root, "b.md", "---\ntitle: Target Note\n---\nbody\n")
+	idx := openTestIndex(t)
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := idx.Outgoing(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Path != "b.md" {
+		t.Fatalf("Outgoing = %+v, want resolved b.md", out)
+	}
+
+	// Rename the target's title: the linking note never changed, yet its
+	// stored row must go dead — rendered HTML reads this row (§7).
+	time.Sleep(10 * time.Millisecond)
+	writeNote(t, root, "b.md", "---\ntitle: Renamed\n---\nbody\n")
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	out, err = idx.Outgoing(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Path != "" {
+		t.Fatalf("Outgoing after title change = %+v, want dead link", out)
+	}
+}
+
+func TestUpdate_reResolvesWhenTargetDeleted(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "a.md", "---\ntitle: A\n---\nsee [[b]]\n")
+	writeNote(t, root, "b.md", "---\ntitle: B\n---\nbody\n")
+	idx := openTestIndex(t)
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := idx.Outgoing(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("Outgoing = %+v, want 1 row", out)
+	}
+	if out[0].Path != "" {
+		t.Errorf("to_path = %q, want '' (stale link after target deletion)", out[0].Path)
+	}
+}
+
+func TestLinks_labelStored(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "index.md", "See [[projects/plan|the plan]] and [[missing|gone]].\n")
+	writeNote(t, root, "projects/plan.md", "body\n")
+	idx := openTestIndex(t)
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := idx.Outgoing(ctx, "index.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("Outgoing = %+v, want 2 links", out)
+	}
+	if out[0].Target != "missing" || out[0].Label != "gone" {
+		t.Errorf("out[0] = %+v, want target=missing label=gone", out[0])
+	}
+	if out[1].Target != "projects/plan" || out[1].Path != "projects/plan.md" || out[1].Label != "the plan" {
+		t.Errorf("out[1] = %+v, want resolved with label", out[1])
+	}
+}
+
+func TestLinks_codeSpanNotIndexed(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "a.md", "literal `[[not_a_link]]` in a code span\n")
+	idx := openTestIndex(t)
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := idx.Outgoing(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Errorf("Outgoing = %+v, want none (code spans are never linkified)", out)
+	}
+}
+
+func TestUpdate_backfillsIdentityFromVault(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	v := vault.Open(root)
+	id1 := "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	id2 := "01ARZ3NDEKTSV4RRFFQ69G5FAV01"
+	writeNote(t, root, "external.md", "---\nid: "+id1+"\n---\nauthored outside the app\n")
+	idx := openTestIndex(t)
+
+	// First Update after a fresh open: marker missing → full backfill.
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if uid, ok, err := idx.st.UIDByPath(ctx, "external.md"); err != nil || !ok || uid != id1 {
+		t.Errorf("UIDByPath(external.md) = %q,%v,%v want %q,true,nil", uid, ok, err, id1)
+	}
+
+	// A later external edit is picked up incrementally, without a full pass.
+	time.Sleep(10 * time.Millisecond)
+	writeNote(t, root, "later.md", "---\nid: "+id2+"\n---\nadded later\n")
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if uid, ok, err := idx.st.UIDByPath(ctx, "later.md"); err != nil || !ok || uid != id2 {
+		t.Errorf("UIDByPath(later.md) = %q,%v,%v want %q,true,nil", uid, ok, err, id2)
+	}
+
+	// Deleting a note prunes its row so a stale id never resolves.
+	if err := os.Remove(filepath.Join(root, "external.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := idx.st.UIDByPath(ctx, "external.md"); err != nil || ok {
+		t.Errorf("UIDByPath(deleted) = ok=%v err=%v, want pruned", ok, err)
 	}
 }

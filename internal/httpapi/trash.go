@@ -110,12 +110,16 @@ func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
 // reindex refreshes search after a mutation. Index failure only degrades
 // search freshness — the mutation already succeeded.
 func (s *Server) reindex(r *http.Request, nb *notebooks.Notebook, v *vault.Vault) {
-	idx, _, err := index.Open(r.Context(), nb.Layout.IndexDB())
+	idx, _, err := index.Open(r.Context(), nb.Layout.IndexDB(), nb.Layout.StateDB())
 	if err != nil {
 		s.log.Warn("index open failed", "notebook", nb.Manifest.Slug, "err", err)
 		return
 	}
-	defer idx.Close()
+	defer func() {
+		if err := idx.Close(); err != nil {
+			s.log.Warn("index close failed", "notebook", nb.Manifest.Slug, "err", err)
+		}
+	}()
 	if _, err := idx.Update(r.Context(), v); err != nil {
 		s.log.Warn("index update failed", "notebook", nb.Manifest.Slug, "err", err)
 	}

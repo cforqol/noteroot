@@ -1,0 +1,12 @@
+{
+  "name": "noteroot-web",
+  "version": "0.1.0",
+  "description": "Frontend tests for noteroot linking UI",
+  "private": true,
+  "scripts": {
+    "test": "node --test app.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

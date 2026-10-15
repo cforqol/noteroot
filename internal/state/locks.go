@@ -46,7 +46,7 @@ func (db *DB) AcquireLock(ctx context.Context, path, holder string, ttl time.Dur
 	if err != nil {
 		return time.Time{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE expires_at <= strftime('%s','now')`); err != nil {
 		return time.Time{}, err
 	}

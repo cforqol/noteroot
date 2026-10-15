@@ -37,7 +37,7 @@ func (s *Server) putLock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	expires, err := db.AcquireLock(r.Context(), rel, holder, lockTTL(r))
 	if err != nil {
 		if errors.Is(err, state.ErrLocked) {
@@ -70,7 +70,7 @@ func (s *Server) deleteLock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.ReleaseLock(r.Context(), rel, holder); err != nil {
 		if errors.Is(err, state.ErrNoLock) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such lock"})

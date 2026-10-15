@@ -13,9 +13,9 @@ func setenv(t *testing.T, key, val string) {
 	}
 	t.Cleanup(func() {
 		if had {
-			os.Setenv(key, old)
+			_ = os.Setenv(key, old)
 		} else {
-			os.Unsetenv(key)
+			_ = os.Unsetenv(key)
 		}
 	})
 }
@@ -23,10 +23,10 @@ func setenv(t *testing.T, key, val string) {
 func unsetenv(t *testing.T, key string) {
 	t.Helper()
 	old, had := os.LookupEnv(key)
-	os.Unsetenv(key)
+	_ = os.Unsetenv(key)
 	t.Cleanup(func() {
 		if had {
-			os.Setenv(key, old)
+			_ = os.Setenv(key, old)
 		}
 	})
 }

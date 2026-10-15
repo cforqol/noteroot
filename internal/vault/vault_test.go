@@ -55,7 +55,7 @@ func TestRead_tooLarge(t *testing.T) {
 	if err := f.Truncate(MaxReadBytes + 1); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	if _, err := Open(root).Read("big.md"); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("err = %v, want ErrTooLarge", err)
 	}

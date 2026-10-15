@@ -18,7 +18,7 @@ func writeManifest(t *testing.T, dir string, m Manifest) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := toml.NewEncoder(f).Encode(m); err != nil {
 		t.Fatal(err)
 	}

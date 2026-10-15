@@ -92,7 +92,7 @@ func (v *Vault) Write(rel string, content []byte, opts WriteOpts) (WriteResult, 
 		return WriteResult{}, err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		return WriteResult{}, err
