@@ -85,8 +85,20 @@ func (x *Index) Build(ctx context.Context, v *vault.Vault) (Stats, error) {
 		_ = tx.Rollback()
 		return Stats{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM links`); err != nil {
+		_ = tx.Rollback()
+		return Stats{}, err
+	}
 	for _, d := range docs {
 		if err := insertDoc(ctx, tx, d); err != nil {
+			_ = tx.Rollback()
+			return Stats{}, err
+		}
+	}
+	// Build resolution map and store links
+	resolver := buildResolver(docs)
+	for _, d := range docs {
+		if err := storeLinks(ctx, tx, d, resolver); err != nil {
 			_ = tx.Rollback()
 			return Stats{}, err
 		}
@@ -156,6 +168,31 @@ func (x *Index) Update(ctx context.Context, v *vault.Vault) (Stats, error) {
 			_ = tx.Rollback()
 			return Stats{}, err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE from_path = ?`, p); err != nil {
+			_ = tx.Rollback()
+			return Stats{}, err
+		}
+	}
+	// Rebuild links for changed docs
+	if len(changed) > 0 {
+		// Build resolver from ALL current docs (changed + unchanged) for accurate resolution
+		allDocs, err := x.loadAllDocs(ctx, tx)
+		if err != nil {
+			_ = tx.Rollback()
+			return Stats{}, err
+		}
+		resolver := buildResolver(allDocs)
+		for _, d := range changed {
+			// Delete old links first
+			if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE from_path = ?`, d.path); err != nil {
+				_ = tx.Rollback()
+				return Stats{}, err
+			}
+			if err := storeLinks(ctx, tx, d, resolver); err != nil {
+				_ = tx.Rollback()
+				return Stats{}, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Stats{}, err
@@ -197,12 +234,15 @@ func (x *Index) Search(ctx context.Context, query string, limit int) ([]Hit, err
 }
 
 type doc struct {
-	path  string
-	title string
-	tags  string
-	body  string
-	mtime int64
-	size  int64
+	path    string
+	title   string
+	id      string
+	aliases string
+	tags    string
+	body    string
+	links   []string // raw wikilink targets extracted from body
+	mtime   int64
+	size    int64
 }
 
 func listNotes(v *vault.Vault) ([]*vault.Node, error) {
@@ -254,20 +294,56 @@ func readOne(v *vault.Vault, n *vault.Node) (doc, bool) {
 	if title == "" {
 		title = strings.TrimSuffix(path.Base(rel), ".md")
 	}
+	aliases := frontmatter.Strings(parsed.Meta, "aliases")
 	return doc{
-		path:  rel,
-		title: title,
-		tags:  strings.Join(frontmatter.Strings(parsed.Meta, "tags"), " "),
-		body:  string(parsed.Body),
-		mtime: n.ModTime,
-		size:  n.Size,
+		path:    rel,
+		title:   title,
+		id:      parsed.ID,
+		aliases: strings.Join(aliases, " "),
+		tags:    strings.Join(frontmatter.Strings(parsed.Meta, "tags"), " "),
+		body:    string(parsed.Body),
+		links:   extractWikilinks(parsed.Body),
+		mtime:   n.ModTime,
+		size:    n.Size,
 	}, true
+}
+
+// extractWikilinks scans markdown for [[target]] and [[target|label]]
+// patterns and returns unique targets. Does not resolve; stores raw text.
+func extractWikilinks(body []byte) []string {
+	var targets []string
+	seen := make(map[string]bool)
+	s := string(body)
+	for i := 0; i < len(s); {
+		if i+4 < len(s) && s[i:i+2] == "[[" {
+			end := strings.Index(s[i+2:], "]]")
+			if end < 0 {
+				i++
+				continue
+			}
+			content := s[i+2 : i+2+end]
+			// Extract target (before pipe if present)
+			target := content
+			if pipe := strings.IndexByte(content, '|'); pipe >= 0 {
+				target = content[:pipe]
+			}
+			target = strings.TrimSpace(target)
+			if target != "" && !seen[target] {
+				targets = append(targets, target)
+				seen[target] = true
+			}
+			i += 2 + end + 2
+		} else {
+			i++
+		}
+	}
+	return targets
 }
 
 func insertDoc(ctx context.Context, tx *sql.Tx, d doc) error {
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO docs(path, title, mtime, size) VALUES (?, ?, ?, ?)`,
-		d.path, d.title, d.mtime, d.size); err != nil {
+		`INSERT INTO docs(path, title, id, aliases, mtime, size) VALUES (?, ?, ?, ?, ?, ?)`,
+		d.path, d.title, d.id, d.aliases, d.mtime, d.size); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx,
@@ -278,9 +354,9 @@ func insertDoc(ctx context.Context, tx *sql.Tx, d doc) error {
 
 func upsertDoc(ctx context.Context, tx *sql.Tx, d doc) error {
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO docs(path, title, mtime, size) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, mtime=excluded.mtime, size=excluded.size`,
-		d.path, d.title, d.mtime, d.size); err != nil {
+		`INSERT INTO docs(path, title, id, aliases, mtime, size) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, id=excluded.id, aliases=excluded.aliases, mtime=excluded.mtime, size=excluded.size`,
+		d.path, d.title, d.id, d.aliases, d.mtime, d.size); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM docs_fts WHERE path = ?`, d.path); err != nil {
@@ -313,4 +389,157 @@ func (x *Index) known(ctx context.Context) (map[string]stored, error) {
 		out[p] = s
 	}
 	return out, rows.Err()
+}
+
+// loadAllDocs reads all indexed docs (for building a complete resolver).
+// Uses the provided transaction so it sees docs upserted in the same tx.
+func (x *Index) loadAllDocs(ctx context.Context, tx *sql.Tx) ([]doc, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT path, title, id, aliases FROM docs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var docs []doc
+	for rows.Next() {
+		var d doc
+		if err := rows.Scan(&d.path, &d.title, &d.id, &d.aliases); err != nil {
+			return nil, err
+		}
+		docs = append(docs, d)
+	}
+	return docs, rows.Err()
+}
+
+// buildResolver creates a resolution map from docs: id→path, path→path,
+// title→path, alias→path. Only unique matches are added; ambiguous titles
+// or aliases are omitted.
+func buildResolver(docs []doc) map[string]string {
+	res := make(map[string]string)
+	titleCount := make(map[string]int)
+	aliasCount := make(map[string]int)
+	
+	// Count occurrences first
+	for _, d := range docs {
+		titleCount[d.title]++
+		for _, a := range strings.Fields(d.aliases) {
+			aliasCount[a]++
+		}
+	}
+	
+	// Build map with uniqueness check
+	for _, d := range docs {
+		// ID → path (always unique by database constraint)
+		if d.id != "" {
+			res[d.id] = d.path
+		}
+		// path stem → path (with and without .md)
+		stem := strings.TrimSuffix(d.path, ".md")
+		res[stem] = d.path
+		res[d.path] = d.path
+		// title → path (only if unique)
+		if titleCount[d.title] == 1 {
+			res[d.title] = d.path
+		}
+		// alias → path (only if unique)
+		for _, a := range strings.Fields(d.aliases) {
+			if aliasCount[a] == 1 {
+				res[a] = d.path
+			}
+		}
+	}
+	return res
+}
+
+// storeLinks resolves each wikilink target in doc and inserts a links row.
+func storeLinks(ctx context.Context, tx *sql.Tx, d doc, resolver map[string]string) error {
+	for _, target := range d.links {
+		toPath := resolver[target]
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO links(from_path, target, to_path) VALUES (?, ?, ?)`,
+			d.path, target, toPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Link describes one wikilink with its resolution status.
+type Link struct {
+	Target string // raw wikilink text
+	Path   string // resolved path, empty if unresolved
+	Title  string // title of resolved note, empty if unresolved
+}
+
+// Backlinks returns notes that link to the given path (incoming).
+func (x *Index) Backlinks(ctx context.Context, targetPath string) ([]Link, error) {
+	rows, err := x.db.QueryContext(ctx, `
+		SELECT DISTINCT l.from_path, d.title
+		FROM links l
+		JOIN docs d ON d.path = l.from_path
+		WHERE l.to_path = ?
+		ORDER BY d.title`, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var links []Link
+	for rows.Next() {
+		var link Link
+		if err := rows.Scan(&link.Path, &link.Title); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+// Outgoing returns wikilinks from the given path with resolution (forward).
+func (x *Index) Outgoing(ctx context.Context, fromPath string) ([]Link, error) {
+	rows, err := x.db.QueryContext(ctx, `
+		SELECT l.target, l.to_path, COALESCE(d.title, '') AS title
+		FROM links l
+		LEFT JOIN docs d ON d.path = l.to_path
+		WHERE l.from_path = ?
+		ORDER BY l.target`, fromPath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var links []Link
+	for rows.Next() {
+		var link Link
+		if err := rows.Scan(&link.Target, &link.Path, &link.Title); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+// Resolver builds and returns a function that resolves wikilink targets to
+// paths using the current index state.
+func (x *Index) Resolver(ctx context.Context) (func(target string) (string, bool), error) {
+	rows, err := x.db.QueryContext(ctx, `SELECT path, id, title, aliases FROM docs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var docs []doc
+	for rows.Next() {
+		var d doc
+		if err := rows.Scan(&d.path, &d.id, &d.title, &d.aliases); err != nil {
+			return nil, err
+		}
+		docs = append(docs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	
+	resMap := buildResolver(docs)
+	return func(target string) (string, bool) {
+		path, ok := resMap[target]
+		return path, ok
+	}, nil
 }

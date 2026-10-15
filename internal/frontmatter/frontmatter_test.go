@@ -1,9 +1,13 @@
 package frontmatter
 
 import (
+	"bytes"
 	"errors"
+	"math/big"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 const validID = "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
@@ -148,5 +152,202 @@ func TestStr(t *testing.T) {
 		if got := str(tt.in); got != tt.want {
 			t.Errorf("str(%#v) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestNewID_format(t *testing.T) {
+	id := NewID()
+	if len(id) != 28 {
+		t.Fatalf("NewID() = %q (len %d), want 28 chars", id, len(id))
+	}
+	if !ValidID(id) {
+		t.Errorf("NewID() = %q is not ValidID", id)
+	}
+}
+
+func TestNewID_unique(t *testing.T) {
+	seen := make(map[string]bool, 1000)
+	for i := 0; i < 1000; i++ {
+		id := NewID()
+		if seen[id] {
+			t.Fatalf("duplicate id %q at i=%d", id, i)
+		}
+		seen[id] = true
+	}
+}
+
+func TestNewID_timestampNearNow(t *testing.T) {
+	id := NewID()
+	ts := decodeULTimestamp(t, id[:26])
+	now := time.Now().UnixMilli()
+	if delta := now - ts; delta < -5000 || delta > 5000 {
+		t.Errorf("timestamp %d not within 5s of now %d", ts, now)
+	}
+}
+
+// decodeULTimestamp extracts the 48-bit ms timestamp from a 26-char ULID.
+func decodeULTimestamp(t *testing.T, ulid string) int64 {
+	t.Helper()
+	const crock = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	n := new(big.Int)
+	for _, c := range ulid {
+		idx := strings.IndexRune(crock, c)
+		if idx < 0 {
+			t.Fatalf("bad char %q in ULID %q", c, ulid)
+		}
+		n.Mul(n, big.NewInt(32))
+		n.Add(n, big.NewInt(int64(idx)))
+	}
+	// The 26 chars encode the original 128-bit value: top 48 bits are the
+	// timestamp, bottom 80 bits are entropy. Shift right by 80.
+	ts := new(big.Int).Rsh(n, 80)
+	return ts.Int64()
+}
+
+func TestValidID(t *testing.T) {
+	valid := NewID()
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"fresh", valid, true},
+		{"empty", "", false},
+		{"short", valid[:27], false},
+		{"long", valid + "0", false},
+		{"lowercase", strings.ToLower(valid), false},
+		{"has I", "I" + valid[1:], false},
+		{"has L", "L" + valid[1:], false},
+		{"has O", "O" + valid[1:], false},
+		{"has U", "U" + valid[1:], false},
+		{"hyphen", valid[:14] + "-" + valid[14:], false},
+	}
+	for _, tt := range tests {
+		if got := ValidID(tt.id); got != tt.want {
+			t.Errorf("%s: ValidID(%q) = %v, want %v", tt.name, tt.id, got, tt.want)
+		}
+	}
+}
+
+func TestWithID_noFrontmatter(t *testing.T) {
+	id := NewID()
+	src := []byte("# Hello\n\nbody\n")
+	out := WithID(src, id)
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+	if !bytes.HasPrefix(out, []byte("---\nid: "+id+"\n---\n")) {
+		t.Errorf("missing frontmatter block:\n%s", out)
+	}
+	if !bytes.Contains(doc.Body, []byte("# Hello")) {
+		t.Errorf("body lost:\n%s", out)
+	}
+}
+
+func TestWithID_insertMissingID(t *testing.T) {
+	id := NewID()
+	src := []byte("---\ntitle: My Note\ntags: [a, b]\n---\n\nbody\n")
+	out := WithID(src, id)
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+	if doc.Title != "My Note" {
+		t.Errorf("Title = %q, want %q", doc.Title, "My Note")
+	}
+	if got := Strings(doc.Meta, "tags"); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Errorf("tags = %v", got)
+	}
+}
+
+func TestWithID_replacesMalformedID(t *testing.T) {
+	id := NewID()
+	src := []byte("---\nid: not-a-valid-id\ntitle: T\n---\nbody\n")
+	out := WithID(src, id)
+	if bytes.Contains(out, []byte("not-a-valid-id")) {
+		t.Errorf("malformed id not replaced:\n%s", out)
+	}
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+}
+
+func TestWithID_replacesValidID(t *testing.T) {
+	old := NewID()
+	id := NewID()
+	src := []byte("---\nid: " + old + "\ntitle: T\n---\nbody\n")
+	out := WithID(src, id)
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q (old not replaced)", doc.ID, id)
+	}
+	if bytes.Contains(out, []byte(old)) {
+		t.Errorf("old id still present:\n%s", out)
+	}
+}
+
+func TestWithID_preservesBodyExactly(t *testing.T) {
+	id := NewID()
+	src := []byte("---\ntitle: T\n---\n\n# H\n\n*body* with [[a link]]\n")
+	out := WithID(src, id)
+	_, body, ok := Split(out)
+	if !ok {
+		t.Fatal("no frontmatter block after WithID")
+	}
+	_, wantBody, ok := Split(src)
+	if !ok {
+		t.Fatal("no frontmatter block in src")
+	}
+	if !bytes.Equal(body, wantBody) {
+		t.Errorf("body changed:\ngot  %q\nwant %q", body, wantBody)
+	}
+}
+
+func TestWithID_CRLF(t *testing.T) {
+	id := NewID()
+	// Frontmatter with CRLF line endings
+	src := []byte("---\r\ntitle: Test\r\nid: old-id\r\n---\r\nbody with CRLF\r\n")
+	out := WithID(src, id)
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+	if doc.Title != "Test" {
+		t.Errorf("Title = %q, want %q", doc.Title, "Test")
+	}
+	// Body should be preserved
+	if !bytes.Contains(doc.Body, []byte("body with CRLF")) {
+		t.Errorf("body not preserved:\n%s", out)
+	}
+}
+
+func TestWithID_spacesInIDLine(t *testing.T) {
+	id := NewID()
+	// ID line with extra spaces
+	src := []byte("---\nid  :  old-value  \ntitle: T\n---\nbody\n")
+	out := WithID(src, id)
+	// The current implementation should replace "id  :" because it starts with "id"
+	// but note that "id :" (with space before colon) is also checked
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+}
+
+func TestWithID_idAtEnd(t *testing.T) {
+	id := NewID()
+	// ID field at the end of frontmatter instead of beginning
+	src := []byte("---\ntitle: Test\ntags: [a, b]\nid: old-id\n---\nbody\n")
+	out := WithID(src, id)
+	doc := Parse(out)
+	if doc.ID != id {
+		t.Errorf("ID = %q, want %q", doc.ID, id)
+	}
+	// Make sure there's only one id line
+	idCount := bytes.Count(out, []byte("\nid: "))
+	if idCount != 1 {
+		t.Errorf("id line count = %d, want 1", idCount)
 	}
 }

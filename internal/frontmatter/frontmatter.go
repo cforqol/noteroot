@@ -7,10 +7,15 @@ package frontmatter
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -145,4 +150,88 @@ func Strings(meta map[string]any, key string) []string {
 		}
 	}
 	return nil
+}
+
+// crock is the Crockford base32 alphabet: no I, L, O, U.
+const crock = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// ValidID reports whether id is a well-formed 28-char ULID+checksum.
+func ValidID(id string) bool { return idRe.MatchString(id) }
+
+// NewID returns a fresh note identity: a 26-char ULID (48-bit
+// millisecond timestamp + 80 bits crypto/rand) followed by a 2-char
+// CRC32 checksum. Sortable by creation time; the checksum catches typos
+// in copied ids (not a security property — ids are not capabilities).
+func NewID() string {
+	var rnd [10]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		panic("frontmatter: crypto/rand unavailable: " + err.Error())
+	}
+	u := encodeULID(uint64(time.Now().UnixMilli()), rnd)
+	return u + ulidChecksum(u)
+}
+
+// WithID injects id into src's frontmatter: prepending a block when there
+// is none, inserting after the opening --- when the block has no top-level
+// id line, or replacing the existing (valid or malformed) id line. Textual
+// — the author's formatting, key order, and comments outside the id line
+// are preserved.
+func WithID(src []byte, id string) []byte {
+	block, body, ok := Split(src)
+	if !ok {
+		header := "---\nid: " + id + "\n---\n"
+		if len(body) > 0 && body[0] != '\n' {
+			header += "\n"
+		}
+		return append([]byte(header), body...)
+	}
+	lines := strings.Split(string(block), "\n")
+	replaced := false
+	for i, ln := range lines {
+		// Only match top-level keys: the line must start at column 0.
+		// Indented lines belong to nested mappings and must not be touched.
+		if len(ln) == 0 || ln[0] == ' ' || ln[0] == '\t' {
+			continue
+		}
+		// Match "id:", "id :", "id  :", etc. (whitespace before the colon).
+		key := strings.SplitN(ln, ":", 2)
+		if strings.TrimSpace(key[0]) == "id" {
+			lines[i] = "id: " + id
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		lines = append([]string{"id: " + id}, lines...)
+	}
+	out := "---\n" + strings.Join(lines, "\n") + "\n---\n"
+	if len(body) > 0 {
+		out += string(body)
+	}
+	return []byte(out)
+}
+
+// encodeULID encodes a 48-bit timestamp and 80 bits of entropy as a
+// 26-char Crockford base32 ULID.
+func encodeULID(ts uint64, rnd [10]byte) string {
+	var raw [16]byte
+	binary.BigEndian.PutUint64(raw[0:8], ts<<16)
+	copy(raw[6:], rnd[:])
+	n := new(big.Int).SetBytes(raw[:])
+	base := big.NewInt(32)
+	out := make([]byte, 26)
+	mod := new(big.Int)
+	for i := 25; i >= 0; i-- {
+		n.DivMod(n, base, mod)
+		out[i] = crock[mod.Int64()]
+	}
+	return string(out)
+}
+
+// ulidChecksum is CRC32 (IEEE) of the 26-char ULID, reduced to 10 bits
+// and encoded as 2 Crockford chars — enough to catch typos and
+// single-character corruption in copied ids.
+func ulidChecksum(u26 string) string {
+	c := crc32.ChecksumIEEE([]byte(u26)) % 1024
+	return string([]byte{crock[c/32], crock[c%32]})
 }

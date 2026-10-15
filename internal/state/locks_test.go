@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"noteroot/internal/vault"
 )
 
 func openTestLocksDB(t *testing.T) *DB {
@@ -127,5 +129,87 @@ func TestLocks_closedDB(t *testing.T) {
 	}
 	if err := db.ReleaseLock(ctx, "a.md", "t"); err == nil {
 		t.Error("release on closed DB: expected error")
+	}
+}
+
+func TestUpsertIdentity(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	path := "notes/hello.md"
+	uid := "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	if err := db.UpsertIdentity(ctx, path, uid); err != nil {
+		t.Fatal(err)
+	}
+	// Re-upsert same path with same uid: no error, no duplicate.
+	if err := db.UpsertIdentity(ctx, path, uid); err != nil {
+		t.Fatal(err)
+	}
+	// Re-upsert same path with new uid (id reminted): updates.
+	uid2 := "01ARZ3NDEKTSV4RRFFQ69G5FAV01"
+	if err := db.UpsertIdentity(ctx, path, uid2); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := db.QueryRowContext(ctx, `SELECT uid FROM note_identity WHERE path = ?`, path).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != uid2 {
+		t.Errorf("uid = %q, want %q", got, uid2)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM note_identity WHERE path = ?`, path).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("rows = %d, want 1", count)
+	}
+}
+
+func TestUpsertIdentity_uniqueUID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	uid := "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	if err := db.UpsertIdentity(ctx, "a.md", uid); err != nil {
+		t.Fatal(err)
+	}
+	// Same uid on a different path: UNIQUE index should reject.
+	if err := db.UpsertIdentity(ctx, "b.md", uid); err == nil {
+		t.Error("expected error for duplicate uid on different path")
+	}
+}
+
+func TestSyncIdentityFromVault(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	v := newTestVault(t)
+	id1 := "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	id2 := "01ARZ3NDEKTSV4RRFFQ69G5FAV01"
+	writeVaultFile(t, v, "a.md", "---\nid: "+id1+"\ntitle: A\n---\nbody\n")
+	writeVaultFile(t, v, "b.md", "---\nid: "+id2+"\ntitle: B\n---\nbody\n")
+	n, err := db.SyncIdentityFromVault(ctx, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 2 {
+		t.Errorf("synced = %d, want >= 2", n)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM note_identity`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count < 2 {
+		t.Errorf("rows = %d, want >= 2", count)
+	}
+}
+
+func newTestVault(t *testing.T) *vault.Vault {
+	t.Helper()
+	return vault.Open(t.TempDir())
+}
+
+func writeVaultFile(t *testing.T, v *vault.Vault, rel, content string) {
+	t.Helper()
+	if _, err := v.Write(rel, []byte(content), vault.WriteOpts{}); err != nil {
+		t.Fatal(err)
 	}
 }

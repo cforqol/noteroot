@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -365,5 +366,219 @@ func TestSearch_defaultLimit(t *testing.T) {
 	}
 	if len(hits) != 1 {
 		t.Errorf("limit 0: hits = %+v, want 1 (default limit applies)", hits)
+	}
+}
+
+func TestExtractWikilinks(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"no links", "just plain text", nil},
+		{"single link", "See [[Other Note]].", []string{"Other Note"}},
+		{"with label", "See [[target|Custom Label]].", []string{"target"}},
+		{"multiple", "[[A]] and [[B]]", []string{"A", "B"}},
+		{"duplicate", "[[A]] and [[A]] again", []string{"A"}},
+		{"whitespace trimmed", "[[  spaced  ]]", []string{"spaced"}},
+		{"incomplete", "broken [[ open", nil},
+		{"nested not supported", "[[outer [[inner]]]]", []string{"outer [[inner"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractWikilinks([]byte(tt.body))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("extractWikilinks() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildResolver(t *testing.T) {
+	docs := []doc{
+		{path: "a.md", title: "Note A", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV00", aliases: "alpha"},
+		{path: "b.md", title: "Note B", id: "01ARZ3NDEKTSV4RRFFQ69G5FAV01", aliases: "beta gamma"},
+		{path: "c.md", title: "Duplicate", id: "ID003", aliases: ""},
+		{path: "d.md", title: "Duplicate", id: "ID004", aliases: "alpha"}, // duplicate alias
+	}
+	res := buildResolver(docs)
+	
+	// ID resolution (always works)
+	if res["01ARZ3NDEKTSV4RRFFQ69G5FAV00"] != "a.md" {
+		t.Errorf("01ARZ3NDEKTSV4RRFFQ69G5FAV00 should resolve to a.md")
+	}
+	
+	// Path resolution
+	if res["a.md"] != "a.md" {
+		t.Errorf("a.md should resolve to a.md")
+	}
+	if res["a"] != "a.md" {
+		t.Errorf("a (stem) should resolve to a.md")
+	}
+	
+	// Unique title resolution
+	if res["Note A"] != "a.md" {
+		t.Errorf("Note A should resolve to a.md")
+	}
+	
+	// Ambiguous title should not resolve
+	if _, ok := res["Duplicate"]; ok {
+		t.Errorf("Duplicate title should not be in resolver")
+	}
+	
+	// Unique alias resolution
+	if res["beta"] != "b.md" {
+		t.Errorf("beta should resolve to b.md")
+	}
+	
+	// Ambiguous alias should not resolve
+	if _, ok := res["alpha"]; ok {
+		t.Errorf("Duplicate alias 'alpha' should not be in resolver")
+	}
+}
+
+func TestLinks_roundtrip(t *testing.T) {
+	ctx := context.Background()
+	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "index.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Index\n---\nSee [[projects]] and [[missing]].\n")
+	writeNote(t, root, "projects.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Projects\n---\nRefers to [[Index]].\n")
+	
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	
+	// Test backlinks
+	back, err := idx.Backlinks(ctx, "index.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 1 || back[0].Path != "projects.md" {
+		t.Errorf("Backlinks(index.md) = %+v, want [{Path:projects.md Title:Projects}]", back)
+	}
+	
+	// Test outgoing
+	out, err := idx.Outgoing(ctx, "index.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("Outgoing(index.md) = %+v, want 2 links", out)
+	}
+	// Sorted by target
+	if out[0].Target != "missing" || out[0].Path != "" {
+		t.Errorf("out[0] = %+v, want unresolved 'missing'", out[0])
+	}
+	if out[1].Target != "projects" || out[1].Path != "projects.md" {
+		t.Errorf("out[1] = %+v, want resolved 'projects'", out[1])
+	}
+}
+
+func TestLinks_resolutionModes(t *testing.T) {
+	ctx := context.Background()
+	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "test.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Test\naliases: [alias1, alias2]\n---\n"+
+		"By ID: [[01ARZ3NDEKTSV4RRFFQ69G5FAV01]]\n"+
+		"By path: [[target.md]]\n"+
+		"By stem: [[target]]\n"+
+		"By title: [[Target Note]]\n"+
+		"By alias: [[myalias]]\n")
+	writeNote(t, root, "target.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Target Note\naliases: [myalias]\n---\nbody\n")
+	
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	
+	out, err := idx.Outgoing(ctx, "test.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// All 5 links should resolve to target.md
+	for _, link := range out {
+		if link.Path != "target.md" {
+			t.Errorf("link %q resolved to %q, want target.md", link.Target, link.Path)
+		}
+	}
+}
+
+func TestLinks_updatePreservesLinks(t *testing.T) {
+	ctx := context.Background()
+	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "a.md", "---\ntitle: A\n---\nlinks to [[b]]\n")
+	writeNote(t, root, "b.md", "---\ntitle: B\n---\nno links\n")
+	
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	
+	// Modify b.md
+	time.Sleep(10 * time.Millisecond)
+	writeNote(t, root, "b.md", "---\ntitle: B Updated\n---\nstill no links\n")
+	
+	if _, err := idx.Update(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	
+	// Links from a.md should still exist and resolve
+	out, err := idx.Outgoing(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Path != "b.md" {
+		t.Errorf("Outgoing after update = %+v, want link to b.md", out)
+	}
+}
+
+func TestDebugResolver(t *testing.T) {
+	ctx := context.Background()
+	idx, _, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	
+	root := t.TempDir()
+	v := vault.Open(root)
+	writeNote(t, root, "test.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV00\ntitle: Test\naliases: [alias1, alias2]\n---\nBy ID: [[01ARZ3NDEKTSV4RRFFQ69G5FAV01]]\n")
+	writeNote(t, root, "target.md", "---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV01\ntitle: Target Note\naliases: [myalias]\n---\nbody\n")
+	
+	if _, err := idx.Build(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	
+	// Check what's in the database
+	rows, err := idx.db.QueryContext(ctx, `SELECT path, id, title, aliases FROM docs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path, id, title, aliases string
+		if err := rows.Scan(&path, &id, &title, &aliases); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("Doc: path=%s, id=%s, title=%s, aliases=%s", path, id, title, aliases)
 	}
 }

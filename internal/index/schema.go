@@ -22,6 +22,14 @@ var migrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);`,
+	`ALTER TABLE docs ADD COLUMN id TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE docs ADD COLUMN aliases TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE IF NOT EXISTS links (
+		from_path TEXT NOT NULL,
+		target    TEXT NOT NULL,
+		to_path   TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (from_path, target)
+	);`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
