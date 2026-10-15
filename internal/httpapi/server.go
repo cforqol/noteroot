@@ -59,11 +59,14 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 
 	// Resources (stage 5) — uploads allow multipart via CSRFAllowMultipart.
 	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+	mux.Handle("POST /n/{slug}/resources/presign", mutating(s.presignUpload))
+	mux.Handle("POST /n/{slug}/resources/confirm", mutating(s.confirmUpload))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
 	mux.Handle("GET /n/{slug}/resources/{sha}/thumb", auth(s.thumbResource))
 	mux.Handle("GET /n/{slug}/resources/{sha}/poster", auth(s.posterResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", auth(s.presignRead))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
 
 	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)

@@ -178,7 +178,7 @@ func (s *Server) posterResource(w http.ResponseWriter, r *http.Request) {
 
 // materializeSource copies a blob to a temp file so ffmpeg can seek it.
 // Returns the path and a cleanup func. Source size is capped at 100 MiB.
-func materializeSource(store *resources.LocalStore, sha string) (string, func(), error) {
+func materializeSource(store resources.Store, sha string) (string, func(), error) {
 	rc, err := store.Get(sha)
 	if err != nil {
 		return "", nil, err

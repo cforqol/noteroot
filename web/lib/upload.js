@@ -99,3 +99,131 @@ export function findVideoResources(html, slug) {
   }
   return [...shas];
 }
+
+// --- Presigned direct-to-S3 flow (stage 7) ---
+
+/** Presign request URL for a notebook. */
+export function presignURL(slug) {
+  return `/n/${encodeURIComponent(slug)}/resources/presign`;
+}
+
+/** Confirm request URL for a notebook. */
+export function confirmURL(slug) {
+  return `/n/${encodeURIComponent(slug)}/resources/confirm`;
+}
+
+/** Presigned read URL endpoint for a blob. */
+export function presignReadURL(slug, sha) {
+  return `${resourceURL(slug, sha)}/presign-read`;
+}
+
+/**
+ * Compute the hex sha256 of an ArrayBuffer/TypedArray/File using
+ * WebCrypto. Duck-types .arrayBuffer() (File/Blob) and TypedArrays;
+ * jsdom's cross-realm ArrayBuffers are passed through as-is.
+ * Throws if WebCrypto is unavailable — callers treat that as "no
+ * presign support".
+ */
+export async function sha256Hex(data) {
+  let buf;
+  if (typeof data?.arrayBuffer === "function") {
+    buf = await data.arrayBuffer();
+  } else if (ArrayBuffer.isView(data)) {
+    buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  } else {
+    buf = data; // ArrayBuffer (possibly cross-realm)
+  }
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Try the presigned upload path for a file.
+ *
+ * Returns one of:
+ *   {mode:"exists",  sha}                    blob already in store
+ *   {mode:"s3",      sha, result}            uploaded direct to S3 + confirmed
+ *   {mode:"direct"}                          no S3; caller should use normal upload
+ *   {mode:"error",   error}                  presign request failed (policy etc.)
+ *
+ * Throws only on unexpected S3 PUT or confirm failure after a presign
+ * was issued (caller may report the error; retrying is safe because the
+ * blob is content-addressed).
+ *
+ * @param {string} slug
+ * @param {File} file
+ * @param {object} [deps] injectables for tests: {fetchFn, putFn}
+ */
+export async function presignUpload(slug, file, deps = {}) {
+  if (typeof crypto === "undefined" || !crypto.subtle) return { mode: "direct" };
+
+  const fetchFn = deps.fetchFn || ((...a) => fetch(...a));
+  const putFn = deps.putFn || ((url, init) => fetch(url, init));
+
+  let sha;
+  try {
+    sha = await sha256Hex(file);
+  } catch (_) {
+    return { mode: "direct" };
+  }
+
+  const presignRes = await fetchFn(presignURL(slug), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sha,
+      size: file.size,
+      filename: file.name,
+      mime: file.type || "application/octet-stream",
+    }),
+  });
+  if (!presignRes.ok) {
+    let msg = `presign failed (${presignRes.status})`;
+    try {
+      const j = await presignRes.json();
+      if (j.error) msg = j.error;
+    } catch (_) { /* non-JSON */ }
+    return { mode: "error", error: msg };
+  }
+
+  const body = await presignRes.json();
+
+  if (body.exists) return { mode: "exists", sha: body.sha };
+  if (body.direct) return { mode: "direct" };
+
+  // Direct-to-S3 PUT with the presigned URL.
+  const putRes = await putFn(body.uploadURL, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!putRes.ok) {
+    throw new Error(`S3 upload failed (${putRes.status})`);
+  }
+
+  // Confirm the journal entry.
+  const confRes = await fetchFn(confirmURL(slug), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryID: body.entryID, sha: body.sha }),
+  });
+  if (!confRes.ok) {
+    let msg = `confirm failed (${confRes.status})`;
+    try {
+      const j = await confRes.json();
+      if (j.error) msg = j.error;
+    } catch (_) { /* non-JSON */ }
+    throw new Error(msg);
+  }
+
+  return {
+    mode: "s3",
+    sha: body.sha,
+    result: {
+      sha: body.sha,
+      filename: file.name,
+      mime: file.type || "application/octet-stream",
+      created: true,
+    },
+  };
+}

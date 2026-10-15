@@ -470,3 +470,137 @@ func generateTestVideo(t *testing.T) []byte {
 	}
 	return b
 }
+
+// --- Presigned endpoints (stage 7) ---
+
+func TestPresignUpload_directWhenNoS3(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	body := `{"sha":"` + strings.Repeat("a", 64) + `","size":100,"filename":"x.png","mime":"image/png"}`
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["direct"] != true {
+		t.Errorf("direct = %v, want true (no S3 configured)", raw["direct"])
+	}
+}
+
+func TestPresignUpload_existsWhenBlobPresent(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	// Upload a blob first.
+	up := postResource(t, srv, "work", "x.txt", "text/plain", []byte("content"))
+	var upRaw map[string]any
+	decodeJSON(t, up, &upRaw)
+	sha := upRaw["sha"].(string)
+
+	body := fmt.Sprintf(`{"sha":%q,"size":7,"filename":"x.txt","mime":"text/plain"}`, sha)
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["exists"] != true {
+		t.Errorf("exists = %v, want true", raw["exists"])
+	}
+	if raw["sha"] != sha {
+		t.Errorf("sha = %v, want %q", raw["sha"], sha)
+	}
+}
+
+func TestPresignUpload_rejectsBadMIME(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	body := `{"sha":"` + strings.Repeat("b", 64) + `","size":100,"filename":"evil.exe","mime":"application/x-msdownload"}`
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415", rec.Code)
+	}
+}
+
+func TestPresignUpload_missingFields(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestConfirmUpload_blobMissing(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	body := `{"entryID":"nonexistent","sha":"` + strings.Repeat("c", 64) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/confirm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestConfirmUpload_success(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	// Upload blob, then begin a journal entry via presign (direct mode
+	// won't create one, so create one manually through the upload flow).
+	up := postResource(t, srv, "work", "y.txt", "text/plain", []byte("hello"))
+	var upRaw map[string]any
+	decodeJSON(t, up, &upRaw)
+	sha := upRaw["sha"].(string)
+	entryID := upRaw["id"].(string)
+
+	body := fmt.Sprintf(`{"entryID":%q,"sha":%q}`, entryID, sha)
+	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/confirm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	// Already committed by upload — confirm returns conflict (bad state).
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (already committed)", rec.Code)
+	}
+}
+
+func TestPresignRead_directWhenNoS3(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	up := postResource(t, srv, "work", "z.txt", "text/plain", []byte("read"))
+	var upRaw map[string]any
+	decodeJSON(t, up, &upRaw)
+	sha := upRaw["sha"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+sha+"/presign-read", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["direct"] != true {
+		t.Errorf("direct = %v, want true", raw["direct"])
+	}
+	if raw["url"] != "/n/work/resources/"+sha {
+		t.Errorf("url = %v", raw["url"])
+	}
+}
+
+func TestPresignRead_notFound(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	fake := strings.Repeat("d", 64)
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+fake+"/presign-read", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}

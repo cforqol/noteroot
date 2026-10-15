@@ -1,5 +1,5 @@
 import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
-import { uploadURL, markdownFor, rewriteImageThumbs } from '/lib/upload.js';
+import { uploadURL, markdownFor, rewriteImageThumbs, presignUpload } from '/lib/upload.js';
 import {
   getVimModeState,
   setVimModeState,
@@ -757,6 +757,19 @@ function closeEditor() {
 
 async function uploadResource(file) {
   if (!slug) throw new Error("no notebook selected");
+  // Stage 7: try presigned direct-to-S3 upload first.
+  const pre = await presignUpload(slug, file);
+  if (pre.mode === "exists") {
+    return { sha: pre.sha, filename: file.name, mime: file.type, created: false };
+  }
+  if (pre.mode === "s3") {
+    return pre.result;
+  }
+  if (pre.mode === "error") {
+    throw new Error(pre.error); // policy rejection from presign endpoint
+  }
+  // mode === "direct": no S3 configured (or WebCrypto unavailable) —
+  // fall through to the normal server-side upload.
   const url = uploadURL(slug, file.name);
   const res = await fetch(url, {
     method: "POST",

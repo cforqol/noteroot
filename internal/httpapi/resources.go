@@ -2,13 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"noteroot/internal/notebooks"
 	"noteroot/internal/resources"
@@ -23,12 +24,21 @@ func (s *Server) resourcePolicy() resources.Policy {
 }
 
 // openResources opens (or reuses) the per-notebook resource store and
-// journal. Both are cheap to create; the journal borrows the notebook's
-// state DB for the request duration.
+// journal. The store backend is selected by config: S3 when configured,
+// LocalStore otherwise. The journal borrows the notebook's state DB for
+// the request duration.
 func (s *Server) openResources(ctx context.Context, nb *notebooks.Notebook) (
-	*resources.LocalStore, *resources.Journal, func(), error,
+	resources.Store, *resources.Journal, func(), error,
 ) {
-	store, err := resources.NewLocalStore(nb.Layout.Resources())
+	s3Cfg := resources.S3Config{
+		Endpoint:     s.cfg.S3Endpoint,
+		Bucket:       s.cfg.S3Bucket,
+		Region:       s.cfg.S3Region,
+		AccessKey:    s.cfg.S3AccessKey,
+		SecretKey:    s.cfg.S3SecretKey,
+		PathStyle:    s.cfg.S3PathStyle,
+	}
+	store, err := resources.NewStore(nb.Layout.Resources(), s3Cfg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open store: %w", err)
 	}
@@ -255,7 +265,7 @@ func (s *Server) resourceStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
 		return
 	}
-	store, journal, cleanup, err := s.openResources(r.Context(), nb)
+	_, journal, cleanup, err := s.openResources(r.Context(), nb)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
 		return
@@ -267,9 +277,13 @@ func (s *Server) resourceStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stats failed"})
 		return
 	}
+	backend := "local"
+	if s.cfg.S3Enabled() {
+		backend = "s3"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"storeRoot": filepath.Base(store.Root()),
-		"journal":   counts,
+		"backend": backend,
+		"journal": counts,
 	})
 }
 
@@ -297,4 +311,192 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": sha})
+}
+
+// presignUpload serves POST /n/{slug}/resources/presign.
+//
+// Body: {"sha":"<sha256>","size":123,"filename":"x.png","mime":"image/png"}
+// Returns a presigned S3 PUT URL so the client can upload directly to
+// object storage, bypassing the app server. When object storage is not
+// configured, returns {"direct":true} so the client falls back to the
+// normal server-side upload endpoint.
+//
+// Flow:
+//  1. Client computes sha256 of the file.
+//  2. Client POSTs here with {sha, size, filename, mime}.
+//  3. Server validates policy + dedup check.
+//  4. If blob exists → {"exists":true,"sha":...} (client skips upload).
+//  5. If S3 configured → {"uploadURL":...,"sha":...,"entryID":...}.
+//  6. If no S3 → {"direct":true} (client uses POST /resources instead).
+//  7. After direct upload, client POSTs /resources/confirm {entryID, sha}.
+func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+
+	var req struct {
+		SHA      string `json:"sha"`
+		Size     int64  `json:"size"`
+		Filename string `json:"filename"`
+		MIME     string `json:"mime"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad JSON: " + err.Error()})
+		return
+	}
+	if req.SHA == "" || req.Filename == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha and filename required"})
+		return
+	}
+
+	policy := s.resourcePolicy()
+	_, err := policy.Validate(req.Filename, req.Size, req.MIME)
+	if err != nil {
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, resources.ErrTooLarge):
+			status = http.StatusRequestEntityTooLarge
+		case errors.Is(err, resources.ErrBadMIME), errors.Is(err, resources.ErrBadName):
+			status = http.StatusUnsupportedMediaType
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	store, journal, cleanup, err := s.openResources(r.Context(), nb)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
+		return
+	}
+	defer cleanup()
+
+	// Dedup: blob already present → skip upload.
+	if store.Has(req.SHA) {
+		writeJSON(w, http.StatusOK, map[string]any{"exists": true, "sha": req.SHA})
+		return
+	}
+
+	// Non-S3 store: client must use the server-side upload endpoint.
+	s3Store, isS3 := store.(*resources.S3Store)
+	if !isS3 {
+		writeJSON(w, http.StatusOK, map[string]any{"direct": true})
+		return
+	}
+
+	// Journal entry (pending until confirm).
+	entryID, err := journal.Begin(req.Filename, req.Size, req.MIME)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "journal begin failed"})
+		return
+	}
+
+	ttl := 15 * time.Minute
+	if s.cfg.S3PresignTTL != "" {
+		if d, err := time.ParseDuration(s.cfg.S3PresignTTL); err == nil && d > 0 {
+			ttl = d
+		}
+	}
+
+	uploadURL, err := s3Store.Presign(http.MethodPut, req.SHA, ttl)
+	if err != nil {
+		_ = journal.Abort(entryID)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "presign failed: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"direct":   false,
+		"uploadURL": uploadURL,
+		"sha":      req.SHA,
+		"entryID":  entryID,
+		"expiresIn": int(ttl.Seconds()),
+	})
+}
+
+// confirmUpload serves POST /n/{slug}/resources/confirm.
+//
+// Body: {"entryID":"...","sha":"..."} — called by the client after it
+// finishes a direct-to-S3 upload. The server verifies the blob exists
+// and commits the journal entry.
+func (s *Server) confirmUpload(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	var req struct {
+		EntryID string `json:"entryID"`
+		SHA     string `json:"sha"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EntryID == "" || req.SHA == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entryID and sha required"})
+		return
+	}
+
+	store, journal, cleanup, err := s.openResources(r.Context(), nb)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
+		return
+	}
+	defer cleanup()
+
+	if !store.Has(req.SHA) {
+		_ = journal.Abort(req.EntryID)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "blob not found in store"})
+		return
+	}
+	if err := journal.Commit(req.EntryID, req.SHA); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sha": req.SHA})
+}
+
+// presignRead serves GET /n/{slug}/resources/{sha}/presign-read — returns
+// a presigned GET URL for direct browser download from object storage.
+// Falls back to {"direct":true} for local stores.
+func (s *Server) presignRead(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	sha := strings.ToLower(r.PathValue("sha"))
+
+	store, _, cleanup, err := s.openResources(r.Context(), nb)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
+		return
+	}
+	defer cleanup()
+
+	if !store.Has(sha) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+
+	s3Store, isS3 := store.(*resources.S3Store)
+	if !isS3 {
+		writeJSON(w, http.StatusOK, map[string]any{"direct": true, "url": "/n/" + nb.Manifest.Slug + "/resources/" + sha})
+		return
+	}
+
+	ttl := 15 * time.Minute
+	if s.cfg.S3PresignTTL != "" {
+		if d, err := time.ParseDuration(s.cfg.S3PresignTTL); err == nil && d > 0 {
+			ttl = d
+		}
+	}
+	readURL, err := s3Store.Presign(http.MethodGet, sha, ttl)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "presign failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"direct":    false,
+		"url":       readURL,
+		"expiresIn": int(ttl.Seconds()),
+	})
 }
