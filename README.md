@@ -81,47 +81,40 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Structured JSON logging, request IDs, panic recovery
 - Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
 - Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
-- Minimal read-only web UI (notebook picker, tree, rendered note)
+- Web UI: notebook picker, tree, rendered note view
 - Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
 - Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad
-- Embedded, forward-only, idempotent migrations (schema only — nothing calls them yet)
+- Embedded, forward-only, idempotent migrations, run automatically at open
 - Corrupt databases quarantined rather than repaired
 - Graceful shutdown with a drain timeout
+- Vim mode: real Vim (WASM) in an isolated iframe, with circuit-breaker fallback to a plain textarea; buffer model with draft autosave and swap files (desktop)
+- Resources: drag-and-drop upload into content-addressed storage, upload journal with verification and crash recovery, dedup by SHA-256, strict size policy
+- Transforms: automatic image resize and video poster frames
+- S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
+- Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
+- Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
+- Backups: `POST /n/{slug}/backup` writes a git bundle, a `VACUUM INTO` state snapshot, and a sha256 manifest into `.notebook/backups/`
+- Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
 
 ### Planned
 
 **Notes**
-- Stable ULID identity — links survive renames and moves
 - Wikilinks and backlinks
 - Virtual collections (folders already work)
 
-**Editor**
-- Vim mode: real Vim (WASM) in an isolated iframe, with automatic fallback on failure
-- Buffer model with draft autosave and swap files (desktop vim mode)
-
 **Search**
 - Optional semantic search via embeddings
-
-**Resources**
-- Drag-and-drop upload into content-addressed storage
-- Local-first with a strict size policy; object storage when configured
-- S3-compatible backend: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm
-- Presigned read URLs for authenticated downloads
-- Automatic image resize and video poster frames
-- Upload journal with resume, verification, and crash recovery
-- Per-notebook dedup by content hash
 - Near-duplicate detection for notes (SimHash)
 
 **Safety**
-- Per-notebook circuit breakers
-- Integrity checks and a boot-time rebuildability guard
-- `state.db` rebuild from disk, git, and object storage
+- Per-notebook circuit breakers (server-side)
+- `state.db` rebuild that also consults object storage
 
 **Operations**
 - Encrypted offsite backups with verification and scheduled restore drills
-- Per-notebook quota and a global disk budget
+- A global disk budget
+- Resumable import/export for very large notebooks
 - Diagnostics bundle and health page
-- Streaming, resumable, idempotent import/export
 
 **Extensibility**
 - Sandboxed Lua plugins: commands, hooks, renderers, panels
@@ -144,7 +137,7 @@ Every layer below HTTP is instantiated **per notebook**. Nothing is shared excep
 Key components:
 
 - **`vault`** — the single write path. Serialized per path, atomic, actor-tagged, `If-Match` guarded.
-- **`index`** — disposable FTS and refs. Intended to be deletable; rebuilders land in stage 8.
+- **`index`** — disposable FTS and refs. Deletable; rebuilt from a full vault pass.
 - **`state`** — durable but rebuildable: identity map, resources, locks.
 - **`resources`** — pure policy, then pipeline, then store and transformer. No policy in the store.
 - **`editor`** — swappable backend behind one interface, isolated from the shell.
@@ -171,6 +164,7 @@ noteroot-data/                       # NOTEROOT_DATA_DIR
             ├── cache/               # disposable
             ├── drafts/              # buffer drafts and swap
             ├── trash/               # soft deletes
+            ├── backups/             # git bundles + state snapshots + manifests
             ├── state.db
             └── index.db
 ```
@@ -202,27 +196,26 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 | `golang.org/x/text/unicode/norm` | NFC path normalization | yes |
 | `net/http` (stdlib) | Router, using 1.22+ method patterns | yes |
 | `log/slog` (stdlib) | Structured logging | yes |
+| ULID identity (stdlib) | `crypto/rand` + CRC32 checksum, homegrown in `frontmatter` | yes |
+| `ffmpeg` / `ffprobe` (external binary) | Image resize and video poster frames | yes (optional at runtime) |
+| vim.wasm + xterm.js (vendored/CDN JS) | Real Vim in an isolated iframe | yes |
 
 **Planned**
 
 | Library / tool | Purpose |
 |---|---|
-| `oklog/ulid` | Note identity |
 | `fsnotify/fsnotify` | Vault watching (hint only; mtime scan is truth) |
 | `golang.org/x/sync/singleflight` | Cache stampede protection |
 | `hashicorp/golang-lru` | In-process cache |
 | `yuin/gopher-lua` | Plugin sandbox |
-| xterm.js | Terminal rendering for vim mode |
-| wasi-vim | Real Vim compiled to WebAssembly |
-| `libvips` (`vipsthumbnail`) | Still-image resize, HEIC, AVIF |
-| `ffmpeg` | Video posters, transcodes |
-| `restic` / `rclone` | Encrypted backups |
+| `libvips` (`vipsthumbnail`) | Higher-fidelity stills than ffmpeg (EXIF/ICC/HEIC/AVIF) |
+| `restic` / `rclone` | Encrypted offsite backups |
 
 ### Why these
 
 - **Pure Go, no cgo** — cross-compiles cleanly, static binaries, trivial containers. `modernc.org/sqlite` over `mattn/go-sqlite3` specifically for this; FTS5 is enabled and in use since stage 2.
-- **`libvips` over `ffmpeg` for stills** — correct EXIF orientation, ICC profiles, HEIC, and AVIF, at far lower memory than ffmpeg's full-frame decode. ffmpeg still handles video.
-- **WASM Vim over embedding Neovim** — no subprocess, no RPC, no session manager; typing latency stays local. Neovim remains the documented fallback behind the same interface.
+- **One external tool (`ffmpeg`) for both stills and video** — ships resize and posters with zero extra build deps; the narrow `Transformer` interface lets libvips replace it later if EXIF/ICC/HEIC/AVIF fidelity becomes a need.
+- **WASM Vim over embedding Neovim** — no subprocess, no RPC, no session manager; typing latency stays local. Failures fall back to a plain textarea via the circuit breaker.
 
 ## Quick start
 
@@ -303,6 +296,8 @@ All configuration is environment variables.
 | `NOTEROOT_S3_SECRET_KEY` | `` | Secret access key. |
 | `NOTEROOT_S3_PATH_STYLE` | `false` | `true` = path-style URLs (MinIO), `false` = virtual-hosted (AWS). |
 | `NOTEROOT_S3_PRESIGN_TTL` | `15m` | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
+| `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
+| `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
 
 **Authentication.** noteroot does not implement a login page. Traefik performs forward-auth against your identity provider and sets `X-Auth-User` on success, stripping any client-supplied value. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
 
@@ -333,7 +328,7 @@ Stages 0–8 are the app. Stage 9 is a menu, not a queue.
 - **5** — resources: policy, local store, upload journal
 - **6** — transforms: image resize, video posters
 - **7** — object storage with presigned upload and authenticated reads
-- **8** — dedup, bulk operations, quota, backups, restore drills, import/export
+- **8** — dedup, rename/move, quota, backups, import/export (restore drills deferred)
 - **9** — plugins and integrations; AI is optional and comes last
 
 ### Deferred

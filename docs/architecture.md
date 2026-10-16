@@ -12,7 +12,8 @@ database holds primary data.
 
 Single Go binary in Docker behind Traefik (TLS, forward-auth). Vault on a bind
 mount. Optional S3-compatible object storage with presigned URLs (stage 7).
-Backup sidecar. Everything below HTTP is instantiated per notebook.
+In-process backups (git bundle + state snapshot; remote targets planned).
+Everything below HTTP is instantiated per notebook.
 
 ## 2. Auth
 
@@ -47,9 +48,10 @@ All writes through `vault.Write(path, content, opts{BaseSha, Actor})`.
 Serialized per path. `BaseSha` mismatch → 412. Forced writes emit
 `note.external_change`; the editor reloads if clean, banners if dirty.
 
-**Git autocommit** — per-notebook flusher coalesces write/delete/restore
-marks into at most one commit per 60 s window. Commit failures restore the
-pending ops and retry on the next window; they never fail the HTTP write.
+**Git autocommit** — per-notebook flusher coalesces
+write/delete/restore/rename/import marks into at most one commit per 60 s
+window. Commit failures restore the pending ops and retry on the next
+window; they never fail the HTTP write.
 
 **Buffer/lock** — desktop buffer with draft autosave and swap file ships
 with vim mode (stage 4). Phone autosaves directly (`If-Match` on every
@@ -59,43 +61,59 @@ correctness backstop.
 **Crash pad** — `localStorage` (quota-guarded), keyed per notebook+path,
 stores base sha; cleared only on HTTP 200/201. Restorable from any tab.
 
-**Bulk ops** — rename/move is a journaled transaction; with ULIDs no link
-rewriting is needed. Imports use bulk mode with batched commits.
+**Bulk ops** — rename/move (`PATCH /n/{slug}/note`) is an atomic per-path
+`vault.Rename` with a matching identity-map update; with ULIDs no link
+rewriting is needed. Imports use staged validation with per-item isolation
+and batched writes.
 
 ## 5. Read path
 
-Scanner with mtime as truth and fsnotify as a hint, walking `vault/` only.
-One scanner feeds FTS, refs, and identity. Caches: LRU, per-notebook disk,
-content-hash keys, singleflight, ETags.
+Scanner with mtime as truth, walking `vault/` only (fsnotify as a change
+hint is planned). One scanner feeds FTS, refs, and identity. Caches:
+per-notebook disk with content-hash keys (transform outputs), ETags on note
+reads; in-process LRU and singleflight are planned.
 
 ## 6. Resources
 
 Pure `Policy` → `Pipeline` → `ResourceStore` / `Transformer`. `LocalStore` in
-v1. Upload journal with resume, verification, dedup, GC with grace. `vips` for
-stills, `ffmpeg` for video posters.
+v1. Upload journal with resume, verification, dedup, GC with grace.
+`ffmpeg`/`ffprobe` produce stills and video posters; the narrow `Transformer`
+interface allows a vips-backed swap later.
+
+**Quota** — `NOTEROOT_QUOTA_BYTES` per notebook (0 = unlimited), enforced at
+every upload entry point (direct and presign) with HTTP 507. Stats expose
+`usedBytes`/`quotaBytes`; usage is dedup-aware (content-addressed bytes
+counted once).
+
+**GC** — background sweep every `NOTEROOT_GC_INTERVAL` (default 24h) plus a
+manual trigger `POST /n/{slug}/resources/gc`; deletes unreferenced blobs
+past their grace period and returns removal counts.
 
 ## 7. Dedup
 
-Media: exact by `blob_sha`, notebook-scoped. Text: SimHash, detect-don't-merge.
-Canonicalization is explicit and keeps originals in git.
+Media: exact by `blob_sha`, notebook-scoped. Text: SimHash,
+detect-don't-merge (planned). Canonicalization is explicit and keeps
+originals in git.
 
 ## 8. Editor
 
-Two modes. Desktop vim mode in a sandboxed iframe (wasi-vim; nvim fallback),
-source view, circuit breaker with auto-fallback (stage 4). Phone/shell mode
-is a plain textarea with debounced autosave, crash pad, and advisory locks
-(shipped in stage 3).
+Two modes. Desktop vim mode in a sandboxed iframe (vim.wasm, xterm.js;
+textarea fallback via circuit breaker), source view (stage 4). Phone/shell
+mode is a plain textarea with debounced autosave, crash pad, and advisory
+locks (shipped in stage 3).
 
 ## 9. Extensibility
 
-Shared substrate: manifest, permissions, per-notebook event bus (coalesced,
-actor-suppressed, depth-limited), registry, scheduler, secrets, kv, audit.
+Planned substrate (stage 9): manifest, permissions, per-notebook event bus
+(coalesced, actor-suppressed, depth-limited), registry, scheduler, secrets,
+kv, audit.
 
 ## 10. Error handling
 
 Failure matrix with classification. Atomic writes, reconcile on boot,
-per-notebook circuit breakers, quarantine, trash, disk budget, `state.db`
-rebuild via the rebuildability guard.
+quarantine, trash, `state.db` rebuild via the rebuildability guard; the
+editor's circuit breaker falls back to a plain textarea. Server-side
+per-notebook circuit breakers and a global disk budget are planned.
 
 ## 11. Backups
 
@@ -116,6 +134,8 @@ returns `"skipped"`. `?dry_run=true` classifies without writing.
 
 ## 13–15. Security, operations, future
 
-Strict sanitizer, CSP, CSRF, sandbox, allowlist, audit. Structured logs,
-diagnostics, health page, alerts, forward-only migrations. Stage 9: plugin
-substrate, scoped API tokens, remote backup targets.
+Strict sanitizer, CSRF enforcement, path/Origin allowlists, isolation by
+iframe sandbox (ship). CSP and a platform audit log are planned. Structured
+logs and forward-only migrations ship. Also planned: diagnostics bundle,
+health page, alerts. Stage 9: plugin substrate, scoped API tokens, remote
+backup targets.
