@@ -21,7 +21,10 @@ Forward-auth sets `X-Auth-User`; Traefik strips client-supplied values.
 `/healthz` and `/readyz` are unauthenticated. CSRF is enforced on mutating
 routes: form content types rejected, Origin/Referer allowlist checked, no
 CORS granted, no application session cookie. Scoped API tokens on
-`/api/v1` (planned, stage 9).
+`/api/v1`: SHA-256-hashed at rest, plaintext shown once, `resource:action
+[:qualifier]` grants, revocable; bearer middleware is the only auth there
+(no forward-auth, no CSRF — Authorization cannot ride a cross-site
+request), and `X-Auth-User` is not a credential on those routes.
 
 ## 3. Data model
 
@@ -104,9 +107,39 @@ locks (shipped in stage 3).
 
 ## 9. Extensibility
 
-Planned substrate (stage 9): manifest, permissions, per-notebook event bus
-(coalesced, actor-suppressed, depth-limited), registry, scheduler, secrets,
-kv, audit.
+Shipped substrate. Every notebook gets `.notebook/platform.db`
+(kv, secrets, audit, api_tokens, ui panels) via the same
+quarantine-and-rebuild open as state.db, and a bus that coalesces bursts
+(500 ms), suppresses self-delivery by actor/origin, and drops chains past
+depth 5. Mutations publish through `emitAs(ctx, actor, origin, depth)`;
+plugin and hook writes reuse the real write path (identity, index, git,
+audit, bus) with their own attribution.
+
+**Plugins** — `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`.
+Manifest validation is strict (name must match the directory, entry
+cannot escape, permissions via the shared grant grammar); a bad or
+disabled plugin is listed with its problem and never fails boot. One
+gopher-lua VM per plugin behind one mutex; the bus only enqueues
+(bounded, drop-on-full). Every invocation (entry, hook, command) takes
+the same path: context deadline (load 10 s, command/hook 5 s), panic
+recovery, teardown-and-rebuild on timeout, consecutive-failure breaker.
+Capabilities (`note`, `kv`, `ui.set_panel`, `fm`, `register_command`,
+`on`) check grants at call time; qualifiers are path/key/panel globs.
+Panels land in `ui.panels` kv and render in the frontend status strip.
+
+**Tokens** — `api_tokens` table, `nrk_` prefix, hashed. Bearer middleware
+maps a scope miss to 403 and an unknown/revoked hash to the same 401;
+corrupt stored scopes fail closed.
+
+**Integrations** — outbound configs in `.notebook/integrations/*.toml`
+(url, events, enabled), secrets in platform.db set over the API and
+rotated in place. Deliveries are signed POSTs with the event's depth in
+`X-Noteroot-Depth`; redirects are failures. Inbound hooks in
+`.notebook/hooks/*.toml` (path, mode) receive `POST /hooks/{slug}/{name}`
+authenticated by HMAC over the raw body (GitHub-compatible header
+accepted), write with `hook:` attribution at depth+1, and reject a
+delivery already at the bus limit with 409 — an echoing service
+terminates in a handful of hops.
 
 ## 10. Error handling
 
@@ -135,7 +168,9 @@ returns `"skipped"`. `?dry_run=true` classifies without writing.
 ## 13–15. Security, operations, future
 
 Strict sanitizer, CSRF enforcement, path/Origin allowlists, isolation by
-iframe sandbox (ship). CSP and a platform audit log are planned. Structured
-logs and forward-only migrations ship. Also planned: diagnostics bundle,
-health page, alerts. Stage 9: plugin substrate, scoped API tokens, remote
-backup targets.
+iframe sandbox (ship). Every mutation is recorded in platform.db's audit
+trail (actor, action, resource, detail) — HTTP writes say who, plugin and
+hook writes say which extension. CSP is planned. Structured
+logs and forward-only migrations ship. Stage 9 shipped: plugin substrate,
+scoped API tokens, integrations. Also planned: diagnostics bundle,
+health page, alerts, remote backup targets.

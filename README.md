@@ -69,7 +69,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 6 | Transforms: image resize, video posters | ✓ done |
 | 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
 | 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
-| 9 | Plugins and integrations | — |
+| 9 | Plugins and integrations | ✓ done |
 
 ## Features
 
@@ -95,6 +95,11 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
 - Backups: `POST /n/{slug}/backup` writes a git bundle, a `VACUUM INTO` state snapshot, and a sha256 manifest into `.notebook/backups/`
 - Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
+- Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
+- Sandboxed Lua plugins (gopher-lua): per-notebook `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`; commands, event hooks, kv, panels, frontmatter helpers; permission-checked capabilities, per-plugin VM behind one mutex, context timeouts, panic recovery, circuit breaker; a slow plugin delays itself and nothing else
+- Per-notebook event bus: coalesced bursts, actor/origin self-suppression, depth-limited chains — plugin and integration writes can never loop the app
+- Integrations: outbound signed webhooks from `.notebook/integrations/<name>.toml` (HMAC-SHA256, breaker, redirects refused); inbound HMAC-authenticated webhooks to `/hooks/{slug}/{name}` writing notes with `hook:` attribution; secrets in platform.db, rotation without reload; delivery depth carried across the HTTP round trip so an echo terminates
+- Proof plugins in `plugins/` (copy into the notebook, hit reload): frontmatter tagger, status-bar word count, theme preference — rendered by the UI's plugin panel strip
 
 ### Planned
 
@@ -115,11 +120,6 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - A global disk budget
 - Resumable import/export for very large notebooks
 - Diagnostics bundle and health page
-
-**Extensibility**
-- Sandboxed Lua plugins: commands, hooks, renderers, panels
-- Integrations over HTTP and webhooks, with scoped tokens
-- Per-notebook event bus with coalescing and loop suppression
 
 ## Architecture
 
@@ -313,9 +313,11 @@ Two distinct extension points, sharing one substrate:
 | Can touch UI | Yes | No |
 | Identity | Declared permissions | Scoped API token |
 
-Plugins are **read-only by default**. Permissions use `resource:action[:qualifier]` and are grouped by risk at approval. Everything runs async with a timeout and a circuit breaker, so no plugin can block a save.
+**Plugins** live in `.notebook/plugins/<dir>/` with a `plugin.toml` manifest (name, version, entry, permissions) and a `plugin.lua` entry point — both git-friendly, neither containing a secret. Capabilities (`note:read`/`write`, `kv`, `ui.set_panel`, `fm.parse`/`build`) are permission-checked at call time with the same `resource:action[:qualifier]` grammar as API tokens; plugins are **read-only by default** and grouped by risk at approval. Commands are human-triggered over `POST /n/{slug}/plugins/{name}/commands/{command}`; hooks subscribe to the notebook's event bus (coalesced, actor-suppressed, depth-limited); panels land in platform.db and render in the UI's status strip. Everything runs async with a timeout and a circuit breaker, so no plugin can block a save. `POST /n/{slug}/plugins/reload` picks up an edited directory without a restart.
 
-The plan is to prove the API with three plugins before writing a spec: a theme, a status-bar word count, and a frontmatter tagger.
+**Integrations** come in two halves, configured by files under `.notebook/integrations/` (outbound) and `.notebook/hooks/` (inbound). Outbound deliveries are signed POSTs (`X-Noteroot-Signature: sha256=` + HMAC) carrying the event's hop depth; inbound webhooks verify the same signature (GitHub's `X-Hub-Signature-256` works too) and write through the real write path with `hook:` attribution, continuing the chain one hop deeper — a service that echoes deliveries back terminates at the depth limit. Secrets live in platform.db, set over the authenticated API, rotated in place.
+
+The three proof plugins — frontmatter **tagger**, status-bar **word count**, **theme** — ship in the repo's `plugins/` directory: copy one into a notebook, reload, done.
 
 ## Roadmap
 
@@ -329,7 +331,7 @@ Stages 0–8 are the app. Stage 9 is a menu, not a queue.
 - **6** — transforms: image resize, video posters
 - **7** — object storage with presigned upload and authenticated reads
 - **8** — dedup, rename/move, quota, backups, import/export (restore drills deferred)
-- **9** — plugins and integrations; AI is optional and comes last
+- **9** — plugins and integrations ✓ shipped (Lua sandbox, tokens, webhooks, bus)
 
 ### Deferred
 
@@ -338,7 +340,6 @@ Everything below is deliberately out of scope until the core is good:
 - End-to-end encryption — plaintext plus disk and backup encryption covers a self-hosted threat model, and `zk` would roughly double the code paths
 - Note sharing and a public wiki view
 - AI features, embeddings, and vector search
-- Bidirectional integrations
 - Local-first replication — a crash pad covers the realistic loss cases
 - Plugin updates and a marketplace
 
