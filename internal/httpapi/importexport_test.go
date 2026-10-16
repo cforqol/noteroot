@@ -117,7 +117,7 @@ func TestImport_createNew(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"existing.md": "old"}))
 
 	archive := buildTarGz(t, map[string]string{
-		"new.md":  "# New Note",
+		"new.md": "# New Note",
 		"a/b.md": "nested",
 	})
 	rec := postImport(t, srv, "work", archive, false)
@@ -215,9 +215,9 @@ func TestImport_rejectsPathTraversal(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "x"}))
 
 	archive := buildTarGz(t, map[string]string{
-		"../escape.md":          "bad",
-		"valid/note.md":         "ok",
-		"/absolute/path.md":     "bad",
+		"../escape.md":      "bad",
+		"valid/note.md":     "ok",
+		"/absolute/path.md": "bad",
 	})
 	rec := postImport(t, srv, "work", archive, false)
 	if rec.Code != http.StatusOK {
@@ -289,9 +289,9 @@ func TestImport_notGzip(t *testing.T) {
 func TestExportImportRoundtrip(t *testing.T) {
 	// Export from source, import to a fresh notebook, verify notes present.
 	reg := notesFixture(t, map[string]string{
-		"index.md":     "# Index",
-		"notes/a.md":   "# A",
-		"notes/b.md":   "# B",
+		"index.md":   "# Index",
+		"notes/a.md": "# A",
+		"notes/b.md": "# B",
 	})
 	srv := newTestServer(t, config.AuthNone, reg)
 

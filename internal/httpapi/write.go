@@ -88,7 +88,7 @@ func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.upsertIdentity(r.Context(), nb, rel, id)
-	s.reindex(r, nb, v)
+	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "write", Path: rel, Actor: actor})
 	s.emit(r, nb, "note.write", rel, map[string]any{"id": id, "sha": res.Sha, "created": res.Created})
 

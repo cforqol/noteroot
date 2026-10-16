@@ -12,6 +12,7 @@ import (
 	"noteroot/internal/git"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/platform"
+	"noteroot/internal/plugins"
 	"noteroot/internal/vault"
 	"noteroot/web"
 )
@@ -21,6 +22,7 @@ type Server struct {
 	log  *slog.Logger
 	reg  *notebooks.Registry
 	plat *platform.Manager
+	plug *plugins.Manager
 	http *http.Server
 
 	gitMu sync.Mutex
@@ -31,6 +33,9 @@ type Server struct {
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s := &Server{cfg: cfg, log: log, reg: reg, plat: platform.NewManager(log)}
+	s.plug = plugins.NewManager(log, func(slug string) plugins.NoteStore {
+		return &pluginNoteStore{s: s, slug: slug}
+	})
 
 	mux := http.NewServeMux()
 
@@ -86,6 +91,12 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/tokens", mutating(s.createToken))
 	mux.Handle("DELETE /n/{slug}/tokens", mutating(s.revokeToken))
 
+	// Stage 9 phase 3: plugin management and command dispatch.
+	mux.Handle("GET /n/{slug}/plugins", auth(s.listPlugins))
+	mux.Handle("GET /n/{slug}/plugins/panels", auth(s.pluginPanels))
+	mux.Handle("POST /n/{slug}/plugins/reload", mutating(s.reloadPlugins))
+	mux.Handle("POST /n/{slug}/plugins/{name}/commands/{command}", mutating(s.runPluginCommand))
+
 	// /api/v1: bearer tokens with resource:action[:qualifier] scopes.
 	// No forward-auth and no CSRF here — the Authorization header
 	// cannot be attached cross-site without a CORS grant the server
@@ -123,6 +134,15 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s.git = map[string]*git.Flusher{}
 	s.purgeTrash()
 	s.stopGC = s.startGC()
+	// Load every notebook's plugins at boot so hooks are live before
+	// the first mutation reaches them. Failures log and continue:
+	// plugins degrade, notebooks do not.
+	for _, nb := range s.reg.List() {
+		slug := nb.Manifest.Slug
+		if err := s.plug.Ensure(slug, nb.Layout, s.plat.Bus(slug)); err != nil {
+			s.log.Error("plugin load failed", "notebook", slug, "err", err)
+		}
+	}
 	return s
 }
 
@@ -147,6 +167,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.flushGit()
 	if s.stopGC != nil {
 		s.stopGC()
+	}
+	// Plugins first: their hooks may still be draining into the bus.
+	if s.plug != nil {
+		s.plug.Close()
 	}
 	if s.plat != nil {
 		s.plat.Close()

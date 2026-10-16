@@ -12,6 +12,7 @@ const (
 	CacheDir     = "cache"
 	DraftsDir    = "drafts"
 	TrashDir     = "trash"
+	PluginsDir   = "plugins"
 	StateDB      = "state.db"
 	IndexDB      = "index.db"
 	PlatformDB   = "platform.db"
@@ -38,6 +39,7 @@ func (l Layout) StateDB() string    { return filepath.Join(l.root, AppDir, State
 func (l Layout) IndexDB() string    { return filepath.Join(l.root, AppDir, IndexDB) }
 func (l Layout) PlatformDB() string { return filepath.Join(l.root, AppDir, PlatformDB) }
 func (l Layout) Backups() string    { return filepath.Join(l.root, AppDir, BackupsDir) }
+func (l Layout) Plugins() string    { return filepath.Join(l.root, AppDir, PluginsDir) }
 
 func (l Layout) Dirs() []string {
 	return []string{l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(), l.Trash()}

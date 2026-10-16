@@ -122,9 +122,16 @@ func (b *Bus) Publish(ev Event) {
 			"notebook", b.slug, "type", ev.Type, "depth", ev.Depth)
 		return
 	}
-	key := ev.Type + "\x00" + ev.Path
+	// Coalesce by (type, path, origin): same-origin bursts merge, but
+	// origins never do — a plugin's write must not merge into the HTTP
+	// event that triggered it, or its own hook would fire (self-
+	// suppression and depth attribution both depend on the origin).
+	key := ev.Type + "\x00" + ev.Path + "\x00" + ev.Origin
 	if cur, ok := b.pending[key]; ok {
 		cur.Count += ev.Count
+		if ev.Depth > cur.Depth {
+			cur.Depth = ev.Depth
+		}
 		for k, v := range ev.Data {
 			if cur.Data == nil {
 				cur.Data = map[string]any{}

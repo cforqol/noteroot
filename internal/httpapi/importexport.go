@@ -242,7 +242,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.reindex(r, nb, v)
+	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "import", Actor: actorFrom(r)})
 	s.emit(r, nb, "notebook.import", "", map[string]any{"entries": len(results)})
 

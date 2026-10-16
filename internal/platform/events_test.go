@@ -49,6 +49,43 @@ func TestBus_coalescesBursts(t *testing.T) {
 	}
 }
 
+// A plugin's write must not merge into the HTTP event that triggered
+// it: suppression and depth attribution both hang off the origin.
+func TestBus_coalesceSeparatesOrigins(t *testing.T) {
+	b := testBus()
+	var mu sync.Mutex
+	var got []Event
+	b.Subscribe(Subscription{
+		ID: "o",
+		Handler: func(_ context.Context, ev Event) {
+			mu.Lock()
+			got = append(got, ev)
+			mu.Unlock()
+		},
+	})
+
+	b.Publish(Event{Type: "note.write", Path: "a.md", Origin: "http", Depth: 0})
+	b.Publish(Event{Type: "note.write", Path: "a.md", Origin: "plugin:x", Depth: 1})
+	b.Publish(Event{Type: "note.write", Path: "a.md", Origin: "http", Depth: 0})
+	b.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("delivered %d events, want 2 (one per origin)", len(got))
+	}
+	byOrigin := map[string]Event{}
+	for _, ev := range got {
+		byOrigin[ev.Origin] = ev
+	}
+	if c := byOrigin["http"].Count; c != 2 {
+		t.Errorf("http Count = %d, want 2", c)
+	}
+	if d := byOrigin["plugin:x"].Depth; d != 1 {
+		t.Errorf("plugin depth = %d, want 1", d)
+	}
+}
+
 func TestBus_actorAndOriginSuppression(t *testing.T) {
 	b := testBus()
 	var mu sync.Mutex

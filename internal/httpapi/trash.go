@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -46,7 +47,7 @@ func (s *Server) deleteNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.reindex(r, nb, v)
+	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "delete", Path: rel, Actor: actor})
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -102,7 +103,7 @@ func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.reindex(r, nb, v)
+	s.reindex(r.Context(), nb, v)
 	actor, _ := r.Context().Value(keyUser).(string)
 	s.markGitDirty(nb, git.Op{Action: "restore", Path: rel, Actor: actor})
 	s.emit(r, nb, "note.restore", rel, nil)
@@ -111,8 +112,8 @@ func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
 
 // reindex refreshes search after a mutation. Index failure only degrades
 // search freshness — the mutation already succeeded.
-func (s *Server) reindex(r *http.Request, nb *notebooks.Notebook, v *vault.Vault) {
-	idx, _, err := index.Open(r.Context(), nb.Layout.IndexDB(), nb.Layout.StateDB())
+func (s *Server) reindex(ctx context.Context, nb *notebooks.Notebook, v *vault.Vault) {
+	idx, _, err := index.Open(ctx, nb.Layout.IndexDB(), nb.Layout.StateDB())
 	if err != nil {
 		s.log.Warn("index open failed", "notebook", nb.Manifest.Slug, "err", err)
 		return
@@ -122,7 +123,7 @@ func (s *Server) reindex(r *http.Request, nb *notebooks.Notebook, v *vault.Vault
 			s.log.Warn("index close failed", "notebook", nb.Manifest.Slug, "err", err)
 		}
 	}()
-	if _, err := idx.Update(r.Context(), v); err != nil {
+	if _, err := idx.Update(ctx, v); err != nil {
 		s.log.Warn("index update failed", "notebook", nb.Manifest.Slug, "err", err)
 	}
 }
