@@ -1,5 +1,5 @@
 // UI Integration Tests for linking feature
-// Run with: node --test web/app.test.js
+// Run with: node --test web/app.test.cjs
 
 const { test, describe, beforeEach, mock } = require('node:test');
 const assert = require('node:assert');

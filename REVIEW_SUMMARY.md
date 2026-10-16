@@ -1,5 +1,10 @@
 # Code Review Summary - Linking Feature (Identity + Wikilinks)
 
+> **Superseded.** Written 2026-10-14 mid-implementation when slices 4–6 were
+> still pending. They shipped the next day — see IMPLEMENTATION_SUMMARY.md
+> and docs/linking.md ("backend complete, UI complete"). Kept for history;
+> do not plan work from the "Pending Integration" section below.
+
 **Date**: 2026-10-14  
 **Status**: ✅ All tests passing  
 **Slices Completed**: 1-3 of 6 (Identity, Mint on Write, Wikilink Parse)

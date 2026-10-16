@@ -68,7 +68,7 @@ end-to-end. This session closed every remaining design gap:
 - `golang.org/x/net` upgraded v0.26.0 → v0.38.0 (GO-2025-3595, bluemonday→html.Tokenizer).
 
 ### UI Integration Tests
-- **JavaScript unit tests** (`web/app.test.js`): 12 tests covering panel building (`linksPanels`, `panel`, `noteLink`), wikilink structure (`<a class="wikilink" data-path>` vs `<span class="wikilink dead">`), and SPA click handler (plain left-click navigates, middle/cmd/ctrl preserve browser defaults).
+- **JavaScript unit tests** (`web/app.test.cjs`): 12 tests covering panel building (`linksPanels`, `panel`, `noteLink`), wikilink structure (`<a class="wikilink" data-path>` vs `<span class="wikilink dead">`), and SPA click handler (plain left-click navigates, middle/cmd/ctrl preserve browser defaults).
 - **Go E2E tests** (`internal/httpapi/notes_test.go`): 5 new functions verifying complete HTML rendering: `TestNote_wikilinkHTMLStructure`, `TestNote_backlinksOutgoingJSONShape`, `TestNote_wikilinkSPAAttributes`, `TestNote_panelDataConsistency` — validate JSON field structure, href encoding, data-path attributes, and display/data agreement per design §7.
 - **Test infrastructure**: `web/package.json` (jsdom ^25.0.0), `web/README.test.md` (documentation), `Makefile` targets (`test-web`, `test-all`).
 - All tests passing: 12 JS tests ✓, Go httpapi suite ✓.

@@ -64,8 +64,8 @@ Body: full note bytes (frontmatter included)
   (the client learns it from the `ETag` on `GET note`/`raw`, §10). Mismatch
   → `412 Precondition Failed` with `{"error", "currentSha"}`.
 - `If-Match: *` — require existence (update-only, no base check).
-- Absent `If-Match` — update-only, no base check (phone autosave uses this;
-  the crash pad in §8 is its safety net, not the server).
+- Absent `If-Match` — update-only, no base check (kept for compatibility;
+  current clients always send `If-Match` — see Deviations below).
 - Create = `PUT` to a path that does not exist. To avoid resurrecting a
   trashed note by accident, create requires `If-None-Match: *`; writing to
   an existing path with it → `412`.

@@ -108,7 +108,7 @@ originals in git.
 
 ## 8. Editor
 
-Two modes. Desktop vim mode in a sandboxed iframe (vim.wasm, xterm.js;
+Two modes. Desktop vim mode runs vim.wasm in-page (xterm.js;
 textarea fallback via circuit breaker), source view (stage 4). Phone/shell
 mode is a plain textarea with debounced autosave, crash pad, and advisory
 locks (shipped in stage 3).
@@ -159,10 +159,12 @@ per-notebook circuit breakers and a global disk budget are planned.
 ## 11. Backups
 
 Per notebook: git bundle + `VACUUM INTO` (v1, local). `POST /n/{slug}/backup`
-writes timestamped `<slug>-YYYYMMDDTHHMMSSZ.bundle` and `.db` alongside a
-`manifest.json` in `.notebook/backups/`. Partial failures (non-git vault,
-state.db absent) are recorded in `manifest.Errors`; the endpoint still returns
-200 with the partial manifest. Restic / remote targets deferred to v2.
+writes timestamped `<stamp>-vault.bundle` and `<stamp>-state.db` (with a
+`-N` suffix if two backups land in the same second) in `.notebook/backups/`.
+There is no manifest file on disk — the run manifest (paths, SHAs, partial
+failures in `Errors`) is the HTTP response body. Partial failures (non-git
+vault, state.db absent) still return 200 with the partial manifest. Restic /
+remote targets deferred to v2.
 
 ## 12. Import/export
 
@@ -175,8 +177,8 @@ returns `"skipped"`. `?dry_run=true` classifies without writing.
 
 ## 13–15. Security, operations, future
 
-Strict sanitizer, CSRF enforcement, path/Origin allowlists, isolation by
-iframe sandbox (ship). Every mutation is recorded in platform.db's audit
+Strict sanitizer, CSRF enforcement, path/Origin allowlists, and
+COOP/COEP headers for SharedArrayBuffer isolation (ship). Every mutation is recorded in platform.db's audit
 trail (actor, action, resource, detail) — HTTP writes say who, plugin and
 hook writes say which extension. CSP is planned. Structured
 logs and forward-only migrations ship. Stage 9 shipped: plugin substrate,

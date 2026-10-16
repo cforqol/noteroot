@@ -19,11 +19,13 @@ consequences for design decisions elsewhere.
 1. **Network attacker** — mitigated by Traefik TLS. Assumes a valid cert chain.
 2. **Unauthenticated internet** — mitigated by forward-auth. Only `/healthz` and
    `/readyz` are open, and they expose nothing sensitive.
-3. **Disk theft / decommissioned hardware** — mitigated by LUKS at rest and
-   encrypted offsite backups.
+3. **Disk theft / decommissioned hardware** — partially mitigated. LUKS at
+   rest is the operator's job; backups are plaintext local files
+   (encrypted offsite backup is deferred), so anyone holding the disk
+   holds the notes.
 4. **Malicious or buggy plugin** — sandboxed Lua, declared permissions,
-   read-only by default, no filesystem or `os.execute`, network allowlist,
-   audit log, per-plugin circuit breaker.
+   read-only by default, no filesystem, no `os.execute`, no network
+   access at all, audit log, per-plugin circuit breaker.
 5. **Accidental user error** — trash instead of unlink, git history, conflict
    copies, no destructive merges, dry-run imports.
 6. **Bugs in our own code** — atomic writes, bounded failure domains,
@@ -34,7 +36,7 @@ consequences for design decisions elsewhere.
 - **Hostile server operator.** We are the operator. This is the primary reason
   `zk` (zero-knowledge) is deferred.
 - **Multi-user isolation.** One user, one trust domain.
-- **Public sharing.** Everything is private; the `/media` route requires auth.
+- **Public sharing.** Everything is private; note and resource routes require auth.
 - **Supply chain.** Go modules are pinned via `go.sum` but not vendored.
 - **Side channels.** No defence against timing or cache attacks.
 
@@ -42,7 +44,10 @@ consequences for design decisions elsewhere.
 
 - `zk` is deferred; at-rest encryption plus encrypted backups are sufficient
   for the stated adversary set. Revisit if the server moves to a shared host.
-- Backups **must** be encrypted, because they leave the host.
+- Backups are plaintext and local-only today; they must be encrypted
+  (or kept on encrypted storage) because a stolen disk yields them with
+  the notes. Encrypted offsite backup is deferred work, not a shipped
+  mitigation.
 - The identity map is derived, so corrupting it degrades to git-based repair
   rather than breaking links outright.
 - Plugins are untrusted by default even though we write them — the sandbox is

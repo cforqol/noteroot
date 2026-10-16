@@ -1,6 +1,13 @@
 # Stage 4: Vim Mode Design
 
-**Status**: In progress  
+> **Historical.** This doc planned wasi-vim in a sandboxed iframe
+> (`wasi-vim.wasm`, `@wasmer/wasi`, `xterm@5`). What shipped instead is
+> `vim.wasm` running in-page (`web/vim/vim.wasm`, `vimwasm.js`,
+> `@xterm/xterm@6`, no iframe — see web/app.js `VimEditor`). Kept for
+> the buffer-model, circuit-breaker, and autosave reasoning, which still
+> hold; do not implement asset names or package versions from here.
+
+**Status**: Shipped (as vim.wasm in-page, not the iframe design below)  
 **Dependencies**: Stage 3 (write path, locks, crash pad) ✓  
 **Scope**: Desktop vim mode with wasi-vim in sandboxed iframe, circuit-breaker fallback, buffer model
 

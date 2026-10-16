@@ -63,10 +63,10 @@ If Vim crashes 3 times consecutively, it's automatically disabled:
 |---------|---------|-------|
 | Chrome/Chromium | ✅ Full | Works by default |
 | Edge | ✅ Full | Works by default |
-| Firefox | ⚠️ Flag Required | Enable `javascript.options.shared_memory` in about:config |
-| Safari | ⚠️ Flag Required | Enable SharedArrayBuffer in Develop menu |
+| Firefox | ✅ Full (recent) | No flag needed in current releases |
+| Safari | ✅ Full (recent) | No flag needed in current releases |
 
-**Why?** Vim mode requires `SharedArrayBuffer` and `Atomics` API for synchronous wait in Web Worker. Chrome/Chromium enable these by default; Firefox/Safari require feature flags due to Spectre vulnerability.
+**Why?** Vim mode requires `SharedArrayBuffer` and `Atomics` API for synchronous wait in Web Worker. The server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` on every response, which enables `SharedArrayBuffer` without feature flags in current browsers. (Older Firefox needed `javascript.options.shared_memory` in about:config; older Safari needed the Develop-menu toggle.)
 
 ## Limitations
 

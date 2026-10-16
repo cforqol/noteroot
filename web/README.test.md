@@ -4,7 +4,7 @@
 
 The linking feature has two levels of UI integration tests:
 
-1. **JavaScript unit tests** (`app.test.js`) — Test the UI panel building and SPA navigation logic in isolation
+1. **JavaScript unit tests** (`app.test.cjs`) — Test the UI panel building and SPA navigation logic in isolation
 2. **Go E2E tests** (`internal/httpapi/notes_test.go`) — Verify the complete backend-to-frontend integration
 
 ## Running Tests
@@ -19,7 +19,7 @@ cd web && npm install
 npm test
 
 # Or directly with node
-node --test app.test.js
+node --test app.test.cjs
 ```
 
 The JS tests verify:

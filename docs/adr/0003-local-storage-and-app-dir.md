@@ -2,6 +2,15 @@
 
 **Status:** accepted
 **Date:** 2026-10
+**Amendments (2026-10-16):** stage 7 added S3-compatible object storage
+(`internal/resources/s3.go`, `NOTEROOT_S3_*`), so "v1 has no
+object-storage integration" no longer holds — the layout decision below
+is unchanged, and resource links stay app-relative either way. The
+`.notebook/` listing below has since grown `backups/`, `plugins/`,
+`integrations/`, `hooks/`, and `platform.db`. There is no nightly
+snapshot scheduler — backups are manual (`POST /n/{slug}/backup`); the
+only background loop is resource GC. Resource links use
+`/n/{slug}/resources/{sha}` (not `/media/`, which never existed).
 
 ## Context
 

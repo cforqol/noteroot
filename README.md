@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 8 complete — Dedup-aware quota (507 on exceed), background GC, note rename/move (ULID travels), git bundle + VACUUM INTO backups, tar.gz export/import (staged validation, dry-run, idempotent).
+> **Status:** stage 9 complete — plugins and integrations on a Lua sandbox (scoped tokens, signed webhooks, depth-limited bus, three proof plugins). Stages 0–8 before it: vault, search, write path, vim mode, resources, transforms, S3, dedup/quota/backups/import-export.
 
 ---
 
@@ -64,7 +64,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 1 | Vault read path, markdown rendering, read-only UI | ✓ done |
 | 2 | Full-text index, search | ✓ done |
 | 3 | Write path, buffer/lock, crash pad, phone editor | ✓ done |
-| 4 | Vim mode (wasi-vim in a sandboxed iframe) | ✓ done |
+| 4 | Vim mode (vim.wasm running in-page) | ✓ done |
 | 5 | Resources: policy, local store, upload journal | ✓ done |
 | 6 | Transforms: image resize, video posters | ✓ done |
 | 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
@@ -87,13 +87,14 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Embedded, forward-only, idempotent migrations, run automatically at open
 - Corrupt databases quarantined rather than repaired
 - Graceful shutdown with a drain timeout
-- Vim mode: real Vim (WASM) in an isolated iframe, with circuit-breaker fallback to a plain textarea; buffer model with draft autosave and swap files (desktop)
+- Vim mode: real Vim (WASM) running in-page, with circuit-breaker fallback to a plain textarea; buffer model with draft autosave and swap files (desktop)
 - Resources: drag-and-drop upload into content-addressed storage, upload journal with verification and crash recovery, dedup by SHA-256, strict size policy
 - Transforms: automatic image resize and video poster frames
 - S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
 - Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
 - Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
-- Backups: `POST /n/{slug}/backup` writes a git bundle, a `VACUUM INTO` state snapshot, and a sha256 manifest into `.notebook/backups/`
+- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels
+- Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
 - Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
 - Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
 - Sandboxed Lua plugins (gopher-lua): per-notebook `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`; commands, event hooks, kv, panels, frontmatter helpers; permission-checked capabilities, per-plugin VM behind one mutex, context timeouts, panic recovery, circuit breaker; a slow plugin delays itself and nothing else
@@ -104,7 +105,6 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 ### Planned
 
 **Notes**
-- Wikilinks and backlinks
 - Virtual collections (folders already work)
 
 **Search**
@@ -164,12 +164,16 @@ noteroot-data/                       # NOTEROOT_DATA_DIR
             ├── cache/               # disposable
             ├── drafts/              # buffer drafts and swap
             ├── trash/               # soft deletes
-            ├── backups/             # git bundles + state snapshots + manifests
+            ├── backups/             # git bundles + state snapshots
+            ├── plugins/             # Lua plugins (plugin.toml + plugin.lua)
+            ├── integrations/        # outbound webhook configs
+            ├── hooks/               # inbound webhook configs
             ├── state.db
-            └── index.db
+            ├── index.db
+            └── platform.db          # kv, secrets, audit, API tokens (secrets live only here)
 ```
 
-Three entries per notebook. One rule: never touch `.notebook/`.
+Three stores per notebook (state, index, platform) plus the vault. One rule: never touch `.notebook/`.
 
 ## Tech stack
 
@@ -198,7 +202,8 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 | `log/slog` (stdlib) | Structured logging | yes |
 | ULID identity (stdlib) | `crypto/rand` + CRC32 checksum, homegrown in `frontmatter` | yes |
 | `ffmpeg` / `ffprobe` (external binary) | Image resize and video poster frames | yes (optional at runtime) |
-| vim.wasm + xterm.js (vendored/CDN JS) | Real Vim in an isolated iframe | yes |
+| vim.wasm + xterm.js (vendored JS) | Real Vim running in-page | yes |
+| `yuin/gopher-lua` | Sandboxed Lua plugin runtime (stage 9) | yes |
 
 **Planned**
 
@@ -207,7 +212,6 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 | `fsnotify/fsnotify` | Vault watching (hint only; mtime scan is truth) |
 | `golang.org/x/sync/singleflight` | Cache stampede protection |
 | `hashicorp/golang-lru` | In-process cache |
-| `yuin/gopher-lua` | Plugin sandbox |
 | `libvips` (`vipsthumbnail`) | Higher-fidelity stills than ffmpeg (EXIF/ICC/HEIC/AVIF) |
 | `restic` / `rclone` | Encrypted offsite backups |
 
@@ -272,7 +276,7 @@ Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the sta
 
 ## Development
 
-Development uses [direnv](https://direnv.net/). `.envrc` is committed; `.envrc.local` is not. Dev data lives in `./.devdata` and is gitignored, so a dev run can never scribble on your real notes — `make guard` enforces this and warns if you point at production.
+Development uses [direnv](https://direnv.net/). `.envrc` is committed; `.envrc.local` is not. Dev data lives in `./.devdata` and is gitignored, so a dev run can never scribble on your real notes — `make guard` requires `NOTEROOT_DATA_DIR` to be set and warns if you point at production.
 
 ```bash
 direnv allow
@@ -299,7 +303,7 @@ All configuration is environment variables.
 | `NOTEROOT_S3_ACCESS_KEY` | `` | Access key ID. |
 | `NOTEROOT_S3_SECRET_KEY` | `` | Secret access key. |
 | `NOTEROOT_S3_PATH_STYLE` | `false` | `true` = path-style URLs (MinIO), `false` = virtual-hosted (AWS). |
-| `NOTEROOT_S3_PRESIGN_TTL` | `15m` | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
+| `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 | `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
 | `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
 
@@ -330,7 +334,7 @@ Stages 0–8 are the app. Stage 9 is a menu, not a queue.
 - **1** — vault walk, markdown rendering, sanitizer, read-only UI
 - **2** — FTS5 index and search
 - **3** — write path, buffer/lock, crash pad, phone editor, git autocommit
-- **4** — vim mode in an isolated iframe, with circuit-breaker failover
+- **4** — vim mode running in-page, with circuit-breaker failover
 - **5** — resources: policy, local store, upload journal
 - **6** — transforms: image resize, video posters
 - **7** — object storage with presigned upload and authenticated reads
