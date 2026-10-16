@@ -116,7 +116,7 @@ func TestEmit_dryRunImportEmitsNothing(t *testing.T) {
 
 	var n int
 	srv.plat.Bus("work").Subscribe(platform.Subscription{
-		ID: "counter",
+		ID:      "counter",
 		Handler: func(context.Context, platform.Event) { n++ },
 	})
 

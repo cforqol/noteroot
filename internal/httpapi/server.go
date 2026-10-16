@@ -80,6 +80,39 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", auth(s.presignRead))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
 
+	// Stage 9 phase 2: scoped API tokens (human-managed under the
+	// forward-auth surface) and the token-authenticated machine API.
+	mux.Handle("GET /n/{slug}/tokens", auth(s.listTokens))
+	mux.Handle("POST /n/{slug}/tokens", mutating(s.createToken))
+	mux.Handle("DELETE /n/{slug}/tokens", mutating(s.revokeToken))
+
+	// /api/v1: bearer tokens with resource:action[:qualifier] scopes.
+	// No forward-auth and no CSRF here — the Authorization header
+	// cannot be attached cross-site without a CORS grant the server
+	// never issues. Handlers are reused verbatim; the middleware
+	// decides who the actor is and whether the scope allows.
+	qpath := func(r *http.Request) string { return r.URL.Query().Get("path") }
+	qnone := func(*http.Request) string { return "" }
+	qname := func(r *http.Request) string { return r.URL.Query().Get("name") }
+	qsha := func(r *http.Request) string { return r.PathValue("sha") }
+	mux.Handle("GET /api/v1/n/{slug}/note", s.bearer("note", "read", qpath, s.note))
+	mux.Handle("PUT /api/v1/n/{slug}/note", s.bearer("note", "write", qpath, s.putNote))
+	mux.Handle("PATCH /api/v1/n/{slug}/note", s.bearer("note", "write", qpath, s.moveNote))
+	mux.Handle("DELETE /api/v1/n/{slug}/note", s.bearer("note", "write", qpath, s.deleteNote))
+	mux.Handle("GET /api/v1/n/{slug}/raw", s.bearer("note", "read", qpath, s.raw))
+	mux.Handle("GET /api/v1/n/{slug}/search", s.bearer("search", "read", qnone, s.search))
+	mux.Handle("GET /api/v1/n/{slug}/tree", s.bearer("tree", "read", qnone, s.tree))
+	mux.Handle("GET /api/v1/n/{slug}/trash", s.bearer("trash", "read", qnone, s.listTrash))
+	mux.Handle("POST /api/v1/n/{slug}/trash/restore", s.bearer("trash", "write", qname, s.restoreTrash))
+	mux.Handle("GET /api/v1/n/{slug}/resources", s.bearer("resources", "read", qnone, s.listResources))
+	mux.Handle("GET /api/v1/n/{slug}/resources/stats", s.bearer("resources", "read", qnone, s.resourceStats))
+	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "read", qsha, s.getResource))
+	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/thumb", s.bearer("resources", "read", qsha, s.thumbResource))
+	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/poster", s.bearer("resources", "read", qsha, s.posterResource))
+	mux.Handle("DELETE /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "write", qsha, s.deleteResource))
+	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
+	mux.Handle("POST /api/v1/n/{slug}/backup", s.bearer("backup", "write", qnone, s.createBackup))
+
 	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,

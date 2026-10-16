@@ -32,6 +32,15 @@ var migrations = []string{
 		detail   TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);`,
+	`CREATE TABLE IF NOT EXISTS api_tokens (
+		id         TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		hash       TEXT NOT NULL UNIQUE,
+		scopes     TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		last_used  INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER NOT NULL DEFAULT 0
+	);`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
