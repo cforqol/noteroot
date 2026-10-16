@@ -210,6 +210,19 @@ func (db *DB) UIDByPath(ctx context.Context, p string) (string, bool, error) {
 	return uid, true, nil
 }
 
+// RenameIdentity updates the path of a note_identity row without changing
+// its uid. If oldPath is not found the update is a no-op (the row will be
+// re-created on the next index sync). A conflict with newPath (duplicate
+// path) returns an error.
+func (db *DB) RenameIdentity(ctx context.Context, oldPath, newPath string) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE note_identity SET path = ? WHERE path = ?`, newPath, oldPath)
+	if err != nil {
+		return fmt.Errorf("rename identity %s → %s: %w", oldPath, newPath, err)
+	}
+	return nil
+}
+
 // PathByUID resolves an identity to its current path. ok=false when the
 // uid is unknown.
 func (db *DB) PathByUID(ctx context.Context, uid string) (string, bool, error) {

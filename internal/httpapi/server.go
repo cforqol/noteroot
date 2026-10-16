@@ -54,6 +54,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/search", auth(s.search))
 	mux.Handle("GET /n/{slug}/trash", auth(s.listTrash))
 	mux.Handle("PUT /n/{slug}/note", mutating(s.putNote))
+	mux.Handle("PATCH /n/{slug}/note", mutating(s.moveNote))
 	mux.Handle("DELETE /n/{slug}/note", mutating(s.deleteNote))
 	mux.Handle("POST /n/{slug}/trash/restore", mutating(s.restoreTrash))
 	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))

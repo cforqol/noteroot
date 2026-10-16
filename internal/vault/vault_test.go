@@ -444,3 +444,77 @@ func TestWrite_rejectsGit(t *testing.T) {
 		t.Fatal(".git write: expected error")
 	}
 }
+
+func TestRename_basic(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "notes/old.md", "hello")
+	v := Open(root)
+
+	if err := v.Rename("notes/old.md", "notes/new.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Read("notes/old.md"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("old path still readable: %v", err)
+	}
+	got, err := v.Read("notes/new.md")
+	if err != nil || string(got) != "hello" {
+		t.Errorf("new path = %q, %v", got, err)
+	}
+}
+
+func TestRename_createsParentDir(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "content")
+	v := Open(root)
+
+	if err := v.Rename("a.md", "subdir/b.md"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := v.Read("subdir/b.md")
+	if err != nil || string(got) != "content" {
+		t.Errorf("subdir/b.md = %q, %v", got, err)
+	}
+}
+
+func TestRename_samePathNoop(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "x")
+	v := Open(root)
+
+	if err := v.Rename("a.md", "a.md"); err != nil {
+		t.Errorf("same-path rename should be a no-op: %v", err)
+	}
+}
+
+func TestRename_srcMissing(t *testing.T) {
+	root := t.TempDir()
+	v := Open(root)
+
+	if err := v.Rename("missing.md", "out.md"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing src: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRename_dstExists(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "a")
+	write(t, root, "b.md", "b")
+	v := Open(root)
+
+	if err := v.Rename("a.md", "b.md"); !errors.Is(err, ErrConflict) {
+		t.Errorf("dst exists: err = %v, want ErrConflict", err)
+	}
+}
+
+func TestRename_invalidPaths(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "x")
+	v := Open(root)
+
+	if err := v.Rename("../escape.md", "out.md"); err == nil {
+		t.Error("src escapes: want error")
+	}
+	if err := v.Rename("a.md", "../escape.md"); err == nil {
+		t.Error("dst escapes: want error")
+	}
+}

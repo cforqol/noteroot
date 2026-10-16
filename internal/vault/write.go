@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path"
@@ -126,6 +127,77 @@ func (v *Vault) Write(rel string, content []byte, opts WriteOpts) (WriteResult, 
 		ModTime: fi.ModTime(),
 		Created: created,
 	}, nil
+}
+
+// Rename atomically moves a vault-relative file from src to dst. dst must
+// not already exist; its parent directories are created if needed.
+// Returns ErrNotFound if src is absent, ErrConflict if dst exists, and
+// ErrEscapes / an error from Rel if either path is invalid.
+func (v *Vault) Rename(src, dst string) error {
+	cleanSrc, err := Rel(src)
+	if err != nil {
+		return fmt.Errorf("src: %w", err)
+	}
+	cleanDst, err := Rel(dst)
+	if err != nil {
+		return fmt.Errorf("dst: %w", err)
+	}
+	if cleanSrc == cleanDst {
+		return nil
+	}
+
+	// Resolve src (must exist inside vault).
+	srcAbs, err := v.resolve(cleanSrc)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(srcAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if fi.IsDir() {
+		return ErrNotFile
+	}
+
+	// Dst parent directory (creates missing levels; stays inside vault
+	// because cleanDst has no ".." components after Rel validation).
+	dstParent, err := v.resolveParent(cleanDst)
+	if err != nil {
+		return err
+	}
+	dstAbs := filepath.Join(dstParent, path.Base(cleanDst))
+
+	// Fail if dst already exists.
+	if _, err := os.Lstat(dstAbs); err == nil {
+		return ErrConflict
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	mu := stripeFor(cleanSrc)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := os.Rename(srcAbs, dstAbs); err != nil {
+		return err
+	}
+	// Sync the parent dirs on both sides so the change is visible after a
+	// crash (best-effort, errors are non-fatal).
+	if dir, err := os.Open(dstParent); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	srcParent := filepath.Dir(srcAbs)
+	if srcParent != dstParent {
+		if dir, err := os.Open(srcParent); err == nil {
+			_ = dir.Sync()
+			_ = dir.Close()
+		}
+	}
+	return nil
 }
 
 // resolveParent returns the absolute parent directory for a cleaned
