@@ -52,6 +52,7 @@ func (s *Server) deleteNote(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		names = append(names, e.Name)
 	}
+	s.emit(r, nb, "note.delete", rel, map[string]any{"trashed": names})
 	writeJSON(w, http.StatusOK, map[string]any{"trashed": names})
 }
 
@@ -104,6 +105,7 @@ func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
 	s.reindex(r, nb, v)
 	actor, _ := r.Context().Value(keyUser).(string)
 	s.markGitDirty(nb, git.Op{Action: "restore", Path: rel, Actor: actor})
+	s.emit(r, nb, "note.restore", rel, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"path": rel})
 }
 

@@ -31,12 +31,12 @@ func (s *Server) openResources(ctx context.Context, nb *notebooks.Notebook) (
 	resources.Store, *resources.Journal, func(), error,
 ) {
 	s3Cfg := resources.S3Config{
-		Endpoint:     s.cfg.S3Endpoint,
-		Bucket:       s.cfg.S3Bucket,
-		Region:       s.cfg.S3Region,
-		AccessKey:    s.cfg.S3AccessKey,
-		SecretKey:    s.cfg.S3SecretKey,
-		PathStyle:    s.cfg.S3PathStyle,
+		Endpoint:  s.cfg.S3Endpoint,
+		Bucket:    s.cfg.S3Bucket,
+		Region:    s.cfg.S3Region,
+		AccessKey: s.cfg.S3AccessKey,
+		SecretKey: s.cfg.S3SecretKey,
+		PathStyle: s.cfg.S3PathStyle,
 	}
 	store, err := resources.NewStore(nb.Layout.Resources(), s3Cfg)
 	if err != nil {
@@ -188,6 +188,7 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("journal commit failed", "notebook", nb.Manifest.Slug, "sha", sha, "err", err)
 	}
 
+	s.emit(r, nb, "resource.upload", sanitizedName, map[string]any{"sha": sha, "size": storedSize, "created": created})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":       entryID,
 		"sha":      sha,
@@ -445,10 +446,10 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"direct":   false,
+		"direct":    false,
 		"uploadURL": uploadURL,
-		"sha":      req.SHA,
-		"entryID":  entryID,
+		"sha":       req.SHA,
+		"entryID":   entryID,
 		"expiresIn": int(ttl.Seconds()),
 	})
 }
@@ -493,6 +494,7 @@ func (s *Server) confirmUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emit(r, nb, "resource.upload", "", map[string]any{"sha": req.SHA})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sha": req.SHA})
 }
 

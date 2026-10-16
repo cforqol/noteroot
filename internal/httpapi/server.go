@@ -11,6 +11,7 @@ import (
 	"noteroot/internal/config"
 	"noteroot/internal/git"
 	"noteroot/internal/notebooks"
+	"noteroot/internal/platform"
 	"noteroot/internal/vault"
 	"noteroot/web"
 )
@@ -19,6 +20,7 @@ type Server struct {
 	cfg  config.Config
 	log  *slog.Logger
 	reg  *notebooks.Registry
+	plat *platform.Manager
 	http *http.Server
 
 	gitMu sync.Mutex
@@ -28,7 +30,7 @@ type Server struct {
 }
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
-	s := &Server{cfg: cfg, log: log, reg: reg}
+	s := &Server{cfg: cfg, log: log, reg: reg, plat: platform.NewManager(log)}
 
 	mux := http.NewServeMux()
 
@@ -112,6 +114,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.flushGit()
 	if s.stopGC != nil {
 		s.stopGC()
+	}
+	if s.plat != nil {
+		s.plat.Close()
 	}
 	return err
 }

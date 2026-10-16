@@ -76,7 +76,7 @@ type importEntry struct {
 	Path    string `json:"path"`
 	Size    int64  `json:"size"`
 	SHA     string `json:"sha,omitempty"`
-	Status  string `json:"status"`           // "created"|"updated"|"skipped"|"error"
+	Status  string `json:"status"` // "created"|"updated"|"skipped"|"error"
 	Message string `json:"message,omitempty"`
 }
 
@@ -244,6 +244,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 
 	s.reindex(r, nb, v)
 	s.markGitDirty(nb, git.Op{Action: "import", Actor: actorFrom(r)})
+	s.emit(r, nb, "notebook.import", "", map[string]any{"entries": len(results)})
 
 	writeJSON(w, http.StatusOK, map[string]any{"dryRun": false, "entries": results})
 }

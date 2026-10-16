@@ -60,6 +60,7 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 	uid := s.moveIdentity(r, nb, req.From, req.To)
 	s.reindex(r, nb, v)
 	s.markGitDirty(nb, git.Op{Action: "move", Path: req.To, Actor: actorFrom(r)})
+	s.emit(r, nb, "note.rename", req.To, map[string]any{"from": req.From, "uid": uid})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from": req.From,
