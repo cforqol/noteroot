@@ -350,6 +350,12 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha and filename required"})
 		return
 	}
+	// The sha becomes the object key in presigned URLs — reject anything
+	// that is not a content hash before it can influence a key.
+	if !resources.ValidSHA(req.SHA) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sha: must be 64 lowercase hex chars"})
+		return
+	}
 
 	policy := s.resourcePolicy()
 	_, err := policy.Validate(req.Filename, req.Size, req.MIME)
@@ -432,6 +438,10 @@ func (s *Server) confirmUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EntryID == "" || req.SHA == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entryID and sha required"})
+		return
+	}
+	if !resources.ValidSHA(req.SHA) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sha: must be 64 lowercase hex chars"})
 		return
 	}
 

@@ -85,6 +85,11 @@ func validSHA(sha string) bool {
 	return true
 }
 
+// ValidSHA reports whether s is a 64-character lowercase hex digest.
+// Exported so handlers can validate client-supplied shas before they
+// reach store keys or presigned URLs.
+func ValidSHA(s string) bool { return validSHA(s) }
+
 // Put streams r into the store, hashing as it writes. If the blob already
 // exists the temp file is discarded (dedup hit, created=false). Delegates
 // to PutBuffered — the streaming temp-file path is the only implementation.
