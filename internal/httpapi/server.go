@@ -10,6 +10,7 @@ import (
 
 	"noteroot/internal/config"
 	"noteroot/internal/git"
+	"noteroot/internal/integrations"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/platform"
 	"noteroot/internal/plugins"
@@ -18,12 +19,13 @@ import (
 )
 
 type Server struct {
-	cfg  config.Config
-	log  *slog.Logger
-	reg  *notebooks.Registry
-	plat *platform.Manager
-	plug *plugins.Manager
-	http *http.Server
+	cfg   config.Config
+	log   *slog.Logger
+	reg   *notebooks.Registry
+	plat  *platform.Manager
+	plug  *plugins.Manager
+	integ *integrations.Manager
+	http  *http.Server
 
 	gitMu sync.Mutex
 	git   map[string]*git.Flusher
@@ -34,6 +36,9 @@ type Server struct {
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s := &Server{cfg: cfg, log: log, reg: reg, plat: platform.NewManager(log)}
 	s.plug = plugins.NewManager(log, func(slug string) plugins.NoteStore {
+		return &pluginNoteStore{s: s, slug: slug}
+	})
+	s.integ = integrations.NewManager(log, func(slug string) plugins.NoteStore {
 		return &pluginNoteStore{s: s, slug: slug}
 	})
 
@@ -97,6 +102,15 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/plugins/reload", mutating(s.reloadPlugins))
 	mux.Handle("POST /n/{slug}/plugins/{name}/commands/{command}", mutating(s.runPluginCommand))
 
+	// Stage 9 phase 4: integration and hook management (human) plus
+	// the inbound webhook endpoint (HMAC-authenticated machine).
+	mux.Handle("GET /n/{slug}/integrations", auth(s.listIntegrations))
+	mux.Handle("GET /n/{slug}/hooks", auth(s.listHooks))
+	mux.Handle("POST /n/{slug}/integrations/reload", mutating(s.reloadIntegrations))
+	mux.Handle("POST /n/{slug}/integrations/{name}/secret", mutating(s.setIntegrationSecret))
+	mux.Handle("POST /n/{slug}/hooks/{name}/secret", mutating(s.setHookSecret))
+	mux.HandleFunc("POST /hooks/{slug}/{name}", s.handleWebhook)
+
 	// /api/v1: bearer tokens with resource:action[:qualifier] scopes.
 	// No forward-auth and no CSRF here — the Authorization header
 	// cannot be attached cross-site without a CORS grant the server
@@ -134,13 +148,16 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s.git = map[string]*git.Flusher{}
 	s.purgeTrash()
 	s.stopGC = s.startGC()
-	// Load every notebook's plugins at boot so hooks are live before
-	// the first mutation reaches them. Failures log and continue:
-	// plugins degrade, notebooks do not.
+	// Load every notebook's extensions at boot so hooks and
+	// integrations are live before the first mutation reaches them.
+	// Failures log and continue: extensions degrade, notebooks do not.
 	for _, nb := range s.reg.List() {
 		slug := nb.Manifest.Slug
 		if err := s.plug.Ensure(slug, nb.Layout, s.plat.Bus(slug)); err != nil {
 			s.log.Error("plugin load failed", "notebook", slug, "err", err)
+		}
+		if err := s.integ.Ensure(slug, nb.Layout, s.plat.Bus(slug)); err != nil {
+			s.log.Error("integration load failed", "notebook", slug, "err", err)
 		}
 	}
 	return s
@@ -168,7 +185,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.stopGC != nil {
 		s.stopGC()
 	}
-	// Plugins first: their hooks may still be draining into the bus.
+	// Extensions first: their hooks and deliveries may still be
+	// draining into the bus.
+	if s.integ != nil {
+		s.integ.Close()
+	}
 	if s.plug != nil {
 		s.plug.Close()
 	}

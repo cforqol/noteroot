@@ -8,14 +8,16 @@ const (
 	VaultDir     = "vault"
 	AppDir       = ".notebook"
 
-	ResourcesDir = "resources"
-	CacheDir     = "cache"
-	DraftsDir    = "drafts"
-	TrashDir     = "trash"
-	PluginsDir   = "plugins"
-	StateDB      = "state.db"
-	IndexDB      = "index.db"
-	PlatformDB   = "platform.db"
+	ResourcesDir    = "resources"
+	CacheDir        = "cache"
+	DraftsDir       = "drafts"
+	TrashDir        = "trash"
+	PluginsDir      = "plugins"
+	IntegrationsDir = "integrations"
+	HooksDir        = "hooks"
+	StateDB         = "state.db"
+	IndexDB         = "index.db"
+	PlatformDB      = "platform.db"
 )
 
 const (
@@ -40,6 +42,13 @@ func (l Layout) IndexDB() string    { return filepath.Join(l.root, AppDir, Index
 func (l Layout) PlatformDB() string { return filepath.Join(l.root, AppDir, PlatformDB) }
 func (l Layout) Backups() string    { return filepath.Join(l.root, AppDir, BackupsDir) }
 func (l Layout) Plugins() string    { return filepath.Join(l.root, AppDir, PluginsDir) }
+
+// Integrations holds outbound webhook configs (<name>.toml); Hooks
+// holds inbound webhook configs (<name>.toml). Both are git-friendly
+// config; neither file may contain a secret (those live in
+// platform.db, set over the authenticated API).
+func (l Layout) Integrations() string { return filepath.Join(l.root, AppDir, IntegrationsDir) }
+func (l Layout) Hooks() string        { return filepath.Join(l.root, AppDir, HooksDir) }
 
 func (l Layout) Dirs() []string {
 	return []string{l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(), l.Trash()}

@@ -240,11 +240,12 @@ register_command("ok", function() return "fine" end)
 		t.Fatal("breaker not open")
 	}
 
-	// Shorten the cooldown, probe with a healthy command: success
-	// closes the circuit.
+	// Shorten the cooldown, wait it out, probe with a healthy
+	// command: success closes the circuit.
 	p.br.mu.Lock()
-	p.br.cooldown = time.Millisecond
+	p.br.cooldown = 5 * time.Millisecond
 	p.br.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
 	if _, err := f.run(t, "ok", ""); err != nil {
 		t.Fatalf("probe after cooldown: %v", err)
 	}
