@@ -16,7 +16,10 @@ const (
 	IndexDB      = "index.db"
 )
 
-const LayoutVersion = 1
+const (
+	LayoutVersion = 1
+	BackupsDir    = "backups"
+)
 
 type Layout struct{ root string }
 
@@ -32,6 +35,7 @@ func (l Layout) Drafts() string    { return filepath.Join(l.root, AppDir, Drafts
 func (l Layout) Trash() string     { return filepath.Join(l.root, AppDir, TrashDir) }
 func (l Layout) StateDB() string   { return filepath.Join(l.root, AppDir, StateDB) }
 func (l Layout) IndexDB() string   { return filepath.Join(l.root, AppDir, IndexDB) }
+func (l Layout) Backups() string   { return filepath.Join(l.root, AppDir, BackupsDir) }
 
 func (l Layout) Dirs() []string {
 	return []string{l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(), l.Trash()}

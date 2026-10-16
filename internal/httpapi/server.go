@@ -65,6 +65,9 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/resources/presign", mutating(s.presignUpload))
 	mux.Handle("POST /n/{slug}/resources/confirm", mutating(s.confirmUpload))
 	mux.Handle("POST /n/{slug}/resources/gc", mutating(s.gcResources))
+
+	// Stage 8: backup.
+	mux.Handle("POST /n/{slug}/backup", mutating(s.createBackup))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
