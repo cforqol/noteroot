@@ -124,7 +124,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 ## Architecture
 
 ```
-Client → Traefik (TLS, forward-auth) → noteroot
+Client → reverse proxy (TLS, forward-auth) → noteroot
                                             │
                     ────────────────────────────────────────────
                     │                       │                   │
@@ -179,7 +179,7 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 |---|---|---|
 | Go | 1.27+ | Single static binary, no runtime deps |
 | SQLite | via `modernc.org/sqlite` | Pure Go, **no cgo** |
-| Docker | any | Distroless image, non-root |
+| Docker | any | Alpine image (`git` included), non-root |
 | Traefik | any | TLS termination and forward-auth |
 
 ### Libraries
@@ -223,7 +223,7 @@ Three entries per notebook. One rule: never touch `.notebook/`.
 
 - Go 1.27+
 - Docker and Docker Compose (container path only)
-- A Traefik instance with forward-auth (container path only)
+- A reverse proxy that sets `X-Auth-User` (forward-auth) if you expose the container beyond localhost — noteroot ships no proxy of its own
 
 ### Local
 
@@ -261,10 +261,14 @@ curl localhost:8080/api/v1/notebooks
 ### Container
 
 ```bash
+mkdir -p data
+NOTEROOT_DATA_DIR="$PWD/data" ./scripts/new-notebook.sh work   # create a notebook (host-side)
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
-Edit the `Host(...)` rule and the forward-auth address in `deploy/compose.yaml` first.
+The image is Alpine with `git` (vault autocommits and backup bundles shell out to it), runs as non-root uid 1000, and publishes `127.0.0.1:8080` only. `data/` is bind-mounted to `/data` — create it with `mkdir -p data` before the first start so Docker doesn't create it root-owned.
+
+Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, `NOTEROOT_AUTH_MODE=none docker compose -f deploy/compose.yaml up`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job. Image transforms need `ffmpeg` — add it to the Dockerfile if you use uploads.
 
 ## Development
 

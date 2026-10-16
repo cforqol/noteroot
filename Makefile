@@ -9,6 +9,8 @@
 BIN  := bin/noteroot
 PKG  := ./cmd/noteroot
 DATA := $(NOTEROOT_DATA_DIR)
+# Compose CLI: v2 plugin by default; set COMPOSE=docker-compose for v1.
+COMPOSE ?= docker compose
 
 .PHONY: help setup tidy fmt vet lint test vuln check \
         build run dev guard \
@@ -97,19 +99,19 @@ data-wipe: guard
 
 ## docker-build: build the container image
 docker-build:
-	docker compose -f deploy/compose.yaml build
+	$(COMPOSE) -f deploy/compose.yaml build
 
 ## docker-up: start the stack
 docker-up:
-	docker compose -f deploy/compose.yaml up -d --build
+	$(COMPOSE) -f deploy/compose.yaml up -d --build
 
 ## docker-down: stop the stack
 docker-down:
-	docker compose -f deploy/compose.yaml down
+	$(COMPOSE) -f deploy/compose.yaml down
 
 ## docker-logs: follow container logs
 docker-logs:
-	docker compose -f deploy/compose.yaml logs -f
+	$(COMPOSE) -f deploy/compose.yaml logs -f
 
 ## clean: remove build output
 clean:

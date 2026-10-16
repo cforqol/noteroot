@@ -1,0 +1,28 @@
+name: noteroot
+
+services:
+  noteroot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: noteroot:0.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NOTEROOT_DATA_DIR: /data
+      NOTEROOT_AUTH_MODE: ${NOTEROOT_AUTH_MODE:-forward}
+      NOTEROOT_PUBLIC_ORIGIN: ${NOTEROOT_PUBLIC_ORIGIN:-}
+      NOTEROOT_LOG_LEVEL: ${NOTEROOT_LOG_LEVEL:-info}
+      NOTEROOT_QUOTA_BYTES: ${NOTEROOT_QUOTA_BYTES:-0}
+      NOTEROOT_GC_INTERVAL: ${NOTEROOT_GC_INTERVAL:-24h}
+      NOTEROOT_S3_ENDPOINT: ${NOTEROOT_S3_ENDPOINT:-}
+      NOTEROOT_S3_BUCKET: ${NOTEROOT_S3_BUCKET:-}
+      NOTEROOT_S3_REGION: ${NOTEROOT_S3_REGION:-}
+      NOTEROOT_S3_ACCESS_KEY: ${NOTEROOT_S3_ACCESS_KEY:-}
+      NOTEROOT_S3_SECRET_KEY: ${NOTEROOT_S3_SECRET_KEY:-}
+      NOTEROOT_S3_PATH_STYLE: ${NOTEROOT_S3_PATH_STYLE:-false}
+      NOTEROOT_S3_PRESIGN_TTL: ${NOTEROOT_S3_PRESIGN_TTL:-}
+    volumes:
+      - ../data:/data
+    stop_grace_period: 20s

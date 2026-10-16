@@ -15,6 +15,14 @@ mount. Optional S3-compatible object storage with presigned URLs (stage 7).
 In-process backups (git bundle + state snapshot; remote targets planned).
 Everything below HTTP is instantiated per notebook.
 
+**Container** — `Dockerfile` (two-stage: `golang:1.27-alpine` build, runtime
+`alpine:3.22` + `git`, non-root uid 1000) and `deploy/compose.yaml` (single
+service, `127.0.0.1:8080`, `data/` → `/data`). `git` ships in the image
+because vault autocommit and backup bundles shell out to it — that is why
+the image is Alpine rather than distroless. The compose file publishes
+localhost only and bundles no reverse proxy; a proxy terminates TLS and
+sets `X-Auth-User` outside it (or attach to the compose network).
+
 ## 2. Auth
 
 Forward-auth sets `X-Auth-User`; Traefik strips client-supplied values.

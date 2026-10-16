@@ -1,0 +1,15 @@
+.git
+.direnv/
+.devdata/
+.envrc.local
+.serena/
+bin/
+data/
+node_modules/
+web/node_modules/
+web/coverage/
+web/test-results/
+web/playwright-report/
+web/e2e/
+IMPLEMENTATION_SUMMARY.md
+REVIEW_SUMMARY.md
