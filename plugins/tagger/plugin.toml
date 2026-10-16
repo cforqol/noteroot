@@ -1,0 +1,4 @@
+name = "tagger"
+version = "0.1.0"
+description = "Derives frontmatter tags from the note path"
+permissions = ["note:read", "note:write"]

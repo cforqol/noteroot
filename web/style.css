@@ -110,3 +110,30 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .status-value { font-weight: 500; }
 .status-value.enabled { color: #059669; }
 .status-value.disabled { color: #dc2626; }
+
+/* Plugin status strip (stage 9): fixed along the bottom, hidden
+   until a plugin publishes a panel. */
+.plugin-status {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+  background: var(--bg); border-top: 1px solid var(--line);
+  padding: 4px 12px;
+}
+.plugin-status[hidden] { display: none; }
+.plugin-panels { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.panel-chip {
+  font-size: 12px; color: var(--muted);
+  background: var(--hover); border-radius: 999px; padding: 2px 10px;
+}
+.panel-chip.panel-warn { color: #b45309; }
+.panel-chip.panel-error { color: #dc2626; }
+
+/* Theme plugin: a {type:"theme"} panel sets data-theme on the root,
+   which overrides the OS preference while leaving "auto" alone. */
+:root[data-theme="dark"] {
+  --bg: #16181d; --fg: #e7e9ee; --muted: #9ca3af;
+  --line: #2a2d35; --accent: #60a5fa; --hover: #22252c;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --fg: #16181d; --muted: #6b7280;
+  --line: #e5e7eb; --accent: #2563eb; --hover: #f3f4f6;
+}

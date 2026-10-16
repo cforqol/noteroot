@@ -1,0 +1,4 @@
+name = "word-count"
+version = "0.1.0"
+description = "Word count of the last-written note, shown as a status panel"
+permissions = ["note:read", "ui:write"]

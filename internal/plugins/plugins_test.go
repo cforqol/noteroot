@@ -61,6 +61,12 @@ func (f *fakeStore) lastWrite() (WriteRequest, bool) {
 	return f.writes[len(f.writes)-1], true
 }
 
+func (f *fakeStore) get(path string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.notes[path]
+}
+
 func (f *fakeStore) writeCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

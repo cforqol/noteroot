@@ -9,6 +9,7 @@ import {
   getEditorPreference,
   setEditorPreference,
 } from '/lib/vim-mode.js';
+import { fetchPanels, renderPanelChips } from '/lib/panels.js';
 
 const $ = (id) => document.getElementById(id);
 let current = null;
@@ -166,6 +167,18 @@ async function loadTree(s) {
   $("note").innerHTML = '<p class="muted">Select a note.</p>';
   const tree = await api(`/n/${encodeURIComponent(s)}/tree`);
   $("tree").replaceChildren(renderNode(tree, 0));
+  refreshPluginPanels(s);
+}
+
+// Plugin panels (stage 9): degradation-grade — a missing endpoint
+// or malformed spec hides the strip, never breaks the notebook.
+async function refreshPluginPanels(s) {
+  if (!s) return;
+  const panels = await fetchPanels(s);
+  const footer = $("plugin-status");
+  const has = panels && Object.keys(panels).length > 0;
+  footer.hidden = !has;
+  if (has) renderPanelChips($("plugin-panels"), panels);
 }
 
 async function search(q) {
@@ -668,6 +681,9 @@ async function saveNoteContent(content, manual) {
     editing.lastSaved = content;
     clearPad(editing.path);
     $("savestate").textContent = "Saved.";
+    // Plugin hooks react to the write on the bus (500ms coalesce);
+    // refresh panels after they've had a chance to land.
+    setTimeout(() => refreshPluginPanels(slug), 900);
   } catch (e) {
     if (e.status === 412) {
       conflictBanner();
