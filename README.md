@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 7 complete — Object storage: S3Store with SigV4 presigned URLs (stdlib-only, no SDK), presigned direct-to-S3 upload flow with journal confirm, presigned reads, config-gated store selection (local vs S3).
+> **Status:** stage 8 complete — Dedup-aware quota (507 on exceed), background GC, note rename/move (ULID travels), git bundle + VACUUM INTO backups, tar.gz export/import (staged validation, dry-run, idempotent).
 
 ---
 
@@ -68,7 +68,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 5 | Resources: policy, local store, upload journal | ✓ done |
 | 6 | Transforms: image resize, video posters | ✓ done |
 | 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
-| 8 | Dedup, bulk ops, quota, backups, import/export | — |
+| 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
 | 9 | Plugins and integrations | — |
 
 ## Features

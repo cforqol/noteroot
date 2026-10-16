@@ -99,11 +99,23 @@ rebuild via the rebuildability guard.
 
 ## 11. Backups
 
-Per notebook: git bundle, restic, `VACUUM INTO`. GFS retention, verification
-each run, weekly restore drill. Keys stored separately. v1 backs up locally.
+Per notebook: git bundle + `VACUUM INTO` (v1, local). `POST /n/{slug}/backup`
+writes timestamped `<slug>-YYYYMMDDTHHMMSSZ.bundle` and `.db` alongside a
+`manifest.json` in `.notebook/backups/`. Partial failures (non-git vault,
+state.db absent) are recorded in `manifest.Errors`; the endpoint still returns
+200 with the partial manifest. Restic / remote targets deferred to v2.
 
-## 12–14. Import/export, security, operations
+## 12. Import/export
 
-Streaming, staged, journaled, idempotent, per-item isolation, dry-run. Strict
-sanitizer, CSP, CSRF, sandbox, allowlist, audit. Structured logs, diagnostics,
-health page, alerts, forward-only migrations.
+`GET /n/{slug}/export` streams a tar.gz of all vault `.md` files and
+`notebook.toml`. `POST /n/{slug}/import` accepts raw gzip or multipart
+`file` field. Staged: all entries validated before any writes. Per-item
+isolation: one bad entry (bad path, non-.md, escaping vault) is recorded as
+`"error"` without aborting others. Idempotent by SHA-256: identical content
+returns `"skipped"`. `?dry_run=true` classifies without writing.
+
+## 13–15. Security, operations, future
+
+Strict sanitizer, CSP, CSRF, sandbox, allowlist, audit. Structured logs,
+diagnostics, health page, alerts, forward-only migrations. Stage 9: plugin
+substrate, scoped API tokens, remote backup targets.
