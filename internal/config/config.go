@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -31,6 +32,13 @@ type Config struct {
 	// S3PresignTTL is how long presigned upload/read URLs live.
 	// 0 = default (15 minutes).
 	S3PresignTTL string
+
+	// Stage 8: housekeeping and limits.
+
+	// QuotaBytes is the per-notebook storage limit in bytes. 0 = unlimited.
+	QuotaBytes int64
+	// GCInterval is how often the background GC sweep runs (e.g. "24h").
+	GCInterval string
 }
 
 // S3Enabled reports whether object storage is configured.
@@ -52,8 +60,11 @@ func Load() (Config, error) {
 		S3Region:    env("NOTEROOT_S3_REGION", ""),
 		S3AccessKey: env("NOTEROOT_S3_ACCESS_KEY", ""),
 		S3SecretKey: env("NOTEROOT_S3_SECRET_KEY", ""),
-		S3PathStyle: envBool("NOTEROOT_S3_PATH_STYLE", false),
+		S3PathStyle:  envBool("NOTEROOT_S3_PATH_STYLE", false),
 		S3PresignTTL: env("NOTEROOT_S3_PRESIGN_TTL", ""),
+
+		QuotaBytes: envInt64("NOTEROOT_QUOTA_BYTES", 0),
+		GCInterval: env("NOTEROOT_GC_INTERVAL", "24h"),
 	}
 	if !strings.HasPrefix(c.DataDir, "/") {
 		return c, fmt.Errorf("NOTEROOT_DATA_DIR must be absolute, got %q", c.DataDir)
@@ -81,6 +92,15 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("NOTEROOT_S3_* must be set together (got %d of %d)", set, len(s3Fields))
 	}
 	return c, nil
+}
+
+func envInt64(k string, def int64) int64 {
+	if v, ok := os.LookupEnv(k); ok && v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func envBool(k string, def bool) bool {

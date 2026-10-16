@@ -227,6 +227,54 @@ func TestS3Enabled_partialFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_stage8Defaults(t *testing.T) {
+	for _, k := range []string{"NOTEROOT_QUOTA_BYTES", "NOTEROOT_GC_INTERVAL"} {
+		unsetenv(t, k)
+	}
+	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/stage8test")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.QuotaBytes != 0 {
+		t.Errorf("QuotaBytes default = %d, want 0", cfg.QuotaBytes)
+	}
+	if cfg.GCInterval != "24h" {
+		t.Errorf("GCInterval default = %q, want 24h", cfg.GCInterval)
+	}
+}
+
+func TestLoad_stage8Overrides(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/stage8test")
+	setenv(t, "NOTEROOT_QUOTA_BYTES", "1073741824")
+	setenv(t, "NOTEROOT_GC_INTERVAL", "6h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.QuotaBytes != 1073741824 {
+		t.Errorf("QuotaBytes = %d, want 1073741824", cfg.QuotaBytes)
+	}
+	if cfg.GCInterval != "6h" {
+		t.Errorf("GCInterval = %q, want 6h", cfg.GCInterval)
+	}
+}
+
+func TestEnvInt64(t *testing.T) {
+	setenv(t, "TEST_INT64", "99")
+	if got := envInt64("TEST_INT64", 0); got != 99 {
+		t.Errorf("envInt64 = %d, want 99", got)
+	}
+	setenv(t, "TEST_INT64", "notanumber")
+	if got := envInt64("TEST_INT64", 42); got != 42 {
+		t.Errorf("envInt64(bad) = %d, want default 42", got)
+	}
+	unsetenv(t, "TEST_INT64")
+	if got := envInt64("TEST_INT64", 7); got != 7 {
+		t.Error("missing env should use default")
+	}
+}
+
 func TestEnvBool(t *testing.T) {
 	cases := map[string]bool{
 		"true": true, "1": true, "yes": true, "on": true,

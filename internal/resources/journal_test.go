@@ -277,6 +277,48 @@ func TestCountByState(t *testing.T) {
 	}
 }
 
+func TestTotalStoredBytes(t *testing.T) {
+	ctx := context.Background()
+	j := newTestJournal(t)
+
+	sha1 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sha2 := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	// Empty — want 0.
+	n, err := j.TotalStoredBytes(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("empty = (%d, %v), want (0, nil)", n, err)
+	}
+
+	// Two committed blobs.
+	id1, _ := j.Begin("a.jpg", 100, "image/jpeg")
+	_ = j.Commit(id1, sha1)
+	id2, _ := j.Begin("b.jpg", 200, "image/jpeg")
+	_ = j.Commit(id2, sha2)
+
+	n, err = j.TotalStoredBytes(ctx)
+	if err != nil || n != 300 {
+		t.Errorf("two blobs = (%d, %v), want (300, nil)", n, err)
+	}
+
+	// Dedup: same sha1 uploaded again — counted once.
+	id3, _ := j.Begin("a-copy.jpg", 100, "image/jpeg")
+	_ = j.Commit(id3, sha1)
+	n, err = j.TotalStoredBytes(ctx)
+	if err != nil || n != 300 {
+		t.Errorf("after dedup = (%d, %v), want still (300, nil)", n, err)
+	}
+
+	// Pending and aborted entries don't count.
+	_, _ = j.Begin("pending.jpg", 999, "image/jpeg")
+	id5, _ := j.Begin("aborted.jpg", 500, "image/jpeg")
+	_ = j.Abort(id5)
+	n, err = j.TotalStoredBytes(ctx)
+	if err != nil || n != 300 {
+		t.Errorf("with pending/aborted = (%d, %v), want (300, nil)", n, err)
+	}
+}
+
 func TestJournal_withStateDB_migrationApplied(t *testing.T) {
 	// Verify the upload_journal table exists after Open.
 	j := newTestJournal(t)

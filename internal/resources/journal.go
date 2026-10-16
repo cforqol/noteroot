@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -236,6 +237,21 @@ func (j *Journal) GC(olderThan time.Duration) (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// TotalStoredBytes returns the sum of sizes for unique committed blobs.
+// Because blobs are content-addressed, deduped uploads count once.
+func (j *Journal) TotalStoredBytes(ctx context.Context) (int64, error) {
+	var total int64
+	err := j.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(size), 0)
+		FROM (SELECT sha, size FROM upload_journal
+		      WHERE state = ? AND sha != ''
+		      GROUP BY sha)`, StateCommitted).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("journal total bytes: %w", err)
+	}
+	return total, nil
 }
 
 // CountByState returns the number of entries in each state. Useful for

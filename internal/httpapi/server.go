@@ -23,6 +23,8 @@ type Server struct {
 
 	gitMu sync.Mutex
 	git   map[string]*git.Flusher
+
+	stopGC func()
 }
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
@@ -61,6 +63,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("POST /n/{slug}/resources/presign", mutating(s.presignUpload))
 	mux.Handle("POST /n/{slug}/resources/confirm", mutating(s.confirmUpload))
+	mux.Handle("POST /n/{slug}/resources/gc", mutating(s.gcResources))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
@@ -78,6 +81,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	}
 	s.git = map[string]*git.Flusher{}
 	s.purgeTrash()
+	s.stopGC = s.startGC()
 	return s
 }
 
@@ -100,6 +104,9 @@ func (s *Server) ListenAndServe() error { return s.http.ListenAndServe() }
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.http.Shutdown(ctx)
 	s.flushGit()
+	if s.stopGC != nil {
+		s.stopGC()
+	}
 	return err
 }
 

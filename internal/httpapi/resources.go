@@ -139,6 +139,19 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Quota check.
+	if s.cfg.QuotaBytes > 0 {
+		used, err := journal.TotalStoredBytes(r.Context())
+		if err != nil {
+			s.log.Warn("quota check failed", "notebook", nb.Manifest.Slug, "err", err)
+		} else if used+size > s.cfg.QuotaBytes {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]string{
+				"error": fmt.Sprintf("quota exceeded: %d of %d bytes used", used, s.cfg.QuotaBytes),
+			})
+			return
+		}
+	}
+
 	// Journal begin.
 	entryID, err := journal.Begin(sanitizedName, size, mime)
 	if err != nil {
@@ -277,13 +290,19 @@ func (s *Server) resourceStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stats failed"})
 		return
 	}
+	used, err := journal.TotalStoredBytes(r.Context())
+	if err != nil {
+		s.log.Warn("stats: total bytes failed", "notebook", nb.Manifest.Slug, "err", err)
+	}
 	backend := "local"
 	if s.cfg.S3Enabled() {
 		backend = "s3"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend": backend,
-		"journal": counts,
+		"backend":    backend,
+		"journal":    counts,
+		"usedBytes":  used,
+		"quotaBytes": s.cfg.QuotaBytes,
 	})
 }
 
@@ -377,6 +396,19 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cleanup()
+
+	// Quota check (before dedup so we don't skip it for truly new blobs).
+	if s.cfg.QuotaBytes > 0 {
+		used, err := journal.TotalStoredBytes(r.Context())
+		if err != nil {
+			s.log.Warn("quota check failed", "notebook", nb.Manifest.Slug, "err", err)
+		} else if used+req.Size > s.cfg.QuotaBytes {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]string{
+				"error": fmt.Sprintf("quota exceeded: %d of %d bytes used", used, s.cfg.QuotaBytes),
+			})
+			return
+		}
+	}
 
 	// Dedup: blob already present → skip upload.
 	if store.Has(req.SHA) {
