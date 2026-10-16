@@ -43,7 +43,7 @@ func (s *Server) deleteNote(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		return
 	}
 

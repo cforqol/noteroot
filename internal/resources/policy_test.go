@@ -184,3 +184,15 @@ func TestExt(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
+
+func TestPolicy_rejectsSVG(t *testing.T) {
+	p := DefaultPolicy()
+	for _, mime := range []string{"image/svg+xml", "IMAGE/SVG+XML"} {
+		if _, err := p.Validate("evil.svg", 100, mime); !errors.Is(err, ErrBadMIME) {
+			t.Errorf("svg (%s) accepted, want ErrBadMIME (stored-XSS vector): %v", mime, err)
+		}
+	}
+	if _, err := p.Validate("a.png", 100, "image/png"); err != nil {
+		t.Errorf("raster image rejected: %v", err)
+	}
+}

@@ -201,3 +201,14 @@ func TestTokens_listAndValidation(t *testing.T) {
 		t.Errorf("revoke without id = %d, want 400", rec.Code)
 	}
 }
+
+func TestTokens_duplicateName409(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "hello"}))
+	issueToken(t, srv, `{"name":"ci","scopes":"note:read"}`)
+	rec := doReq(t, srv, http.MethodPost, "/n/work/tokens",
+		`{"name":"ci","scopes":"note:read"}`,
+		map[string]string{"Content-Type": "application/json"})
+	if rec.Code != http.StatusConflict {
+		t.Errorf("duplicate name status = %d, want 409 (body=%s)", rec.Code, rec.Body)
+	}
+}

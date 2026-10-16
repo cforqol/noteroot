@@ -166,18 +166,26 @@ end)
 	}
 
 	// The audit trail names the plugin, and the hook's write did not
-	// loop (self-suppression + path guard).
-	entries, err := auditEntries(t, nb.Layout.PlatformDB())
-	if err != nil {
-		t.Fatal(err)
-	}
+	// loop (self-suppression + path guard). Poll: the audit append can
+	// land just after the write is readable.
 	pluginWrite := false
-	for _, e := range entries {
-		if e.Action == "note.write" && e.Actor == "plugin:mirror" {
-			pluginWrite = true
+	auditDeadline := time.Now().Add(4 * time.Second)
+	for !pluginWrite && time.Now().Before(auditDeadline) {
+		entries, err := auditEntries(t, nb.Layout.PlatformDB())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Action == "note.write" && e.Actor == "plugin:mirror" {
+				pluginWrite = true
+			}
+		}
+		if !pluginWrite {
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if !pluginWrite {
+		entries, _ := auditEntries(t, nb.Layout.PlatformDB())
 		t.Errorf("audit has no note.write by plugin:mirror: %+v", entries)
 	}
 	time.Sleep(700 * time.Millisecond) // > coalesce window: a loop would add writes

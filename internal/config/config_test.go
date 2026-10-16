@@ -291,3 +291,35 @@ func TestEnvBool(t *testing.T) {
 		t.Error("missing env should use default")
 	}
 }
+
+func TestLoad_rejectsBadDurationsAndQuota(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/data/notes")
+	for _, kv := range [][2]string{
+		{"NOTEROOT_GC_INTERVAL", "every other tuesday"},
+		{"NOTEROOT_S3_PRESIGN_TTL", "forever"},
+		{"NOTEROOT_QUOTA_BYTES", "-5"},
+	} {
+		setenv(t, kv[0], kv[1])
+		if _, err := Load(); err == nil {
+			t.Errorf("expected error for %s=%q", kv[0], kv[1])
+		}
+		unsetenv(t, kv[0])
+	}
+}
+
+func TestLoad_acceptsValidDurations(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/data/notes")
+	setenv(t, "NOTEROOT_GC_INTERVAL", "12h")
+	setenv(t, "NOTEROOT_S3_PRESIGN_TTL", "30m")
+	setenv(t, "NOTEROOT_QUOTA_BYTES", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GCInterval != "12h" || cfg.S3PresignTTL != "30m" {
+		t.Errorf("durations not carried through: %+v", cfg)
+	}
+	unsetenv(t, "NOTEROOT_GC_INTERVAL")
+	unsetenv(t, "NOTEROOT_S3_PRESIGN_TTL")
+	unsetenv(t, "NOTEROOT_QUOTA_BYTES")
+}

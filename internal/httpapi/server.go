@@ -216,7 +216,10 @@ func (s *Server) flushGit() {
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()
 	for slug, f := range s.git {
-		if err := f.Flush(); err != nil {
+		// Close, not Flush: it sets closed so a failing commit cannot
+		// re-arm the window timer and leak a goroutine (or write) past
+		// shutdown. Shutdown is the only caller.
+		if err := f.Close(); err != nil {
 			s.log.Warn("git flush failed", "notebook", slug, "err", err)
 		}
 	}

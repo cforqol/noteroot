@@ -26,9 +26,17 @@ func (s *Server) putLock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path or holder"})
 		return
 	}
+	// Normalize (NFC, ./-collapse) so NFD and NFC spellings of one note
+	// share one lock row.
+	clean, err := vault.Rel(rel)
+	if err != nil {
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
+		return
+	}
+	rel = clean
 	v := vault.Open(nb.Layout.Vault())
 	if _, err := v.Read(rel); err != nil {
-		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		return
 	}
 
@@ -64,6 +72,12 @@ func (s *Server) deleteLock(w http.ResponseWriter, r *http.Request) {
 	if rel == "" || holder == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path or holder"})
 		return
+	}
+	if clean, err := vault.Rel(rel); err != nil {
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
+		return
+	} else {
+		rel = clean
 	}
 	db, _, err := state.Open(r.Context(), nb.Layout.StateDB())
 	if err != nil {

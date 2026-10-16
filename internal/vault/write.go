@@ -170,16 +170,31 @@ func (v *Vault) Rename(src, dst string) error {
 	}
 	dstAbs := filepath.Join(dstParent, path.Base(cleanDst))
 
+	// Lock both stripes in a deterministic order so the dst-exists check
+	// and the rename below are atomic against concurrent renames/writes
+	// to dst.
+	muSrc, muDst := stripeFor(cleanSrc), stripeFor(cleanDst)
+	if muSrc == muDst {
+		muSrc.Lock()
+		defer muSrc.Unlock()
+	} else if cleanSrc < cleanDst {
+		muSrc.Lock()
+		defer muSrc.Unlock()
+		muDst.Lock()
+		defer muDst.Unlock()
+	} else {
+		muDst.Lock()
+		defer muDst.Unlock()
+		muSrc.Lock()
+		defer muSrc.Unlock()
+	}
+
 	// Fail if dst already exists.
 	if _, err := os.Lstat(dstAbs); err == nil {
 		return ErrConflict
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-
-	mu := stripeFor(cleanSrc)
-	mu.Lock()
-	defer mu.Unlock()
 
 	if err := os.Rename(srcAbs, dstAbs); err != nil {
 		return err

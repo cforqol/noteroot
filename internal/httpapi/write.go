@@ -83,7 +83,7 @@ func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		return
 	}
 
@@ -124,7 +124,7 @@ func (s *Server) preconditions(w http.ResponseWriter, v *vault.Vault, r *http.Re
 		case errors.Is(err, vault.ErrNotFile):
 			cur, isDir = nil, true
 		default:
-			writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+			writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 			return "", "", false
 		}
 	}

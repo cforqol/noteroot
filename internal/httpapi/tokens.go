@@ -84,8 +84,26 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Live names are unique — the bearer actor is "token:"+name. Check
+	// first for a clean 409; the partial unique index is the backstop
+	// for a concurrent create.
+	taken, err := db.TokenNameTaken(r.Context(), name)
+	if err != nil {
+		s.log.Error("token name check failed", "notebook", nb.Manifest.Slug, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+		return
+	}
+	if taken {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "token name already in use"})
+		return
+	}
+
 	t, err := db.TokenCreate(r.Context(), name, hex.EncodeToString(sum[:]), scopes)
 	if err != nil {
+		if platform.IsNameConflict(err) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "token name already in use"})
+			return
+		}
 		s.log.Error("token create failed", "notebook", nb.Manifest.Slug, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return

@@ -51,5 +51,8 @@ func (l Layout) Integrations() string { return filepath.Join(l.root, AppDir, Int
 func (l Layout) Hooks() string        { return filepath.Join(l.root, AppDir, HooksDir) }
 
 func (l Layout) Dirs() []string {
-	return []string{l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(), l.Trash()}
+	return []string{
+		l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(),
+		l.Trash(), l.Backups(), l.Plugins(), l.Integrations(), l.Hooks(),
+	}
 }

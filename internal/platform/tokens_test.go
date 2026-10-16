@@ -92,3 +92,23 @@ func TestToken_hashIsUnique(t *testing.T) {
 		t.Error("duplicate hash accepted, want unique constraint failure")
 	}
 }
+
+func TestToken_liveNameUnique(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	if _, err := db.TokenCreate(ctx, "dup", "hash-1", []string{"note:read"}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := db.TokenCreate(ctx, "dup", "hash-2", []string{"note:read"}); err == nil {
+		t.Fatal("duplicate live name accepted, want unique index failure")
+	} else if !IsNameConflict(err) {
+		t.Fatalf("err = %v, want IsNameConflict", err)
+	}
+	taken, err := db.TokenNameTaken(ctx, "dup")
+	if err != nil || !taken {
+		t.Errorf("TokenNameTaken(dup) = %v,%v want true,nil", taken, err)
+	}
+	if taken, err := db.TokenNameTaken(ctx, "fresh"); err != nil || taken {
+		t.Errorf("TokenNameTaken(fresh) = %v,%v want false,nil", taken, err)
+	}
+}

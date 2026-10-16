@@ -12,6 +12,7 @@ import (
 	"noteroot/internal/frontmatter"
 	"noteroot/internal/index"
 	"noteroot/internal/markdown"
+	"noteroot/internal/state"
 	"noteroot/internal/vault"
 )
 
@@ -69,7 +70,7 @@ func (s *Server) note(w http.ResponseWriter, r *http.Request) {
 
 	src, err := v.Read(rel)
 	if err != nil {
-		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		return
 	}
 	_, modTime, _ := v.Stat(rel)
@@ -150,7 +151,7 @@ func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
 	src, err := v.Read(rel)
 	if err != nil {
-		writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		return
 	}
 	_, modTime, _ := v.Stat(rel)
@@ -170,5 +171,31 @@ func statusFor(err error) int {
 		return http.StatusRequestEntityTooLarge
 	default:
 		return http.StatusBadRequest
+	}
+}
+
+// publicError renders err for the client. Sentinel errors carry stable,
+// path-free messages; everything else (OS errors with absolute paths,
+// wrapped Rel validations echoing segments) is replaced with a generic
+// string so filesystem layout never leaks. Detail goes to the log.
+func publicError(err error) string {
+	for _, sentinel := range []error{
+		vault.ErrNotFound, vault.ErrNotFile, vault.ErrEscapes,
+		vault.ErrTooLarge, vault.ErrConflict, vault.ErrOccupied,
+		state.ErrLocked, state.ErrNoLock,
+	} {
+		if errors.Is(err, sentinel) {
+			return sentinel.Error()
+		}
+	}
+	switch statusFor(err) {
+	case http.StatusNotFound:
+		return "not found"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusRequestEntityTooLarge:
+		return "too large"
+	default:
+		return "request failed"
 	}
 }

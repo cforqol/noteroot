@@ -47,9 +47,9 @@ describe('markdownFor', () => {
     expect(md).toBe(`[file.bin](/n/work/resources/${sha})`);
   });
 
-  test('encodes filename in alt text', () => {
-    const md = markdownFor('work', { sha, filename: 'a]b.png', mime: 'image/png' });
-    expect(md).toContain('a]b.png');
+  test('escapes brackets and parens in alt text', () => {
+    const md = markdownFor('work', { sha, filename: 'a]b(c).png', mime: 'image/png' });
+    expect(md).toBe(`![a\\]b\\(c\\).png](/n/work/resources/${sha})`);
   });
 });
 

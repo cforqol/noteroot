@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -137,6 +138,14 @@ func (t *Trash) putDir(root, abs, clean, actor string) ([]TrashEntry, error) {
 	return out, nil
 }
 
+// trashMoveMu serializes the pick-a-name + rename in move. Trash handles
+// are created per request, so a per-struct mutex cannot help; and a Put on
+// a parent prefix holds a different stripe than a concurrent Put on a
+// child, so stripes cannot cover the collision check either. Trash moves
+// are rare; process-wide serialization is cheap. It is always a leaf lock:
+// callers may hold a stripe while taking it, never the reverse.
+var trashMoveMu sync.Mutex
+
 func (t *Trash) move(abs, rel, actor string) (TrashEntry, error) {
 	if err := os.MkdirAll(t.dir, 0o755); err != nil {
 		return TrashEntry{}, err
@@ -160,6 +169,8 @@ func (t *Trash) move(abs, rel, actor string) (TrashEntry, error) {
 	}
 	// A same-second double delete of one path must not collide.
 	base := strings.ReplaceAll(rel, "/", "_")
+	trashMoveMu.Lock()
+	defer trashMoveMu.Unlock()
 	for i := 1; ; i++ {
 		if _, err := os.Lstat(filepath.Join(t.dir, e.Name)); os.IsNotExist(err) {
 			break
@@ -263,6 +274,17 @@ func (t *Trash) Restore(name string) (string, error) {
 	}
 	parent, err := t.vault.resolveParent(clean)
 	if err != nil {
+		return "", err
+	}
+	// Hold the destination stripe across the occupied check and the rename
+	// so a concurrent Write or Restore to the same path cannot slip in
+	// between and lose a note.
+	mu := stripeFor(clean)
+	mu.Lock()
+	defer mu.Unlock()
+	if _, err := os.Lstat(filepath.Join(parent, path.Base(clean))); err == nil {
+		return "", ErrOccupied
+	} else if !os.IsNotExist(err) {
 		return "", err
 	}
 	if err := os.Rename(src, filepath.Join(parent, path.Base(clean))); err != nil {

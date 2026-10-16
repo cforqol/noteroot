@@ -172,9 +172,14 @@ async function loadTree(s) {
 
 // Plugin panels (stage 9): degradation-grade — a missing endpoint
 // or malformed spec hides the strip, never breaks the notebook.
+let panelRefreshToken = 0;
 async function refreshPluginPanels(s) {
   if (!s) return;
+  const token = ++panelRefreshToken;
   const panels = await fetchPanels(s);
+  // A newer refresh (or a notebook switch mid-flight) wins; stale
+  // responses never paint into the wrong tree.
+  if (token !== panelRefreshToken || s !== slug) return;
   const footer = $("plugin-status");
   const has = panels && Object.keys(panels).length > 0;
   footer.hidden = !has;
@@ -224,7 +229,7 @@ $("q")?.addEventListener("keydown", (e) => {
 
 boot().catch((e) => { $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
 
-// --- vim mode (stage 4): desktop editor with wasi-vim in sandboxed iframe ---
+// --- vim mode (stage 4): desktop editor with vim.wasm running in-page ---
 
 class VimEditor {
   constructor() {
@@ -304,19 +309,19 @@ class VimEditor {
       return this.currentContent;
     }
 
+    // vim.wasm exposes no buffer read API; a forced write to the tmp
+    // file round-trips the buffer through onFileExport, which refreshes
+    // currentContent. The save callback is suppressed for this
+    // programmatic write — callers decide whether to persist.
+    this.suppressSave = true;
     try {
-      // Use Vim's :w! command to force write to tmp file
-      // Then read the file content back
-      // For now, we'll use a workaround: execute Vim command to get buffer content
-      
-      // Note: vim.wasm doesn't provide direct buffer access
-      // We'll need to use the export feature or command to get content
-      // For draft autosave, we'll return cached content and only update on save
-      return this.currentContent;
+      await this.vim.cmdline(`w! ${this.tmpFilePath}`);
     } catch (error) {
-      console.error('[VimEditor] Failed to get content:', error);
-      return this.currentContent;
+      console.error('[VimEditor] Failed to flush buffer:', error);
+    } finally {
+      this.suppressSave = false;
     }
+    return this.currentContent;
   }
 
   onDirty(callback) {
@@ -333,7 +338,7 @@ class VimEditor {
         if (path === this.tmpFilePath) {
           const decoder = new TextDecoder();
           this.currentContent = decoder.decode(contents);
-          if (this.onSaveCallback) {
+          if (!this.suppressSave && this.onSaveCallback) {
             this.onSaveCallback(this.currentContent);
           }
         }
@@ -352,7 +357,6 @@ class VimEditor {
   }
 
   async sendMessage(message) {
-    // For compatibility with existing code
     // vim.wasm doesn't use messages, use cmdline() instead
     if (message.type === 'vim:reload') {
       if (this.vim && message.content) {
@@ -365,7 +369,24 @@ class VimEditor {
         await this.vim.dropFile(this.tmpFilePath, new TextEncoder().encode(message.content));
         await this.vim.cmdline(`e ${this.tmpFilePath}`);
       }
+      return true;
     }
+    if (message.type === 'vim:insert' && message.content) {
+      // No register API exists; stage the text as a file and :read it
+      // below the cursor line. Returns false so callers can surface the
+      // snippet instead of silently dropping it.
+      if (!this.vim || !this.tmpFilePath) return false;
+      try {
+        const insertPath = '/tmp/__noteroot_insert';
+        await this.vim.dropFile(insertPath, new TextEncoder().encode(message.content));
+        await this.vim.cmdline(`read ${insertPath}`);
+        return true;
+      } catch (error) {
+        console.error('[VimEditor] Failed to insert:', error);
+        return false;
+      }
+    }
+    return false;
   }
 
   async cleanup() {
@@ -654,13 +675,14 @@ async function saveNote(manual) {
   if (editing.mode === 'textarea') {
     content = $("editbody").value;
   } else if (editing.mode === 'vim' && editing.editor) {
-    // For vim, we need to request content via message
-    // In vim mode, saves are triggered by :w command which sends vim:save message
-    // Manual save button should also work
-    content = editing.lastSaved; // Vim manages content internally
-    // TODO: Implement manual save for vim mode if needed
-    $("savestate").textContent = "Use :w in Vim to save";
-    return;
+    // Manual save in vim mode: flush the live buffer, then persist it
+    // like any other content (:w keeps working through onFileExport).
+    try {
+      content = await editing.editor.getContent();
+    } catch {
+      $("savestate").textContent = "Could not read Vim buffer; use :w in Vim to save";
+      return;
+    }
   }
 
   if (content === editing.lastSaved) {
@@ -823,10 +845,15 @@ async function insertIntoEditor(text) {
     insertAtCursor(text);
     markDirty();
   } else if (editing.mode === 'vim' && editing.editor) {
-    // Vim: send the text as an insert command via the bridge.
-    // The vim bridge supports vim:insert messages.
-    editing.editor.sendMessage({ type: 'vim:insert', content: text });
-    markDirty();
+    const ok = await editing.editor.sendMessage({ type: 'vim:insert', content: text });
+    if (ok) {
+      markDirty();
+    } else {
+      // Never silently drop an upload embed: surface the snippet so it
+      // can be pasted by hand.
+      setBanner(`<div class="warn">Uploaded, but Vim would not take the insert.` +
+        ` Paste it yourself: <code>${esc(text)}</code></div>`);
+    }
   }
 }
 
@@ -836,6 +863,9 @@ async function handleFileUpload(file) {
   $("savestate").textContent = `Uploading ${file.name}…`;
   try {
     const res = await uploadResource(file);
+    if (!res || !/^[a-f0-9]{64}$/.test(res.sha || "")) {
+      throw new Error("upload returned no content hash");
+    }
     const md = markdownFor(slug, res);
     await insertIntoEditor(md);
     $("savestate").textContent = res.created

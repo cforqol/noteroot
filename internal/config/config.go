@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type AuthMode string
@@ -55,11 +56,11 @@ func Load() (Config, error) {
 		AuthMode:     AuthMode(env("NOTEROOT_AUTH_MODE", string(AuthForward))),
 		PublicOrigin: env("NOTEROOT_PUBLIC_ORIGIN", ""),
 
-		S3Endpoint:  env("NOTEROOT_S3_ENDPOINT", ""),
-		S3Bucket:    env("NOTEROOT_S3_BUCKET", ""),
-		S3Region:    env("NOTEROOT_S3_REGION", ""),
-		S3AccessKey: env("NOTEROOT_S3_ACCESS_KEY", ""),
-		S3SecretKey: env("NOTEROOT_S3_SECRET_KEY", ""),
+		S3Endpoint:   env("NOTEROOT_S3_ENDPOINT", ""),
+		S3Bucket:     env("NOTEROOT_S3_BUCKET", ""),
+		S3Region:     env("NOTEROOT_S3_REGION", ""),
+		S3AccessKey:  env("NOTEROOT_S3_ACCESS_KEY", ""),
+		S3SecretKey:  env("NOTEROOT_S3_SECRET_KEY", ""),
 		S3PathStyle:  envBool("NOTEROOT_S3_PATH_STYLE", false),
 		S3PresignTTL: env("NOTEROOT_S3_PRESIGN_TTL", ""),
 
@@ -74,11 +75,28 @@ func Load() (Config, error) {
 	default:
 		return c, fmt.Errorf("unknown NOTEROOT_AUTH_MODE %q", c.AuthMode)
 	}
+	if c.QuotaBytes < 0 {
+		return c, fmt.Errorf("NOTEROOT_QUOTA_BYTES must be >= 0, got %d", c.QuotaBytes)
+	}
+	if c.GCInterval != "" {
+		if _, err := time.ParseDuration(c.GCInterval); err != nil {
+			return c, fmt.Errorf("bad NOTEROOT_GC_INTERVAL %q: %w", c.GCInterval, err)
+		}
+	}
+	if c.S3PresignTTL != "" {
+		d, err := time.ParseDuration(c.S3PresignTTL)
+		if err != nil {
+			return c, fmt.Errorf("bad NOTEROOT_S3_PRESIGN_TTL %q: %w", c.S3PresignTTL, err)
+		}
+		if d <= 0 {
+			return c, fmt.Errorf("NOTEROOT_S3_PRESIGN_TTL must be positive, got %q", c.S3PresignTTL)
+		}
+	}
 	// S3 config must be all-or-nothing.
 	s3Fields := map[string]string{
-		"NOTEROOT_S3_ENDPOINT":  c.S3Endpoint,
-		"NOTEROOT_S3_BUCKET":    c.S3Bucket,
-		"NOTEROOT_S3_REGION":    c.S3Region,
+		"NOTEROOT_S3_ENDPOINT":   c.S3Endpoint,
+		"NOTEROOT_S3_BUCKET":     c.S3Bucket,
+		"NOTEROOT_S3_REGION":     c.S3Region,
 		"NOTEROOT_S3_ACCESS_KEY": c.S3AccessKey,
 		"NOTEROOT_S3_SECRET_KEY": c.S3SecretKey,
 	}

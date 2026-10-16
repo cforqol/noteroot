@@ -139,12 +139,20 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quota check.
+	// Quota check. An unknown size (chunked upload, Content-Length -1)
+	// is charged at the policy maximum so it cannot slip past.
+	checkSize := size
+	if checkSize < 0 {
+		checkSize = policy.MaxSize
+		if checkSize <= 0 {
+			checkSize = resources.DefaultMaxSize
+		}
+	}
 	if s.cfg.QuotaBytes > 0 {
 		used, err := journal.TotalStoredBytes(r.Context())
 		if err != nil {
 			s.log.Warn("quota check failed", "notebook", nb.Manifest.Slug, "err", err)
-		} else if used+size > s.cfg.QuotaBytes {
+		} else if used+checkSize > s.cfg.QuotaBytes {
 			writeJSON(w, http.StatusInsufficientStorage, map[string]string{
 				"error": fmt.Sprintf("quota exceeded: %d of %d bytes used", used, s.cfg.QuotaBytes),
 			})
@@ -241,6 +249,12 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", `"`+sha+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if mime == "image/svg+xml" {
+		// Legacy blobs from before SVG uploads were rejected: never
+		// render inline, or embedded script runs same-origin.
+		w.Header().Set("Content-Disposition", `attachment; filename="`+sha+`.svg"`)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
 }
@@ -362,7 +376,7 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 		Filename string `json:"filename"`
 		MIME     string `json:"mime"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad JSON: " + err.Error()})
 		return
 	}
@@ -469,7 +483,7 @@ func (s *Server) confirmUpload(w http.ResponseWriter, r *http.Request) {
 		EntryID string `json:"entryID"`
 		SHA     string `json:"sha"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EntryID == "" || req.SHA == "" {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || req.EntryID == "" || req.SHA == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entryID and sha required"})
 		return
 	}

@@ -23,13 +23,16 @@ export function resourceURL(slug, sha) {
 /**
  * Return the markdown embed snippet for an uploaded resource.
  * Images become ![alt](url); everything else becomes [name](url).
+ * Brackets, backslashes, and parens in the name are backslash-escaped
+ * so a hostile or merely odd filename cannot break out of the embed.
  */
 export function markdownFor(slug, res) {
   const url = resourceURL(slug, res.sha);
+  const label = String(res.filename).replace(/([\\[\]()])/g, '\\$1');
   if (res.mime && res.mime.startsWith("image/")) {
-    return `![${res.filename}](${url})`;
+    return `![${label}](${url})`;
   }
-  return `[${res.filename}](${url})`;
+  return `[${label}](${url})`;
 }
 
 /**

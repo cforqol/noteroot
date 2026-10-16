@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"noteroot/internal/git"
@@ -33,7 +34,7 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad JSON: " + err.Error()})
 		return
 	}
@@ -52,7 +53,7 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, vault.ErrEscapes):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path escapes vault"})
 		default:
-			writeJSON(w, statusFor(err), map[string]string{"error": err.Error()})
+			writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
 		}
 		return
 	}

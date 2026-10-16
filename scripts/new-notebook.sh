@@ -8,7 +8,7 @@ ROOT="$DATA/notebooks/$SLUG"
 [[ "$SLUG" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || { echo "invalid slug: $SLUG" >&2; exit 1; }
 [[ -e "$ROOT" ]] && { echo "exists: $ROOT" >&2; exit 1; }
 
-mkdir -p "$ROOT/vault" "$ROOT/.notebook"/{resources,cache,drafts,trash}
+mkdir -p "$ROOT/vault" "$ROOT/.notebook"/{resources,cache,drafts,trash,backups,plugins,integrations,hooks}
 
 cat > "$ROOT/notebook.toml" <<TOML
 id = "$(uuidgen | tr 'A-Z' 'a-z')"

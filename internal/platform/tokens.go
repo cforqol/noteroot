@@ -50,6 +50,25 @@ func (d *DB) TokenCreate(ctx context.Context, name, hash string, scopes []string
 	return t, nil
 }
 
+// TokenNameTaken reports whether a live (non-revoked) token already
+// carries name. Revoked names are reusable.
+func (d *DB) TokenNameTaken(ctx context.Context, name string) (bool, error) {
+	var n int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM api_tokens WHERE name = ? AND revoked_at = 0`,
+		name).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// IsNameConflict reports whether err is the live-name unique index
+// firing (a concurrent create won the race TokenNameTaken missed).
+// The driver reports the column, not the index name.
+func IsNameConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: api_tokens.name")
+}
+
 // TokenByHash looks a token up by secret hash. Missing returns
 // (nil, nil) — callers treat missing and revoked alike at the HTTP
 // edge, so no existence oracle leaks through error shape.

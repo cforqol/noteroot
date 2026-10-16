@@ -38,7 +38,10 @@ func TestLayout_Dirs(t *testing.T) {
 	root := "/data/notebooks/work"
 	l := NewLayout(root)
 	dirs := l.Dirs()
-	want := []string{l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(), l.Trash()}
+	want := []string{
+		l.Vault(), l.App(), l.Resources(), l.Cache(), l.Drafts(),
+		l.Trash(), l.Backups(), l.Plugins(), l.Integrations(), l.Hooks(),
+	}
 	if len(dirs) != len(want) {
 		t.Fatalf("Dirs() len = %d, want %d", len(dirs), len(want))
 	}

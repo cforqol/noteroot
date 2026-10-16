@@ -36,6 +36,71 @@ func TestSyncIdentityFromVault_prunesGonePaths(t *testing.T) {
 	}
 }
 
+func TestRenameIdentity_roundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	id := "01ARZ3NDEKTSV4RRFFQ69G5FAV02"
+	if _, err := db.SyncIdentityPaths(ctx, map[string]string{"a.md": id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameIdentity(ctx, "a.md", "b.md"); err != nil {
+		t.Fatal(err)
+	}
+	uid, ok, err := db.UIDByPath(ctx, "b.md")
+	if err != nil || !ok || uid != id {
+		t.Errorf("UIDByPath(b.md) = %q,%v,%v want %q,true,nil", uid, ok, err, id)
+	}
+	if _, ok, _ := db.UIDByPath(ctx, "a.md"); ok {
+		t.Error("old path still resolves after rename")
+	}
+	p, ok, err := db.PathByUID(ctx, id)
+	if err != nil || !ok || p != "b.md" {
+		t.Errorf("PathByUID = %q,%v,%v want b.md,true,nil", p, ok, err)
+	}
+	// Renaming a path with no row is a no-op, not an error.
+	if err := db.RenameIdentity(ctx, "ghost.md", "elsewhere.md"); err != nil {
+		t.Errorf("rename of missing path: %v", err)
+	}
+}
+
+func TestSyncIdentityPaths_changedAndGone(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	id1 := "01ARZ3NDEKTSV4RRFFQ69G5FAV03"
+	id2 := "01ARZ3NDEKTSV4RRFFQ69G5FAV04"
+	if _, err := db.SyncIdentityPaths(ctx, map[string]string{
+		"a.md": id1,
+		"b.md": id2,
+		// Empty id leaves any existing row alone.
+		"c.md": "",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	n, err := db.SyncIdentityPaths(ctx, map[string]string{"a.md": id2}, []string{"b.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = n
+	if _, ok, _ := db.UIDByPath(ctx, "b.md"); ok {
+		t.Error("gone path still resolves")
+	}
+	if _, ok, _ := db.PathByUID(ctx, id1); ok {
+		t.Error("superseded uid still resolves")
+	}
+	p, ok, err := db.PathByUID(ctx, id2)
+	if err != nil || !ok || p != "a.md" {
+		t.Errorf("PathByUID(id2) = %q,%v,%v want a.md", p, ok, err)
+	}
+}
+
+func TestPathByUID_missing(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	if _, ok, err := db.PathByUID(ctx, "01ARZ3NDEKTSV4RRFFQ69G5FAVZ9"); err != nil || ok {
+		t.Errorf("missing uid: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSyncIdentityFromVault_skipsDuplicateUID(t *testing.T) {
 	ctx := context.Background()
 	db := openTestLocksDB(t)

@@ -41,6 +41,11 @@ var migrations = []string{
 		last_used  INTEGER NOT NULL DEFAULT 0,
 		revoked_at INTEGER NOT NULL DEFAULT 0
 	);`,
+	// Live token names are unique: the bearer actor is "token:"+name, so
+	// duplicates would make audit and bus attribution ambiguous. Partial
+	// index — a revoked name may be reused.
+	`CREATE UNIQUE INDEX IF NOT EXISTS api_tokens_live_name
+		ON api_tokens(name) WHERE revoked_at = 0;`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {

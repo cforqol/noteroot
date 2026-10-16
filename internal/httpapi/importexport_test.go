@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"noteroot/internal/config"
@@ -320,5 +321,32 @@ func TestExportImportRoundtrip(t *testing.T) {
 		if em["status"] != "skipped" {
 			t.Errorf("%v: status = %v, want skipped (round-trip idempotency)", em["path"], em["status"])
 		}
+	}
+}
+
+func TestImport_totalSizeCap(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"existing.md": "old"}))
+
+	// Nine 8MiB entries: the ninth pushes staged bytes past the 64MiB
+	// total and must be rejected, not staged into RAM.
+	files := map[string]string{}
+	for i := 0; i < 9; i++ {
+		files["big"+string(rune('a'+i))+".md"] = strings.Repeat("x", 8<<20)
+	}
+	rec := postImport(t, srv, "work", buildTarGz(t, files), false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	capped := 0
+	for _, e := range resp["entries"].([]any) {
+		em := e.(map[string]any)
+		if em["status"] == "error" && strings.Contains(em["message"].(string), "too large") {
+			capped++
+		}
+	}
+	if capped == 0 {
+		t.Error("no entry rejected by the total-size cap")
 	}
 }

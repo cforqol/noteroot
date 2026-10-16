@@ -79,12 +79,17 @@ func (s *S3Store) objectURL(key string) (string, error) {
 // Put stores the content. It computes sha256 while streaming, then does
 // a presigned PUT to S3. Returns the sha, size, and created=true (S3
 // cannot cheaply pre-check existence without a HEAD, so we always PUT;
-// content-addressing means overwriting is idempotent).
+// content-addressing means overwriting is idempotent). The body is
+// capped at DefaultMaxSize+1 regardless of caller so a future uncapped
+// caller cannot OOM the process.
 func (s *S3Store) Put(r io.Reader) (string, int64, bool, error) {
 	h := sha256.New()
-	body, err := io.ReadAll(io.TeeReader(r, h))
+	body, err := io.ReadAll(io.TeeReader(io.LimitReader(r, DefaultMaxSize+1), h))
 	if err != nil {
 		return "", 0, false, fmt.Errorf("s3: read: %w", err)
+	}
+	if int64(len(body)) > DefaultMaxSize {
+		return "", 0, false, fmt.Errorf("%w: %d bytes > %d", ErrTooLarge, len(body), DefaultMaxSize)
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 	key := sha

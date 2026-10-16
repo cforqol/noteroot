@@ -121,6 +121,9 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 
 	const maxEntrySize = 8 << 20
 	const maxEntries = 10000
+	// maxTotalSize bounds the staged bytes held in RAM. Per-entry caps
+	// alone still allow 10000 x 8MiB ≈ 80GiB before any write.
+	const maxTotalSize = 64 << 20
 
 	type staged struct {
 		path    string
@@ -129,6 +132,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 	}
 	var validEntries []staged
 	var results []importEntry
+	var totalSize int64
 
 	for {
 		hdr, nextErr := tr.Next()
@@ -183,6 +187,13 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 			results = append(results, entry)
 			continue
 		}
+		if totalSize+int64(len(content)) > maxTotalSize {
+			entry.Status = "error"
+			entry.Message = "import too large"
+			results = append(results, entry)
+			continue
+		}
+		totalSize += int64(len(content))
 		sum := sha256.Sum256(content)
 		entry.SHA = hex.EncodeToString(sum[:])
 		entry.Size = int64(len(content))

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -45,8 +46,32 @@ func Create(ctx context.Context, vaultDir, stateDB, outDir string) (Manifest, er
 	}
 
 	ts := time.Now().UTC()
-	stamp := ts.Format("20060102T150405Z")
 	m := Manifest{CreatedAt: ts}
+
+	// Two backups in the same second must not share filenames. Probe up
+	// to 100 suffixed stamps; beyond that something else is wrong.
+	stamp := ""
+	for i := 0; i < 100; i++ {
+		candidate := ts.Format("20060102T150405Z")
+		if i > 0 {
+			candidate += "-" + strconv.Itoa(i+1)
+		}
+		if _, err := os.Lstat(filepath.Join(outDir, candidate+"-vault.bundle")); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return Manifest{}, fmt.Errorf("backup probe: %w", err)
+		}
+		if _, err := os.Lstat(filepath.Join(outDir, candidate+"-state.db")); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return Manifest{}, fmt.Errorf("backup probe: %w", err)
+		}
+		stamp = candidate
+		break
+	}
+	if stamp == "" {
+		return Manifest{}, fmt.Errorf("backup stamp exhausted")
+	}
 
 	// git bundle.
 	bundleName := stamp + "-vault.bundle"

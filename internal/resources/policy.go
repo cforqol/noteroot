@@ -85,6 +85,11 @@ func (p Policy) checkMIME(m string) error {
 	if m == "" {
 		return fmt.Errorf("%w: empty", ErrBadMIME)
 	}
+	// SVG is XML and executes script same-origin; it must never pass as
+	// an image, even when "image/*" is allowed.
+	if m == "image/svg+xml" {
+		return fmt.Errorf("%w: %q", ErrBadMIME, m)
+	}
 	for _, allowed := range p.AllowedMIME {
 		allowed = strings.ToLower(strings.TrimSpace(allowed))
 		if allowed == m {
