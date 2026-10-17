@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"noteroot/internal/config"
@@ -145,5 +147,64 @@ func TestQuota_statsReportQuotaBytes(t *testing.T) {
 	decodeJSON(t, rr, &resp)
 	if q, _ := resp["quotaBytes"].(float64); q != 5000 {
 		t.Errorf("quotaBytes = %v, want 5000", resp["quotaBytes"])
+	}
+	if _, ok := resp["reservedBytes"]; !ok {
+		t.Errorf("missing reservedBytes: %v", resp)
+	}
+}
+
+// Two simultaneous uploads must never both pass the same free-space
+// check: the check+begin window is serialized, and an in-flight
+// upload's pending journal row reserves its bytes for the next
+// checker. With a 10-byte quota and 7-byte blobs, exactly one of eight
+// concurrent uploads can succeed.
+func TestQuota_concurrentUploadsCannotOversell(t *testing.T) {
+	srv := newQuotaServer(t, 10)
+	const n = 8
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Distinct 7-byte contents: unique shas, no dedup help.
+			content := []byte(fmt.Sprintf("blob-%02d", i))
+			rec := postResource(t, srv, "work", fmt.Sprintf("b%d.txt", i), "text/plain", content)
+			codes[i] = rec.Code
+			bodies[i] = rec.Body.String()
+		}(i)
+	}
+	wg.Wait()
+
+	created, rejected := 0, 0
+	for i, c := range codes {
+		switch c {
+		case http.StatusCreated:
+			created++
+		case http.StatusInsufficientStorage:
+			rejected++
+		default:
+			t.Errorf("unexpected status %d: %s", c, bodies[i])
+		}
+	}
+	if created != 1 {
+		t.Errorf("created = %d, want exactly 1 (quota fits one 7-byte blob)", created)
+	}
+	if rejected != n-1 {
+		t.Errorf("rejected = %d, want %d", rejected, n-1)
+	}
+
+	// The winner's bytes are committed, nothing is left reserved.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/stats", nil)
+	srv.http.Handler.ServeHTTP(rr, req)
+	var resp map[string]any
+	decodeJSON(t, rr, &resp)
+	if used, _ := resp["usedBytes"].(float64); used != 7 {
+		t.Errorf("usedBytes = %v, want 7", resp["usedBytes"])
+	}
+	if resv, _ := resp["reservedBytes"].(float64); resv != 0 {
+		t.Errorf("reservedBytes = %v, want 0", resp["reservedBytes"])
 	}
 }

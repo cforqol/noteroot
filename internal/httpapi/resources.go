@@ -51,6 +51,48 @@ func (s *Server) openResources(ctx context.Context, nb *notebooks.Notebook) (
 	return store, journal, cleanup, nil
 }
 
+// quotaCutoff returns the earliest updated_at a pending journal entry
+// can have and still reserve quota. It must exceed the longest
+// presigned-upload window (2× the configured TTL, with a floor of
+// resources.ReservationTTL) so an in-flight direct upload never loses
+// its reservation to the age cutoff.
+func (s *Server) quotaCutoff() time.Time {
+	age := resources.ReservationTTL
+	if s.cfg.S3PresignTTL != "" {
+		if d, err := time.ParseDuration(s.cfg.S3PresignTTL); err == nil && d > 0 && 2*d > age {
+			age = 2 * d
+		}
+	}
+	return time.Now().Add(-age)
+}
+
+// reserveQuota atomically checks the notebook quota (committed bytes +
+// in-flight reservations) and journals a pending reservation of
+// checkSize. The mutex makes check+Begin one reservation window across
+// every upload path, so two racing requests can never both pass the
+// same free-space check. Returns ErrQuotaExceeded when it does not
+// fit; the entry ID is valid only on success.
+func (s *Server) reserveQuota(ctx context.Context, journal *resources.Journal, filename, mime string, checkSize int64) (string, error) {
+	if s.cfg.QuotaBytes <= 0 {
+		return journal.Begin(filename, checkSize, mime)
+	}
+	s.uploadMu.Lock()
+	defer s.uploadMu.Unlock()
+	used, reserved, err := journal.QuotaSnapshot(ctx, s.quotaCutoff())
+	if err != nil {
+		// Transient DB trouble: log and proceed — quota is best-effort
+		// under storage failure, availability wins.
+		s.log.Warn("quota check failed", "err", err)
+	} else if used+reserved+checkSize > s.cfg.QuotaBytes {
+		return "", fmt.Errorf("%w: %d of %d bytes used", ErrQuotaExceeded, used+reserved, s.cfg.QuotaBytes)
+	}
+	return journal.Begin(filename, checkSize, mime)
+}
+
+// ErrQuotaExceeded is returned by reserveQuota when the upload would
+// not fit; the HTTP layer maps it to 507.
+var ErrQuotaExceeded = errors.New("quota exceeded")
+
 // uploadResource handles POST /n/{slug}/resources.
 //
 // Two request shapes are accepted:
@@ -139,8 +181,10 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quota check. An unknown size (chunked upload, Content-Length -1)
-	// is charged at the policy maximum so it cannot slip past.
+	// Quota check + journal begin as one atomic reservation. An unknown
+	// size (chunked upload, Content-Length -1) is charged at the policy
+	// maximum so it cannot slip past; Commit records the real stored
+	// size below.
 	checkSize := size
 	if checkSize < 0 {
 		checkSize = policy.MaxSize
@@ -148,21 +192,12 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 			checkSize = resources.DefaultMaxSize
 		}
 	}
-	if s.cfg.QuotaBytes > 0 {
-		used, err := journal.TotalStoredBytes(r.Context())
-		if err != nil {
-			s.log.Warn("quota check failed", "notebook", nb.Manifest.Slug, "err", err)
-		} else if used+checkSize > s.cfg.QuotaBytes {
-			writeJSON(w, http.StatusInsufficientStorage, map[string]string{
-				"error": fmt.Sprintf("quota exceeded: %d of %d bytes used", used, s.cfg.QuotaBytes),
-			})
+	entryID, err := s.reserveQuota(r.Context(), journal, sanitizedName, mime, checkSize)
+	if err != nil {
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
 			return
 		}
-	}
-
-	// Journal begin.
-	entryID, err := journal.Begin(sanitizedName, size, mime)
-	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "journal begin failed"})
 		return
 	}
@@ -190,7 +225,14 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Journal commit.
+	// Journal commit. Record the real stored size first — the
+	// reservation may have been charged at the policy maximum when the
+	// declared size was unknown.
+	if storedSize != checkSize {
+		if err := journal.SetSize(entryID, storedSize); err != nil {
+			s.log.Warn("journal size update failed", "notebook", nb.Manifest.Slug, "entry", entryID, "err", err)
+		}
+	}
 	if err := journal.Commit(entryID, sha); err != nil {
 		// The blob is stored; commit failure is a DB issue, not a user error.
 		s.log.Warn("journal commit failed", "notebook", nb.Manifest.Slug, "sha", sha, "err", err)
@@ -305,19 +347,20 @@ func (s *Server) resourceStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stats failed"})
 		return
 	}
-	used, err := journal.TotalStoredBytes(r.Context())
+	used, reserved, err := journal.QuotaSnapshot(r.Context(), s.quotaCutoff())
 	if err != nil {
-		s.log.Warn("stats: total bytes failed", "notebook", nb.Manifest.Slug, "err", err)
+		s.log.Warn("stats: quota snapshot failed", "notebook", nb.Manifest.Slug, "err", err)
 	}
 	backend := "local"
 	if s.cfg.S3Enabled() {
 		backend = "s3"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":    backend,
-		"journal":    counts,
-		"usedBytes":  used,
-		"quotaBytes": s.cfg.QuotaBytes,
+		"backend":       backend,
+		"journal":       counts,
+		"usedBytes":     used,
+		"reservedBytes": reserved,
+		"quotaBytes":    s.cfg.QuotaBytes,
 	})
 }
 
@@ -412,21 +455,30 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cleanup()
 
-	// Quota check (before dedup so we don't skip it for truly new blobs).
-	if s.cfg.QuotaBytes > 0 {
-		used, err := journal.TotalStoredBytes(r.Context())
-		if err != nil {
-			s.log.Warn("quota check failed", "notebook", nb.Manifest.Slug, "err", err)
-		} else if used+req.Size > s.cfg.QuotaBytes {
-			writeJSON(w, http.StatusInsufficientStorage, map[string]string{
-				"error": fmt.Sprintf("quota exceeded: %d of %d bytes used", used, s.cfg.QuotaBytes),
-			})
+	// Quota reservation + journal entry as one atomic window — before
+	// dedup so the check is not skipped for truly new blobs. The
+	// pending row reserves quota until confirm; dedup and non-S3
+	// short-circuits release it immediately.
+	checkSize := req.Size
+	if checkSize < 0 {
+		checkSize = policy.MaxSize
+		if checkSize <= 0 {
+			checkSize = resources.DefaultMaxSize
+		}
+	}
+	entryID, err := s.reserveQuota(r.Context(), journal, req.Filename, req.MIME, checkSize)
+	if err != nil {
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
 			return
 		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "journal begin failed"})
+		return
 	}
 
 	// Dedup: blob already present → skip upload.
 	if store.Has(req.SHA) {
+		_ = journal.Abort(entryID)
 		writeJSON(w, http.StatusOK, map[string]any{"exists": true, "sha": req.SHA})
 		return
 	}
@@ -434,14 +486,8 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 	// Non-S3 store: client must use the server-side upload endpoint.
 	s3Store, isS3 := store.(*resources.S3Store)
 	if !isS3 {
+		_ = journal.Abort(entryID)
 		writeJSON(w, http.StatusOK, map[string]any{"direct": true})
-		return
-	}
-
-	// Journal entry (pending until confirm).
-	entryID, err := journal.Begin(req.Filename, req.Size, req.MIME)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "journal begin failed"})
 		return
 	}
 

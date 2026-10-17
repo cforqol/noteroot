@@ -30,6 +30,11 @@ type Server struct {
 	gitMu sync.Mutex
 	git   map[string]*git.Flusher
 
+	// uploadMu serializes the quota-check + journal-begin reservation
+	// window across every upload path (server-side, presign). Held only
+	// for those two DB operations — never across blob I/O.
+	uploadMu sync.Mutex
+
 	stopGC func()
 }
 

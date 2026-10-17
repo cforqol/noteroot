@@ -151,6 +151,48 @@ func TestUpload_dedupHit(t *testing.T) {
 	}
 }
 
+// A chunked upload (Content-Length unknown, -1) used to journal -1
+// bytes permanently under-counting — and even subtracting — the quota
+// total. The journal must record the real stored size once known.
+func TestUpload_unknownSize_recordsRealStoredBytes(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	content := []byte("chunked-blob-content") // 19 bytes
+	target := "/n/work/resources?filename=chunked.txt"
+	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(content))
+	req.ContentLength = -1 // simulate chunked transfer encoding
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	stats := httptest.NewRequest(http.MethodGet, "/n/work/resources/stats", nil)
+	srec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(srec, stats)
+	var resp map[string]any
+	decodeJSON(t, srec, &resp)
+	if used, _ := resp["usedBytes"].(float64); used != float64(len(content)) {
+		t.Errorf("usedBytes = %v, want %d (real stored size)", resp["usedBytes"], len(content))
+	}
+}
+
+// Unknown-size uploads are conservatively charged the policy maximum
+// at the quota check: a chunked transfer cannot be allowed to probe
+// free space byte-by-byte.
+func TestUpload_unknownSize_chargedPolicyMax(t *testing.T) {
+	srv := newQuotaServer(t, 1000) // << 50 MiB policy max
+	target := "/n/work/resources?filename=chunked.txt"
+	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader([]byte("small")))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Errorf("status = %d, want 507 (unknown size charged at policy max)", rec.Code)
+	}
+}
+
 func TestUpload_unknownNotebook(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
 	rec := postResource(t, srv, "nope", "a.txt", "text/plain", []byte("x"))

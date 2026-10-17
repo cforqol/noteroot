@@ -331,3 +331,111 @@ func TestJournal_withStateDB_migrationApplied(t *testing.T) {
 		t.Errorf("table %q not found", name)
 	}
 }
+
+func TestReservedBytes_countsYoungPendingOnly(t *testing.T) {
+	ctx := context.Background()
+	j := newTestJournal(t)
+
+	young, err := j.Begin("young.bin", 7, "application/octet-stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Committed and aborted entries release their reservation.
+	committed, _ := j.Begin("done.bin", 11, "application/octet-stream")
+	_ = j.Commit(committed, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	aborted, _ := j.Begin("bad.bin", 13, "application/octet-stream")
+	_ = j.Abort(aborted)
+	// A pending entry older than the cutoff (abandoned presign, crash
+	// leftover) must not reserve quota forever.
+	old, _ := j.Begin("old.bin", 17, "application/octet-stream")
+	if _, err := j.db.Exec(`UPDATE upload_journal SET updated_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Hour).UnixMilli(), old); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := j.ReservedBytes(ctx, time.Now().Add(-ReservationTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Errorf("reserved = %d, want 7 (only the young pending entry)", n)
+	}
+	if e, err := j.Get(young); err != nil || e.State != StatePending {
+		t.Errorf("young entry disturbed: %+v, %v", e, err)
+	}
+}
+
+// QuotaSnapshot reads used+reserved in one explicit transaction —
+// the fresh-snapshot reads the upload quota check depends on.
+func TestQuotaSnapshot_usedAndReserved(t *testing.T) {
+	ctx := context.Background()
+	j := newTestJournal(t)
+
+	used, reserved, err := j.QuotaSnapshot(ctx, time.Now().Add(-ReservationTTL))
+	if err != nil || used != 0 || reserved != 0 {
+		t.Fatalf("empty = (%d, %d, %v), want (0, 0, nil)", used, reserved, err)
+	}
+
+	c, _ := j.Begin("c.bin", 30, "application/octet-stream")
+	_ = j.Commit(c, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	p, _ := j.Begin("p.bin", 7, "application/octet-stream")
+
+	used, reserved, err = j.QuotaSnapshot(ctx, time.Now().Add(-ReservationTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 30 || reserved != 7 {
+		t.Errorf("used, reserved = %d, %d, want 30, 7", used, reserved)
+	}
+
+	// An old pending row (beyond the cutoff) is not reserved.
+	if _, err := j.db.Exec(`UPDATE upload_journal SET updated_at = ? WHERE id = ?`,
+		time.Now().Add(-2*ReservationTTL).UnixMilli(), p); err != nil {
+		t.Fatal(err)
+	}
+	_, reserved, err = j.QuotaSnapshot(ctx, time.Now().Add(-ReservationTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 0 {
+		t.Errorf("reserved = %d, want 0 for stale pending", reserved)
+	}
+}
+
+func TestSetSize_correctsPendingOnly(t *testing.T) {
+	ctx := context.Background()
+	j := newTestJournal(t)
+
+	// Unknown-size flow: Begin charged the policy maximum, SetSize
+	// records the real stored size before Commit.
+	id, err := j.Begin("chunked.bin", 1<<20, "application/octet-stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetSize(id, 42); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := j.Get(id)
+	if e.Size != 42 {
+		t.Errorf("size = %d, want 42", e.Size)
+	}
+	_ = j.Commit(id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	total, err := j.TotalStoredBytes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 42 {
+		t.Errorf("total = %d, want 42 (real stored size, not the charged maximum)", total)
+	}
+
+	// Missing and non-pending entries are refused.
+	if err := j.SetSize("nonexistent", 1); err != ErrEntryNotFound {
+		t.Errorf("missing entry err = %v, want ErrEntryNotFound", err)
+	}
+	if err := j.SetSize(id, 7); err != ErrBadState {
+		t.Errorf("committed entry err = %v, want ErrBadState", err)
+	}
+	if err := j.SetSize("x", -1); err == nil {
+		t.Error("negative size accepted, want error")
+	}
+}

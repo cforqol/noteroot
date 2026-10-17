@@ -5,11 +5,35 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 const dsnSuffix = "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+
+// openLocks serializes Open per database path. Two concurrent opens of
+// the same file race the migration transactions: a deferred read
+// transaction cannot upgrade to a write in WAL mode, and the loser
+// gets SQLITE_BUSY regardless of busy_timeout (the corrupt-quarantine
+// path would then rename the other's live file out from under it).
+// Openers of *different* paths never wait on each other.
+var (
+	openLocksMu sync.Mutex
+	openLocks   = map[string]*sync.Mutex{}
+)
+
+func lockOpen(path string) (unlock func()) {
+	openLocksMu.Lock()
+	mu, ok := openLocks[path]
+	if !ok {
+		mu = &sync.Mutex{}
+		openLocks[path] = mu
+	}
+	openLocksMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
 
 // Open creates or opens the durable database. A corrupt file is
 // quarantined rather than repaired, then rebuilt from scratch.
@@ -25,6 +49,7 @@ func OpenDB(ctx context.Context, path string, migrate func(context.Context, *sql
 			return nil, false, err
 		}
 	}
+	defer lockOpen(path)()
 	db, err := sql.Open("sqlite", "file:"+path+dsnSuffix)
 	if err != nil {
 		return nil, false, err

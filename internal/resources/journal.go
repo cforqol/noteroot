@@ -254,6 +254,90 @@ func (j *Journal) TotalStoredBytes(ctx context.Context) (int64, error) {
 	return total, nil
 }
 
+// ReservationTTL is the minimum age at which a pending journal entry
+// stops counting toward the quota. Pending entries are the
+// crash-recovery set and are never GC'd before Reconcile runs, so an
+// abandoned presigned upload must not reserve quota forever; callers
+// pass a cutoff of at least this age (longer when the configured
+// presign TTL demands it).
+const ReservationTTL = 30 * time.Minute
+
+// ReservedBytes sums the sizes of pending entries updated at or after
+// updatedAfter — the quota still claimed by uploads that began but
+// have not committed or aborted yet. Combined with a mutex around
+// check+Begin, this closes the concurrent-upload quota race: every
+// in-flight upload is visible to the next checker either as committed
+// bytes or as a reservation.
+func (j *Journal) ReservedBytes(ctx context.Context, updatedAfter time.Time) (int64, error) {
+	var total int64
+	err := j.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(size), 0)
+		FROM upload_journal
+		WHERE state = ? AND updated_at >= ?`,
+		StatePending, updatedAfter.UnixMilli()).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("journal reserved bytes: %w", err)
+	}
+	return total, nil
+}
+
+// QuotaSnapshot reads committed and reserved bytes in ONE explicit
+// transaction. Implicit reads on a pooled modernc/sqlite connection
+// can piggy-back a stale WAL snapshot left behind by earlier
+// statements under concurrency — observed as concurrent upload checks
+// silently missing each other's pending rows — while an explicit
+// transaction always begins a fresh snapshot. Read-only; rolls back.
+func (j *Journal) QuotaSnapshot(ctx context.Context, updatedAfter time.Time) (used, reserved int64, err error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("journal quota snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(size), 0)
+		FROM (SELECT sha, size FROM upload_journal
+		      WHERE state = ? AND sha != ''
+		      GROUP BY sha)`, StateCommitted).Scan(&used); err != nil {
+		return 0, 0, fmt.Errorf("journal quota snapshot: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(size), 0)
+		FROM upload_journal
+		WHERE state = ? AND updated_at >= ?`,
+		StatePending, updatedAfter.UnixMilli()).Scan(&reserved); err != nil {
+		return 0, 0, fmt.Errorf("journal quota snapshot: %w", err)
+	}
+	return used, reserved, nil
+}
+
+// SetSize corrects a pending entry's recorded size — Begin may have
+// charged a policy maximum when the declared size was unknown (-1),
+// and the real size is only known after the blob is stored. Only
+// pending entries are updated; a missing or non-pending entry is
+// ErrEntryNotFound/ErrBadState.
+func (j *Journal) SetSize(id string, size int64) error {
+	if size < 0 {
+		return errors.New("journal set size: negative size")
+	}
+	res, err := j.db.Exec(`
+		UPDATE upload_journal
+		SET size = ?, updated_at = ?
+		WHERE id = ? AND state = ?`,
+		size, time.Now().UnixMilli(), id, StatePending)
+	if err != nil {
+		return fmt.Errorf("journal set size: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var exists bool
+		_ = j.db.QueryRow(`SELECT 1 FROM upload_journal WHERE id = ?`, id).Scan(&exists)
+		if !exists {
+			return ErrEntryNotFound
+		}
+		return ErrBadState
+	}
+	return nil
+}
+
 // CountByState returns the number of entries in each state. Useful for
 // metrics and the /api/v1/resources/stats endpoint.
 func (j *Journal) CountByState() (map[string]int, error) {
