@@ -23,7 +23,7 @@ const (
 
 // Op is one mutation to record in the next commit message.
 type Op struct {
-	Action string // write, delete, restore
+	Action string // write, create, move, delete, restore, import
 	Path   string
 	Actor  string
 }

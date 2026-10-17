@@ -168,3 +168,55 @@ func TestDeleteIdentity(t *testing.T) {
 		t.Error("deleted path still resolves")
 	}
 }
+
+func TestRenameIdentityPrefix(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	ids := map[string]string{
+		"old/a.md":     "01ARZ3NDEKTSV4RRFFQ69G5FA1",
+		"old/sub/b.md": "01ARZ3NDEKTSV4RRFFQ69G5FA2",
+		"older/c.md":   "01ARZ3NDEKTSV4RRFFQ69G5FA3", // shares a name prefix, not a folder
+		"other.md":     "01ARZ3NDEKTSV4RRFFQ69G5FA4",
+	}
+	if _, err := db.SyncIdentityPaths(ctx, ids, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameIdentityPrefix(ctx, "old", "ünï/new"); err != nil {
+		t.Fatal(err)
+	}
+	for oldP, newP := range map[string]string{
+		"old/a.md":     "ünï/new/a.md",
+		"old/sub/b.md": "ünï/new/sub/b.md",
+		"older/c.md":   "older/c.md",
+		"other.md":     "other.md",
+	} {
+		uid, ok, err := db.UIDByPath(ctx, newP)
+		if err != nil || !ok || uid != ids[oldP] {
+			t.Errorf("UIDByPath(%s) = %q,%v,%v want %q", newP, uid, ok, err, ids[oldP])
+		}
+	}
+	if _, ok, _ := db.UIDByPath(ctx, "old/a.md"); ok {
+		t.Error("old path still resolves")
+	}
+}
+
+func TestRenameIdentityPrefix_skipsCollisions(t *testing.T) {
+	ctx := context.Background()
+	db := openTestLocksDB(t)
+	if _, err := db.SyncIdentityPaths(ctx, map[string]string{
+		"old/a.md": "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+		"old/b.md": "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+		"new/a.md": "01ARZ3NDEKTSV4RRFFQ69G5FB3", // stale row already at the target
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameIdentityPrefix(ctx, "old", "new"); err != nil {
+		t.Fatalf("collision must not error: %v", err)
+	}
+	if uid, ok, _ := db.UIDByPath(ctx, "new/b.md"); !ok || uid != "01ARZ3NDEKTSV4RRFFQ69G5FB2" {
+		t.Errorf("non-colliding row not moved: %q %v", uid, ok)
+	}
+	if uid, _, _ := db.UIDByPath(ctx, "new/a.md"); uid != "01ARZ3NDEKTSV4RRFFQ69G5FB3" {
+		t.Errorf("existing target row clobbered: %q", uid)
+	}
+}

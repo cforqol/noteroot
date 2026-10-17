@@ -218,6 +218,19 @@ describe('shouldUseVim', () => {
     expect(shouldUseVim({ storage: s, checkCompatibility: okCompat, viewportWidth: 1024 })).toBe(false);
   });
 
+  test('falls back to the desktop width when window is unavailable', () => {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { value: undefined, configurable: true, writable: true });
+    try {
+      const s = makeStorage();
+      expect(shouldUseVim({ storage: s, checkCompatibility: okCompat })).toBe(true);
+      expect(shouldUseVim({ storage: makeStorage({ 'nr.editorPref': 'textarea' }), checkCompatibility: okCompat })).toBe(false);
+    } finally {
+      if (desc) Object.defineProperty(globalThis, 'window', desc);
+      else delete globalThis.window;
+    }
+  });
+
   test('returns false on narrow viewport with auto preference', () => {
     const s = makeStorage();
     expect(shouldUseVim({ storage: s, checkCompatibility: okCompat, viewportWidth: 500 })).toBe(false);

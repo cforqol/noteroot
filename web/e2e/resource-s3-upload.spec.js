@@ -206,6 +206,11 @@ async function dropFile(page, name, content, mimeType) {
   });
 }
 
+// Skip the first-run welcome modal so it never covers the page under test.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nr.helpSeen', '1'));
+});
+
 test.describe('direct-to-S3 browser upload', () => {
   test('bytes land in object storage, journal confirms, note renders', async ({ page }) => {
     const content = 'browser bytes go straight to object storage';

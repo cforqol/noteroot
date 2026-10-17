@@ -23,5 +23,6 @@ export default {
     '^/vim/vimwasm\\.js$': '<rootDir>/__tests__/mocks/vimwasm.js',
     '^/lib/vim-mode\\.js$': '<rootDir>/lib/vim-mode.js',
     '^/lib/panels\\.js$': '<rootDir>/lib/panels.js',
+    '^/lib/(.*)$': '<rootDir>/lib/$1',
   },
 };

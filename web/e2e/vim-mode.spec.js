@@ -68,6 +68,11 @@ test.afterAll(async () => {
   }
 });
 
+// Skip the first-run welcome modal so it never covers the page under test.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nr.helpSeen', '1'));
+});
+
 test.describe('Page loads and navigation', () => {
   test('loads the notebook UI', async ({ page }) => {
     await page.goto(BASE);

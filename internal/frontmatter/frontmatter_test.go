@@ -96,6 +96,61 @@ func TestParse_badYAMLRecordsErr(t *testing.T) {
 	}
 }
 
+// A YAML error elsewhere in the block must not drop a well-formed id:
+// writers mint a new one whenever ID is empty, so losing it here would
+// re-key the note on every save.
+func TestParse_badYAMLKeepsTextualID(t *testing.T) {
+	for _, src := range []string{
+		"---\nid: " + validID + "\ntitle: Meeting: notes\n---\nbody",
+		"---\ntitle: [unclosed\nid: \"" + validID + "\" # stable\n---\nbody",
+		"---\r\nid: '" + validID + "'\r\nbad: : x\r\n---\r\nbody",
+	} {
+		d := Parse([]byte(src))
+		if d.Err == nil {
+			t.Errorf("%q: expected a YAML error", src)
+		}
+		if d.ID != validID {
+			t.Errorf("%q: ID = %q, want %q recovered", src, d.ID, validID)
+		}
+	}
+	// Nested or malformed id lines are not identities.
+	for _, src := range []string{
+		"---\nmeta:\n  id: " + validID + "\nx: : y\n---\n",
+		"---\nid: nope\nx: : y\n---\n",
+	} {
+		if d := Parse([]byte(src)); d.ID != "" {
+			t.Errorf("%q: ID = %q, want empty", src, d.ID)
+		}
+	}
+}
+
+func TestSplit_largeBodyKeepsBlock(t *testing.T) {
+	body := bytes.Repeat([]byte("lorem ipsum\n"), (maxBlock/12)*2)
+	src := append([]byte("---\nid: "+validID+"\n---\n"), body...)
+	block, gotBody, ok := Split(src)
+	if !ok {
+		t.Fatal("a small block before a large body must parse")
+	}
+	if string(block) != "id: "+validID+"\n" || !bytes.Equal(gotBody, body) {
+		t.Errorf("block = %q, body len = %d", block, len(gotBody))
+	}
+	// And identity survives a write of the large note: no second block.
+	out := WithID(src, validID)
+	if bytes.Count(out, []byte("---\n")) != 2 {
+		t.Errorf("WithID added a block to a large note")
+	}
+}
+
+func TestSplit_closingDelimiterAtLimit(t *testing.T) {
+	pad := strings.Repeat("a", maxBlock-1) + "\n" // block of exactly maxBlock bytes
+	if _, _, ok := Split([]byte("---\n" + pad + "---\nbody")); !ok {
+		t.Error("closing delimiter starting at maxBlock must still count")
+	}
+	if _, _, ok := Split([]byte("---\n" + pad + "b\n---\nbody")); ok {
+		t.Error("closing delimiter past maxBlock must not count")
+	}
+}
+
 func TestParse_malformedID(t *testing.T) {
 	d := Parse([]byte("---\nid: not-a-ulid\n---\nbody"))
 	if !errors.Is(d.Err, ErrMalformedID) {

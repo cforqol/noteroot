@@ -121,3 +121,23 @@ curl -X PUT 'http://localhost:8080/n/demo/note?path=beta.md' \
 - Go E2E tests run full server + index + rendering stack
 - Both test suites are independent and can run in parallel
 - Manual browser testing still recommended for visual/UX verification
+
+
+## Workspace UI tests (note/folder CRUD, tree, status bar, themes, layout)
+
+| Layer | Where | Covers |
+|---|---|---|
+| Unit | `__tests__/unit/{stats,tree,prefs,notes-api,trash}.test.js` | pure logic in `lib/` (100 % line/function coverage enforced by `jest.config.js`); trash includes coercion, wording and expiry helpers |
+| jsdom integration | `__tests__/integration/{dialog,tree-view}.test.js` | dialogs, context menu, tree rendering and callbacks |
+| App integration | `__tests__/integration/app-ui.test.js` | the real `index.html` + `app.js` against an in-memory fake of the HTTP API: tree, collapse, decorations, CRUD through dialogs, trash restore, status bar, theme, placement, phone drawer, trash retention |
+| Browser E2E | `e2e/ui-notes.spec.js` | the built binary in Chromium: CRUD, status bar (plain and Vim), persistence across reload, theme vs OS preference, left/right/hidden placement, 375 px phone drawer, folder API safety and CSRF |
+| Vim editor integration | `__tests__/integration/vim-editor.test.js` | ResizeObserver‑based canvas resize, syncSize, watchSize, close, and DPR-aware backing store |
+
+```bash
+make build
+cd web
+node --experimental-vm-modules ../node_modules/.bin/jest --config jest.config.js --coverage
+npx playwright test --config playwright.config.js e2e/ui-notes.spec.js
+```
+
+Go side: `go test ./internal/vault ./internal/state ./internal/httpapi -run 'Mkdir|RenameDir|IsDir|RenameIdentityPrefix|Folder'`.

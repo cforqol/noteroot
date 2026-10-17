@@ -63,6 +63,9 @@ func (s *Server) startGC() (stopGC func()) {
 // runGCSweep runs a GC pass over all notebooks. Errors are logged and skipped.
 func (s *Server) runGCSweep() {
 	ctx := context.Background()
+	// Trash retention rides the same ticker: a long-lived server would
+	// otherwise only ever sweep the trash at boot.
+	s.purgeTrash()
 	for _, nb := range s.reg.List() {
 		store, journal, cleanup, err := s.openResources(ctx, nb)
 		if err != nil {

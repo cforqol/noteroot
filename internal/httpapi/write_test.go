@@ -250,6 +250,34 @@ func TestPut_preservesExistingValidID(t *testing.T) {
 	}
 }
 
+// A YAML slip in another key used to blank the parsed id, so every save
+// minted a fresh one and overwrote the note's durable identity.
+func TestPut_keepsIDWhenYAMLBroken(t *testing.T) {
+	const existing = "01ARZ3NDEKTSV4RRFFQ69G5FAV00"
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"keep.md": "x"}))
+	src := "---\nid: " + existing + "\ntitle: Meeting: notes\n---\ncontent\n"
+	for i := 0; i < 2; i++ {
+		hdr := map[string]string{}
+		if i > 0 {
+			hdr["If-Match"] = `"` + etagOf([]byte(src)) + `"`
+		}
+		rec := put(t, srv, putNotePath("n.md"), []byte(src), hdr)
+		if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+			t.Fatalf("save %d: status = %d: %s", i, rec.Code, rec.Body)
+		}
+		var body struct {
+			Id string `json:"id"`
+		}
+		_ = json.NewDecoder(rec.Body).Decode(&body)
+		if body.Id != existing {
+			t.Fatalf("save %d: id = %q, want %q kept", i, body.Id, existing)
+		}
+	}
+	if raw := get(t, srv, "/n/work/raw?path=n.md", nil).Body.String(); raw != src {
+		t.Errorf("raw = %q, want the note byte-for-byte", raw)
+	}
+}
+
 func TestPut_reMintsMalformedID(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"keep.md": "x"}))
 	rec := put(t, srv, putNotePath("n.md"),

@@ -2,7 +2,6 @@ import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
 import { uploadURL, markdownFor, rewriteImageThumbs, presignUpload } from '/lib/upload.js';
 import {
   getVimModeState,
-  setVimModeState,
   recordVimFailure,
   shouldUseVim as shouldUseVimCore,
   resetVimCircuitBreaker,
@@ -10,11 +9,48 @@ import {
   setEditorPreference,
 } from '/lib/vim-mode.js';
 import { fetchPanels, renderPanelChips } from '/lib/panels.js';
+import { describeStatus } from '/lib/stats.js';
+function shouldUseVim() {
+  return shouldUseVimCore({ checkCompatibility: () => checkBrowserCompatibility() });
+}
+import { VimEditor } from '/lib/vim-editor.js';
+import {
+  normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, isValidId,
+} from '/lib/frontmatter.js';
+import { indentEdit } from '/lib/textedit.js';
+import {
+  formatTreeStatus, folderPaths, parentDir, joinPath, ancestors, isWithin,
+  cleanRelPath, resolveChild, newNoteContent, baseName,
+  folderChoices, displayName, renameTarget, moveTarget,
+} from '/lib/tree.js';
+import { renderTree } from '/lib/tree-view.js';
+import { formDialog, confirmDialog, infoDialog, showMenu } from '/lib/dialog.js';
+import * as notesApi from '/lib/notes-api.js';
+import {
+  isArchive, isMarkdown, exportFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
+} from '/lib/transfer.js';
+import { renderHelp, isTypingTarget, shortcutFor } from '/lib/help.js';
+import {
+  RETENTION_NEVER, normalizeRetention, describeRetention, describeExpiry, retentionChoices,
+} from '/lib/trash.js';
+import {
+  getTheme, setTheme, nextTheme, applyTheme as applyUserTheme,
+  getPlacement, setPlacement, togglePlacement, applyPlacement,
+  getDecorations, setDecoration, getCollapsed, setCollapsed, replaceCollapsed,
+  moveFolderPrefs, removeFolderPrefs,
+  getSetting, setSetting, getSettings, STATUS_FIELDS, getStatusFields, setStatusField,
+  isHelpSeen, markHelpSeen, resetPreferences, clearDrafts,
+} from '/lib/prefs.js';
 
 const $ = (id) => document.getElementById(id);
-let current = null;
+const q = (sel) => document.querySelector(sel);
+const qa = (sel) => [...document.querySelectorAll(sel)];
+
+let current = null; // path of the note shown in the reader
+let view = "empty"; // "empty" | "read" | "edit" — see setView
 let slug = null;
-let lastNote = null;
+let lastNote = null; // {path, sha, id, title, ready: Promise}
+let openSeq = 0; // invalidates stale async work after navigation
 
 function esc(s) {
   return String(s)
@@ -24,56 +60,207 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
-async function api(path) {
-  const r = await fetch(path, { headers: { Accept: "application/json" } });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-  return r.json();
+// --- tree (collapsible folders, decorations, counts) ---
+
+let treeData = null;
+let collapsed = new Set();
+let decorations = {};
+let selectedFolder = null; // folder chosen for "+ Note" / "+ Folder"
+
+function drawTree() {
+  if (!treeData) return;
+  const totals = renderTree($("tree"), treeData, {
+    current,
+    selected: selectedFolder,
+    collapsed,
+    decorations,
+    onOpen: (path, el) => { selectedFolder = null; openNote(path, el); },
+    onToggle: (path, isCollapsed) => {
+      selectedFolder = path;
+      collapsed = setCollapsed(slug, path, isCollapsed);
+      drawTree();
+    },
+    onMenu: showNodeMenu,
+  });
+  $("tree-status").textContent = formatTreeStatus(totals);
 }
 
-function renderNode(node, depth) {
-  const frag = document.createDocumentFragment();
-  for (const child of node.children || []) {
-    if (child.isDir) {
-      const label = document.createElement("div");
-      label.className = "node dir";
-      label.style.paddingLeft = depth * 12 + "px";
-      label.textContent = child.name + "/";
-      frag.append(label);
-      frag.append(renderNode(child, depth + 1));
-    } else {
-      const b = document.createElement("button");
-      b.className = "node";
-      b.style.paddingLeft = depth * 12 + "px";
-      b.textContent = child.name.replace(/\.md$/, "");
-      b.dataset.path = child.path;
-      b.onclick = () => openNote(child.path, b);
-      if (child.path === current) b.classList.add("active");
-      frag.append(b);
-    }
+async function refreshTree() {
+  if (!slug) return;
+  treeData = await notesApi.getTree(slug);
+  drawTree();
+}
+
+function findNode(root, path) {
+  if (!root) return null;
+  for (const c of root.children || []) {
+    if (c.path === path) return c;
+    const hit = c.isDir ? findNode(c, path) : null;
+    if (hit) return hit;
   }
-  return frag;
+  return null;
+}
+
+// Calendar date of a file's last change, for a note missing `created`.
+function fileDate(path) {
+  const node = findNode(treeData, path);
+  return node && node.modTime ? localDate(new Date(node.modTime * 1000)) : "";
+}
+
+// --- reader ---
+
+function emptyState({ icon, title, body, action }) {
+  const card = document.createElement("div");
+  card.className = "empty-state";
+  const ic = document.createElement("div");
+  ic.className = "empty-icon";
+  ic.textContent = icon;
+  const h = document.createElement("h2");
+  h.textContent = title;
+  const p = document.createElement("p");
+  p.textContent = body;
+  card.append(ic, h, p);
+  if (action) {
+    const row = document.createElement("div");
+    row.className = "actions";
+    row.append(action);
+    card.append(row);
+  }
+  return card;
+}
+
+function actionButton(label, onClick) {
+  const b = document.createElement("button");
+  b.className = "btn primary";
+  b.textContent = label;
+  b.onclick = onClick;
+  return b;
+}
+
+function showNoNotebooks() {
+  $("note").replaceChildren(emptyState({
+    icon: "📓",
+    title: "No notebooks yet",
+    body: "Create one with ./scripts/new-notebook.sh <slug>, then reload.",
+  }));
+  setView("empty");
+}
+
+function showNoSelection() {
+  $("note").replaceChildren(emptyState({
+    icon: "🗒",
+    title: "Nothing open",
+    body: "Pick a note from the list, or start a new one.",
+    action: actionButton("New note", () => actionNewNote()),
+  }));
+  setView("empty");
+}
+
+/**
+ * The one place that decides what the content pane shows and which
+ * buttons go with it. Every transition — opening a note, opening or
+ * closing the editor, a note disappearing under us, search results —
+ * goes through here, so Edit/Save/Done can never disagree with what is
+ * actually on screen.
+ *
+ *   "empty" nothing open: the pane explains itself, no note actions
+ *   "read"  a rendered note: Edit and the ⋯ menu
+ *   "edit"  the editor: Save/Done in its own toolbar, no Edit button
+ *
+ * @param {"empty"|"read"|"edit"} next
+ */
+function setView(next) {
+  view = next;
+  const editingView = next === "edit";
+  $("note").hidden = editingView;
+  $("editor").hidden = !editingView;
+  // Edit belongs to reading only: while the editor is open, Done is the
+  // way out, and an empty pane has nothing to edit.
+  $("editbtn").hidden = next !== "read";
+  $("notemenu").hidden = next === "empty";
 }
 
 async function openNote(path, btn) {
-  closeEditor();
+  if (!slug) return;
+  if (path !== current) await flushEditor();
   current = path;
-  document.querySelectorAll(".node.active").forEach((n) => n.classList.remove("active"));
-  btn?.classList.add("active");
+  const seq = ++openSeq;
+  if (btn !== undefined) {
+    document.querySelectorAll(".node.active").forEach((n) => n.classList.remove("active"));
+    btn?.classList.add("active");
+  }
+  setStatus("Read", { text: null });
+  revealPath(path);
   try {
-    const n = await api(`/n/${encodeURIComponent(slug)}/note?path=${encodeURIComponent(path)}`);
-    lastNote = { path, sha: n.sha || null, title: n.title || path };
+    const [n, src] = await Promise.all([
+      notesApi.getNote(slug, path),
+      notesApi.getSource(slug, path),
+    ]);
+    if (seq !== openSeq) return;
+    lastNote = { path, sha: src.sha, id: n.id || "", title: n.title || path, ready: Promise.resolve() };
     document.title = (n.title || path) + " — noteroot";
-    let html = "";
-    if (n.frontmatterError) html += `<div class="warn">frontmatter: ${esc(n.frontmatterError)}</div>`;
-    if (n.renderError) html += `<div class="warn">render: ${esc(n.renderError)}</div>`;
-    html += rewriteImageThumbs(n.html, slug, { maxWidth: 800, maxHeight: 600 });
-    $("note").innerHTML = html;
-    $("note").append(linksPanels(n));
-    $("note").scrollTop = 0;
-    $("editbtn").hidden = false;
+    renderRead(n);
+    setView("read");
+    if (isPhone()) setDrawer(false);
+    setStatus("Read", { text: src.text });
+    lastNote.ready = ensureFrontmatter(path, n, src, seq);
   } catch (e) {
-    $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`;
-    $("editbtn").hidden = true;
+    if (seq !== openSeq) return;
+    lastNote = null;
+    document.title = "noteroot";
+    $("note").replaceChildren(emptyState({
+      icon: "⚠️",
+      title: "Could not open this note",
+      body: e.message,
+    }));
+    setView("empty");
+  }
+}
+
+function renderRead(n) {
+  const parts = [];
+  if (n.frontmatterError) parts.push(`<div class="warn">frontmatter: ${esc(n.frontmatterError)}</div>`);
+  if (n.renderError) parts.push(`<div class="warn">render: ${esc(n.renderError)}</div>`);
+  parts.push(rewriteImageThumbs(n.html || "", slug, { maxWidth: 800, maxHeight: 600 }));
+  $("note").innerHTML = parts.join("");
+  $("note").append(linksPanels(n));
+  $("note").scrollTop = 0;
+}
+
+/**
+ * Give the note a complete header (id, title, created, updated) on open.
+ * Textual like the server's WithID: only missing keys are added, guarded
+ * by the sha just read, and skipped whenever a local draft exists (a
+ * draft always wins). Failures are quiet: the next open retries.
+ */
+async function ensureFrontmatter(path, rendered, src, seq) {
+  if (readPad(path)) return;
+  const fm = readFrontmatter(src.text);
+  if (isValidId(fm.id) && fm.title && fm.created && fm.updated) return;
+  const created = fm.created || fileDate(path) || localDate();
+  const norm = normalizeNote(src.text, {
+    path,
+    id: rendered.id,
+    created,
+    updated: fm.updated || created,
+  });
+  if (!norm.changed) return;
+  try {
+    const res = await notesApi.saveNote(slug, path, norm.content, { baseSha: src.sha });
+    if (seq !== openSeq || !lastNote || lastNote.path !== path) return;
+    lastNote.sha = res.sha || src.sha;
+    lastNote.id = res.id || norm.id;
+    const meta = readFrontmatter(norm.content);
+    lastNote.title = meta.title || lastNote.title;
+    document.title = lastNote.title + " — noteroot";
+    if (!editing && current === path) {
+      const fresh = await notesApi.getNote(slug, path);
+      if (seq !== openSeq || current !== path || editing) return;
+      renderRead(fresh);
+      setStatus("Read", { text: norm.content });
+    }
+  } catch {
+    /* read-only, offline or a concurrent edit: keep reading, retry next time */
   }
 }
 
@@ -130,9 +317,6 @@ function linksPanels(n) {
   return frag;
 }
 
-// SPA navigation for resolved wikilinks: plain left-click stays in the
-// app; middle-click / cmd / ctrl / shift keep the browser default
-// (new tab, etc.) because the anchors are real hrefs (no-JS works too).
 $("note").addEventListener("click", (e) => {
   const a = e.target.closest?.("a.wikilink[data-path]");
   if (!a) return;
@@ -145,7 +329,7 @@ async function boot() {
   const { notebooks } = await api("/api/v1/notebooks");
   const sel = $("notebooks");
   if (!notebooks.length) {
-    $("note").innerHTML = '<p class="muted">No notebooks. Run <code>./scripts/new-notebook.sh &lt;slug&gt;</code>.</p>';
+    showNoNotebooks();
     return;
   }
   for (const nb of notebooks) {
@@ -153,21 +337,40 @@ async function boot() {
     o.value = o.textContent = nb.slug;
     sel.append(o);
   }
-  sel.onchange = () => loadTree(sel.value);
+  sel.onchange = () => switchNotebook(sel.value);
   await loadTree(notebooks[0].slug);
 }
 
+async function switchNotebook(s) {
+  if (s === slug) return;
+  await flushEditor();
+  await loadTree(s);
+}
+
 async function loadTree(s) {
+  if (slug) await flushEditor();
   slug = s;
   current = null;
   lastNote = null;
-  closeEditor();
+  openSeq += 1;
+  closeEditorNow();
   $("q").value = "";
-  $("editbtn").hidden = true;
-  $("note").innerHTML = '<p class="muted">Select a note.</p>';
-  const tree = await api(`/n/${encodeURIComponent(s)}/tree`);
-  $("tree").replaceChildren(renderNode(tree, 0));
+  selectedFolder = null;
+  collapsed = getCollapsed(s);
+  decorations = getDecorations(s);
+  setStatus("Read", { text: null });
+  showNoSelection();
+  treeData = await notesApi.getTree(s);
+  drawTree();
+  if (isPhone()) setDrawer(true);
   refreshPluginPanels(s);
+  refreshTrashState();
+}
+
+async function api(path) {
+  const r = await fetch(path, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
 }
 
 // Plugin panels (stage 9): degradation-grade — a missing endpoint
@@ -177,28 +380,44 @@ async function refreshPluginPanels(s) {
   if (!s) return;
   const token = ++panelRefreshToken;
   const panels = await fetchPanels(s);
-  // A newer refresh (or a notebook switch mid-flight) wins; stale
-  // responses never paint into the wrong tree.
   if (token !== panelRefreshToken || s !== slug) return;
   const footer = $("plugin-status");
   const has = panels && Object.keys(panels).length > 0;
   footer.hidden = !has;
-  if (has) renderPanelChips($("plugin-panels"), panels);
+  if (has) {
+    renderPanelChips($("plugin-panels"), panels);
+    if (getTheme() !== "auto") applyUserTheme(getTheme());
+  }
 }
 
-async function search(q) {
-  q = q.trim();
-  if (!slug || !q) return;
+async function search(query) {
+  const text = query.trim();
+  if (!slug || !text) return;
+  // Results take over the note pane, so leave the editor first (saving
+  // on the way out) and drop the open note. Edit must never act on
+  // something the pane has stopped showing.
+  await flushEditor();
+  await closeEditor();
+  current = null;
+  lastNote = null;
+  openSeq += 1;
+  document.querySelectorAll(".node.active").forEach((n) => n.classList.remove("active"));
+  setStatus("Read", { text: null });
+  setView("empty");
   try {
-    const r = await api(`/n/${encodeURIComponent(slug)}/search?q=${encodeURIComponent(q)}&limit=50`);
+    const r = await api(`/n/${encodeURIComponent(slug)}/search?q=${encodeURIComponent(text)}&limit=50`);
     if (!r.hits.length) {
-      $("note").innerHTML = `<p class="muted">No results for “${esc(q)}”.</p>`;
+      $("note").replaceChildren(emptyState({
+        icon: "🔍",
+        title: "No matches",
+        body: `Nothing found for “${text}”.`,
+      }));
       return;
     }
     const frag = document.createDocumentFragment();
     const h = document.createElement("p");
     h.className = "muted";
-    h.textContent = `${r.hits.length} result${r.hits.length === 1 ? "" : "s"} for “${q}”.`;
+    h.textContent = `${r.hits.length} result${r.hits.length === 1 ? "" : "s"} for “${text}”.`;
     frag.append(h);
     for (const hit of r.hits) {
       const b = document.createElement("button");
@@ -219,7 +438,7 @@ async function search(q) {
     $("note").replaceChildren(frag);
     $("note").scrollTop = 0;
   } catch (e) {
-    $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+    $("note").replaceChildren(emptyState({ icon: "⚠️", title: "Search failed", body: e.message }));
   }
 }
 
@@ -227,199 +446,51 @@ $("q")?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") search(e.target.value);
 });
 
-boot().catch((e) => { $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
+// --- status bar: mode, position, words, selection, size, writer stats ---
 
-// --- vim mode (stage 4): desktop editor with vim.wasm running in-page ---
+const FIELD_ELEMENTS = {
+  words: "sb-words", selected: "sb-selected", position: "sb-pos", chars: "sb-chars",
+  paragraphs: "sb-paras", reading: "sb-reading", size: "sb-size",
+};
 
-class VimEditor {
-  constructor() {
-    this.vim = null;
-    this.onDirtyCallback = null;
-    this.onSaveCallback = null;
-    this.onCloseCallback = null;
-    this.tmpFilePath = null;
-    this.currentContent = '';
-  }
+function setStatus(mode, info) {
+  $("sb-mode").textContent = mode;
+  const d = describeStatus({ ...info, wpm: Number(getSetting("readingSpeed")) || undefined });
+  for (const [key, id] of Object.entries(FIELD_ELEMENTS)) $(id).textContent = d[key];
+}
 
-  async open(path, content, baseSha) {
-    try {
-      // Show container and loading indicator
-      const container = $('vim-container');
-      const loading = $('vim-loading');
-      container.hidden = false;
-      loading.hidden = false;
-
-      // Create tmp file path (vim.wasm uses virtual filesystem)
-      this.tmpFilePath = `/tmp/${path.replace(/\//g, '_')}`;
-      this.currentContent = content;
-
-      // Initialize VimWasm
-      this.vim = new VimWasm({
-        canvas: $('vim-canvas'),
-        input: $('vim-input'),
-        workerScriptPath: '/vim/vim-worker.js',
-      });
-
-      // Setup callbacks
-      this.vim.onError = (err) => {
-        console.error('[VimEditor] Error:', err);
-        recordVimFailure();
-        loading.hidden = true;
-        if (this.onCloseCallback) {
-          this.onCloseCallback(true);
-        }
-      };
-
-      this.vim.onVimInit = () => {
-        // Hide loading indicator when Vim is ready
-        loading.hidden = true;
-        console.log('[VimEditor] Vim initialized and ready');
-      };
-
-      this.vim.onVimExit = (status) => {
-        console.log('[VimEditor] Vim exited with status', status);
-        if (this.onCloseCallback) {
-          this.onCloseCallback(false);
-        }
-      };
-
-      // Start Vim with the file
-      await this.vim.start({
-        debug: false,
-        files: {
-          [this.tmpFilePath]: content,
-        },
-        cmdArgs: [this.tmpFilePath],
-      });
-
-      // Vim started successfully
-      console.log('[VimEditor] Vim started, editing', this.tmpFilePath);
-      
-    } catch (error) {
-      console.error('[VimEditor] Failed to open:', error);
-      const loading = $('vim-loading');
-      loading.hidden = true;
-      recordVimFailure();
-      throw error;
-    }
-  }
-
-  async getContent() {
-    if (!this.vim || !this.tmpFilePath) {
-      return this.currentContent;
-    }
-
-    // vim.wasm exposes no buffer read API; a forced write to the tmp
-    // file round-trips the buffer through onFileExport, which refreshes
-    // currentContent. The save callback is suppressed for this
-    // programmatic write — callers decide whether to persist.
-    this.suppressSave = true;
-    try {
-      await this.vim.cmdline(`w! ${this.tmpFilePath}`);
-    } catch (error) {
-      console.error('[VimEditor] Failed to flush buffer:', error);
-    } finally {
-      this.suppressSave = false;
-    }
-    return this.currentContent;
-  }
-
-  onDirty(callback) {
-    this.onDirtyCallback = callback;
-    // Note: vim.wasm doesn't have a built-in dirty callback
-    // We'll trigger it on any key press as a workaround
-  }
-
-  onSave(callback) {
-    this.onSaveCallback = callback;
-    // Setup file export handler
-    if (this.vim) {
-      this.vim.onFileExport = (path, contents) => {
-        if (path === this.tmpFilePath) {
-          const decoder = new TextDecoder();
-          this.currentContent = decoder.decode(contents);
-          if (!this.suppressSave && this.onSaveCallback) {
-            this.onSaveCallback(this.currentContent);
-          }
-        }
-      };
-    }
-  }
-
-  onClose(callback) {
-    this.onCloseCallback = callback;
-  }
-
-  focus() {
-    if (this.vim) {
-      this.vim.focus();
-    }
-  }
-
-  async sendMessage(message) {
-    // vim.wasm doesn't use messages, use cmdline() instead
-    if (message.type === 'vim:reload') {
-      if (this.vim && message.content) {
-        // Reload file with new content
-        // We'll need to use Vim commands to replace buffer
-        await this.vim.cmdline('enew!');
-        this.currentContent = message.content;
-        
-        // Create new file with updated content
-        await this.vim.dropFile(this.tmpFilePath, new TextEncoder().encode(message.content));
-        await this.vim.cmdline(`e ${this.tmpFilePath}`);
-      }
-      return true;
-    }
-    if (message.type === 'vim:insert' && message.content) {
-      // No register API exists; stage the text as a file and :read it
-      // below the cursor line. Returns false so callers can surface the
-      // snippet instead of silently dropping it.
-      if (!this.vim || !this.tmpFilePath) return false;
-      try {
-        const insertPath = '/tmp/__noteroot_insert';
-        await this.vim.dropFile(insertPath, new TextEncoder().encode(message.content));
-        await this.vim.cmdline(`read ${insertPath}`);
-        return true;
-      } catch (error) {
-        console.error('[VimEditor] Failed to insert:', error);
-        return false;
-      }
-    }
-    return false;
-  }
-
-  async cleanup() {
-    const container = $('vim-container');
-    if (container) {
-      container.hidden = true;
-    }
-    
-    // vim.wasm will clean up automatically on exit
-    // We don't need to manually terminate since :q will trigger onVimExit
-    this.vim = null;
-    this.tmpFilePath = null;
+function updateEditorStatus() {
+  if (!editing) return;
+  if (editing.mode === "textarea") {
+    const ta = $("editbody");
+    setStatus("Plain", {
+      text: ta.value,
+      selection: { start: ta.selectionStart, end: ta.selectionEnd },
+      cursor: true,
+    });
+  } else {
+    setStatus("Vim", { text: editing.editor?.content ?? editing.lastSaved });
   }
 }
 
-// Circuit breaker for vim mode (logic lives in lib/vim-mode.js)
-
-function shouldUseVim() {
-  const use = shouldUseVimCore({ checkCompatibility: checkBrowserCompatibility });
-  if (!use) {
-    const state = getVimModeState();
-    if (!state.enabled) {
-      console.warn('[VimEditor] Disabled after failures. Reset in settings to retry.');
-    }
+async function refreshViewStatus() {
+  const path = current;
+  if (!path || !slug || editing) return;
+  try {
+    const { text } = await notesApi.getSource(slug, path);
+    if (current === path && !editing) setStatus("Read", { text });
+  } catch {
+    /* ignore */
   }
-  return use;
 }
 
-// --- editor (textarea fallback + vim mode integration) ---
+// --- editor session (plain text + Vim) ---
 
-let editing = null; // {path, baseSha, lastSaved, dirtyTimer, saveTimer, lockTimer, mode, editor}
+let editing = null; // {path, mode, editor, baseSha, lastSaved, dirty, noteId, created, updated, saveTimer, lockTimer}
 let tabId = null;
-let currentEditorMode = null; // 'vim' or 'textarea'
+let currentEditorMode = null; // 'vim' | 'textarea'
+let saveChain = Promise.resolve();
+let padTimer = 0;
 
 function myTab() {
   if (!tabId) {
@@ -448,19 +519,13 @@ function readPad(path) {
 async function writePad() {
   if (!editing) return;
   try {
-    let content;
-    if (editing.mode === 'vim' && editing.editor) {
-      // Get content from vim asynchronously
-      content = await editing.editor.getContent();
-    } else {
-      // Get content from textarea
-      content = $("editbody").value;
-    }
-    
+    const content = editing.mode === "vim" && editing.editor
+      ? editing.editor.content
+      : $("editbody").value;
     localStorage.setItem(padKey(editing.path), JSON.stringify({
       tab: myTab(),
       baseSha: editing.baseSha,
-      content: content,
+      content,
       savedAt: Date.now(),
     }));
   } catch {
@@ -482,29 +547,11 @@ function setBanner(html) {
   b.hidden = !html;
 }
 
-async function apiRaw(path) {
-  const r = await fetch(`/n/${encodeURIComponent(slug)}/raw?path=${encodeURIComponent(path)}`);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-  return r.text();
-}
-
-async function putNote(path, content, opts) {
-  const q = new URLSearchParams({ path });
-  if (opts.force) q.set("force", "1");
-  const headers = { "Content-Type": "text/markdown; charset=utf-8" };
-  if (opts.baseSha) headers["If-Match"] = `"${opts.baseSha}"`;
-  else if (opts.createOnly) headers["If-None-Match"] = "*";
-  const r = await fetch(`/n/${encodeURIComponent(slug)}/note?${q}`, {
-    method: "PUT", headers, body: content,
-  });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const e = new Error(body.error || r.statusText);
-    e.status = r.status;
-    e.currentSha = body.currentSha;
-    throw e;
-  }
-  return body;
+function setSaveState(text, state) {
+  const el = $("savestate");
+  el.textContent = text;
+  if (state) el.dataset.state = state;
+  else delete el.dataset.state;
 }
 
 async function takeLock(path) {
@@ -512,7 +559,7 @@ async function takeLock(path) {
     const r = await fetch(
       `/n/${encodeURIComponent(slug)}/lock?path=${encodeURIComponent(path)}&holder=${encodeURIComponent(myTab())}&ttl=300`,
       { method: "PUT" });
-    if (!editing) return; // editor closed while the lock request was in flight
+    if (!editing) return;
     if (r.ok) {
       $("lockstate").textContent = "Locked by this tab";
       return;
@@ -538,276 +585,363 @@ function releaseLock(path, keepalive) {
 
 async function openEditor() {
   if (!lastNote || editing) return;
+  if (lastNote.ready) await lastNote.ready; // let an on-open header fix land first
   const path = lastNote.path;
-  let server;
+  if (current !== path) return;
+  const seq = openSeq;
+  let src;
   try {
-    server = await apiRaw(path);
+    src = await notesApi.getSource(slug, path);
   } catch (e) {
-    $("note").innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+    toast(e.message, true);
     return;
   }
+  if (seq !== openSeq || current !== path) return;
 
-  // Determine editor mode
   const useVim = shouldUseVim();
-  currentEditorMode = useVim ? 'vim' : 'textarea';
-
+  const fm = readFrontmatter(src.text);
   editing = {
     path,
-    baseSha: lastNote.sha,
-    lastSaved: server,
-    dirtyTimer: 0,
+    mode: useVim ? "vim" : "textarea",
+    editor: null,
+    baseSha: src.sha,
+    lastSaved: src.text,
+    dirty: false,
+    noteId: fm.id || lastNote.id || "",
+    created: fm.created || "",
+    updated: fm.updated || "",
     saveTimer: 0,
     lockTimer: 0,
-    mode: currentEditorMode,
-    editor: null
   };
-
-  $("note").hidden = true;
-  $("editor").hidden = false;
-  $("savestate").textContent = "";
+  currentEditorMode = editing.mode;
+  setView("edit");
+  setSaveState("", "");
   $("lockstate").textContent = "";
   setBanner("");
-
-  if (useVim) {
-    await openVimEditor(server);
-  } else {
-    openTextareaEditor(server);
-  }
-
+  if (useVim) await openVimEditor(src.text);
+  else openTextareaEditor(src.text);
+  if (!editing) return;
   takeLock(path);
   editing.lockTimer = setInterval(() => takeLock(path), 60000);
 }
 
 async function openVimEditor(content) {
-  try {
-    $("editormode").textContent = "vim";
-    $("editbody").hidden = true;
-
-    const vimEditor = new VimEditor();
-    editing.editor = vimEditor;
-
-    // Setup callbacks
-    vimEditor.onDirty(() => markDirty());
-    vimEditor.onSave((content) => {
-      // Vim requested save via :w
-      editing.lastSaved = content;
-      saveNoteContent(content, false);
-    });
-    vimEditor.onClose((force) => {
-      if (force || !isContentDirty()) {
-        closeEditor();
-      }
-    });
-
-    // Open vim editor
-    await vimEditor.open(editing.path, content, editing.baseSha);
-
-    // Check for draft
-    const pad = readPad(editing.path);
-    if (pad && typeof pad.content === "string" && pad.content !== content) {
-      const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
-      setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
-        ` <button class="btn" id="padrestore">Restore</button>` +
-        ` <button class="btn" id="paddiscard">Discard</button></div>`);
-      $("padrestore").onclick = () => {
-        vimEditor.sendMessage({ type: 'vim:reload', content: pad.content, baseSha: editing.baseSha });
-        setBanner("");
-        markDirty();
-      };
-      $("paddiscard").onclick = () => {
-        clearPad(editing.path);
-        setBanner("");
-      };
+  $("editormode").textContent = "vim";
+  $("editbody").hidden = true;
+  const editor = new VimEditor({
+    VimWasm,
+    canvas: $("vim-canvas"),
+    input: $("vim-input"),
+    container: $("vim-container"),
+    loading: $("vim-loading"),
+    onFailure: (err) => { recordVimFailure(); console.error("[vim]", err); },
+  });
+  editing.editor = editor;
+  editor.onDirty(() => markDirty());
+  editor.onSave((text) => enqueueSave(text, false));
+  editor.onClose(({ crashed }) => {
+    if (!editing || editing.editor !== editor) return;
+    if (crashed) {
+      editing.mode = "textarea";
+      editing.editor = null;
+      currentEditorMode = "textarea";
+      openTextareaEditor(editor.content || content);
+      setBanner(`<div class="warn">Vim stopped unexpectedly — your text is here in the plain editor.</div>`);
+    } else {
+      closeEditor();
     }
-
-  } catch (error) {
-    console.error('[openEditor] Vim mode failed, falling back to textarea:', error);
+  });
+  try {
+    await editor.open(editing.path, content);
+  } catch (err) {
     recordVimFailure();
-    // Fallback to textarea
-    currentEditorMode = 'textarea';
-    editing.mode = 'textarea';
-    editing.editor = null;
-    openTextareaEditor(content);
+    if (editing && editing.editor === editor) {
+      editing.mode = "textarea";
+      editing.editor = null;
+      currentEditorMode = "textarea";
+      openTextareaEditor(content);
+    }
+    return;
   }
+  if (!editing || editing.editor !== editor) return;
+  updateEditorStatus();
+  offerDraft(content, (text) => editor.replace(text));
 }
 
 function openTextareaEditor(content) {
   $("editormode").textContent = "plain text";
   $("editbody").hidden = false;
   $("editbody").value = content;
-
-  const pad = readPad(editing.path);
-  if (pad && typeof pad.content === "string" && pad.content !== content) {
-    const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
-    setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
-      ` <button class="btn" id="padrestore">Restore</button>` +
-      ` <button class="btn" id="paddiscard">Discard</button></div>`);
-    $("padrestore").onclick = () => { $("editbody").value = pad.content; setBanner(""); markDirty(); };
-    $("paddiscard").onclick = () => { clearPad(editing.path); setBanner(""); };
-  }
-
-  $("editbody").oninput = markDirty;
+  $("editbody").oninput = () => markDirty();
+  applyEditorPrefs();
+  offerDraft(content, (text) => { $("editbody").value = text; });
+  updateEditorStatus();
 }
 
-function isContentDirty() {
-  if (!editing) return false;
-  if (editing.mode === 'textarea') {
-    return $("editbody").value !== editing.lastSaved;
-  }
-  // For vim, we track dirty via the vim:dirty message
-  return false; // Vim manages its own dirty state
+// Offer a locally-kept draft (a failed or in-flight save from this or an
+// earlier session) when it differs from what the server has.
+function offerDraft(base, apply) {
+  const pad = readPad(editing.path);
+  if (!pad || typeof pad.content !== "string" || pad.content === base) return;
+  const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
+  setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
+    ` <button class="btn" id="padrestore">Restore</button>` +
+    ` <button class="btn" id="paddiscard">Discard</button></div>`);
+  $("padrestore").onclick = () => { apply(pad.content); setBanner(""); markDirty(); };
+  $("paddiscard").onclick = () => { clearPad(editing.path); setBanner(""); };
 }
 
 function markDirty() {
   if (!editing) return;
-  clearTimeout(editing.dirtyTimer);
+  editing.dirty = true;
   clearTimeout(editing.saveTimer);
-  editing.dirtyTimer = setTimeout(writePad, 500);
-  editing.saveTimer = setTimeout(() => saveNote(false), 2000);
-  $("savestate").textContent = "Editing…";
+  const ms = Number(getSetting("autosave"));
+  if (ms > 0) editing.saveTimer = setTimeout(() => { flushEditor(); }, ms);
+  clearTimeout(padTimer);
+  padTimer = setTimeout(writePad, 500);
+  setSaveState("Editing…", "dirty");
+  updateEditorStatus();
+}
+
+async function readEditorContent() {
+  if (!editing) return "";
+  if (editing.mode === "vim" && editing.editor) {
+    try {
+      return await editing.editor.getContent();
+    } catch {
+      setSaveState("Could not read Vim; use :w in Vim", "error");
+      throw new Error("vim-read");
+    }
+  }
+  return $("editbody").value;
+}
+
+/**
+ * Save any pending edits. Called before every navigation (opening another
+ * note, switching notebooks, closing) so nothing is lost. A Vim buffer
+ * that cannot be read falls back to a local draft.
+ */
+async function flushEditor() {
+  if (!editing) return true;
+  clearTimeout(editing.saveTimer);
+  let content;
+  try {
+    content = await readEditorContent();
+  } catch {
+    await writePad();
+    return false;
+  }
+  if (content === editing.lastSaved) {
+    clearPad(editing.path);
+    return true;
+  }
+  return enqueueSave(content, false);
+}
+
+// Saves run one at a time, so a second edit never races the first one's
+// base sha (which would 412 needlessly).
+function enqueueSave(content, manual) {
+  const run = saveChain.then(
+    () => saveNoteContent(content, manual),
+    () => saveNoteContent(content, manual),
+  );
+  saveChain = run.then(() => {}, () => {});
+  return run;
 }
 
 async function saveNote(manual) {
   if (!editing) return;
-  clearTimeout(editing.saveTimer);
-
   let content;
-  if (editing.mode === 'textarea') {
-    content = $("editbody").value;
-  } else if (editing.mode === 'vim' && editing.editor) {
-    // Manual save in vim mode: flush the live buffer, then persist it
-    // like any other content (:w keeps working through onFileExport).
-    try {
-      content = await editing.editor.getContent();
-    } catch {
-      $("savestate").textContent = "Could not read Vim buffer; use :w in Vim to save";
-      return;
-    }
-  }
-
-  if (content === editing.lastSaved) {
-    $("savestate").textContent = manual ? "No changes." : "";
+  try {
+    content = await readEditorContent();
+  } catch {
     return;
   }
-
-  await saveNoteContent(content, manual);
+  await enqueueSave(content, manual);
 }
 
 async function saveNoteContent(content, manual) {
-  if (!editing) return;
-  $("savestate").textContent = "Saving…";
+  const ed = editing;
+  if (!ed) return false;
+  clearTimeout(ed.saveTimer);
+  if (content === ed.lastSaved) {
+    if (manual) setSaveState("No changes.", "");
+    return true;
+  }
+  setSaveState("Saving…", "dirty");
+  // Keep the header truthful: stamp `updated` (adds a block if missing).
+  const norm = normalizeNote(content, {
+    path: ed.path,
+    id: ed.noteId,
+    created: ed.created,
+    updated: ed.updated,
+    touch: true,
+  });
+  const sent = norm.changed ? norm.content : content;
+  if (norm.changed) await applyFixedContent(ed, sent);
   try {
-    const res = await putNote(editing.path, content, { baseSha: editing.baseSha });
-    if (!editing) return; // editor closed while the request was in flight
-    editing.baseSha = res.sha;
-    editing.lastSaved = content;
-    clearPad(editing.path);
-    $("savestate").textContent = "Saved.";
-    // Plugin hooks react to the write on the bus (500ms coalesce);
-    // refresh panels after they've had a chance to land.
+    const res = await notesApi.saveNote(slug, ed.path, sent, { baseSha: ed.baseSha });
+    if (editing !== ed) return true;
+    ed.baseSha = res.sha;
+    ed.noteId = res.id || norm.id || ed.noteId;
+    ed.lastSaved = sent;
+    const meta = readFrontmatter(sent);
+    ed.created = meta.created || ed.created;
+    ed.updated = meta.updated || ed.updated;
+    ed.dirty = false;
+    clearPad(ed.path);
+    setSaveState("Saved.", "ok");
+    updateEditorStatus();
     setTimeout(() => refreshPluginPanels(slug), 900);
+    return true;
   } catch (e) {
     if (e.status === 412) {
-      conflictBanner();
+      setSaveState("Changed elsewhere", "error");
+      conflictBanner(sent);
     } else {
-      $("savestate").textContent = `Save failed: ${e.message} (kept locally)`;
-      if (editing.mode === 'textarea') {
-        writePad();
-      }
+      setSaveState(`Save failed: ${e.message}`, "error");
+      await writePad();
     }
+    return false;
   }
 }
 
-function conflictBanner() {
-  setBanner(`<div class="warn">Changed on server by someone or something else.` +
+// Put the header fix into the live buffer without moving the caret, so
+// the editor and the file agree and the next save keeps the id.
+async function applyFixedContent(ed, sent) {
+  if (ed.mode === "vim" && ed.editor) {
+    try {
+      await ed.editor.replace(sent);
+    } catch {
+      /* Vim unavailable: the file is still saved correctly below */
+    }
+    return;
+  }
+  const ta = $("editbody");
+  const range = changedRange(ta.value, sent);
+  if (range) {
+    ta.setRangeText(range.text, range.start, range.end, "preserve");
+    updateEditorStatus();
+  }
+}
+
+function conflictBanner(mine) {
+  setBanner(`<div class="warn">Changed on the server.` +
     ` <button class="btn" id="cfreload">Reload (lose mine)</button>` +
-    ` <button class="btn" id="cfforce">Force save (keep mine)</button></div>`);
-  
+    ` <button class="btn" id="cfforce">Keep mine</button></div>`);
+
   $("cfreload").onclick = async () => {
+    const ed = editing;
+    if (!ed) return;
     try {
-      const server = await apiRaw(editing.path);
-      const n = await api(`/n/${encodeURIComponent(slug)}/note?path=${encodeURIComponent(editing.path)}`);
-      if (!editing) return;
-      editing.baseSha = n.sha || null;
-      editing.lastSaved = server;
-      
-      // Update editor content based on mode
-      if (editing.mode === 'vim' && editing.editor) {
-        editing.editor.sendMessage({ type: 'vim:reload', content: server, baseSha: editing.baseSha });
-      } else {
-        $("editbody").value = server;
-      }
-      
-      clearPad(editing.path);
+      const src = await notesApi.getSource(slug, ed.path);
+      if (editing !== ed) return;
+      ed.baseSha = src.sha;
+      ed.lastSaved = src.text;
+      const meta = readFrontmatter(src.text);
+      ed.noteId = meta.id || ed.noteId;
+      ed.created = meta.created || ed.created;
+      ed.updated = meta.updated || ed.updated;
+      ed.dirty = false;
+      if (ed.mode === "vim" && ed.editor) await ed.editor.replace(src.text);
+      else { $("editbody").value = src.text; updateEditorStatus(); }
+      clearPad(ed.path);
       setBanner("");
-      $("savestate").textContent = "";
+      setSaveState("", "");
     } catch (e) {
-      $("savestate").textContent = `Reload failed: ${e.message}`;
+      setSaveState(`Reload failed: ${e.message}`, "error");
     }
   };
-  
+
   $("cfforce").onclick = async () => {
-    // Get current content from editor
-    let live;
-    if (editing.mode === 'vim' && editing.editor) {
-      live = await editing.editor.getContent();
-    } else {
-      live = $("editbody").value;
-    }
-    
+    const ed = editing;
+    if (!ed) return;
     try {
-      const res = await putNote(editing.path, live, { baseSha: editing.baseSha, force: true });
-      if (!editing) return;
-      editing.baseSha = res.sha;
-      editing.lastSaved = live;
-      clearPad(editing.path);
+      const res = await notesApi.saveNote(slug, ed.path, mine, { baseSha: ed.baseSha, force: true });
+      if (editing !== ed) return;
+      ed.baseSha = res.sha;
+      ed.noteId = res.id || ed.noteId;
+      ed.lastSaved = mine;
+      ed.dirty = false;
+      clearPad(ed.path);
       setBanner("");
-      $("savestate").textContent = "Saved (forced).";
+      setSaveState("Saved.", "ok");
     } catch (e) {
-      $("savestate").textContent = `Force save failed: ${e.message}`;
+      setSaveState(`Force save failed: ${e.message}`, "error");
     }
   };
-  
+
   writePad();
 }
 
-function closeEditor() {
-  if (!editing) return;
-  clearTimeout(editing.dirtyTimer);
-  clearTimeout(editing.saveTimer);
-  clearInterval(editing.lockTimer);
-  releaseLock(editing.path, false);
-
-  // Cleanup editor-specific resources
-  if (editing.mode === 'vim' && editing.editor) {
-    editing.editor.cleanup();
-  }
-
+// Tear the editor down without saving; the caller has flushed already.
+function closeEditorNow() {
+  const ed = editing;
+  if (!ed) return;
+  clearTimeout(ed.saveTimer);
+  clearInterval(ed.lockTimer);
+  clearTimeout(padTimer);
+  releaseLock(ed.path, false);
+  if (ed.mode === "vim" && ed.editor) ed.editor.close();
   editing = null;
   currentEditorMode = null;
-  $("editor").hidden = true;
-  $("note").hidden = false;
-  $("editbody").hidden = false; // Ensure textarea is visible for next open
+  // Back to whatever the pane was showing before: a note if one is still
+  // open, the empty state if it was deleted or the notebook changed.
+  setView(current && lastNote ? "read" : "empty");
+  $("editbody").hidden = false;
   setBanner("");
+  setSaveState("", "");
+  setStatus("Read", { text: null });
 }
+
+async function closeEditor() {
+  const ed = editing;
+  if (!ed) return;
+  closeEditorNow();
+  if (lastNote && lastNote.path === ed.path) lastNote.sha = ed.baseSha;
+  await refreshViewStatus();
+  maybeWelcome();
+}
+
+// --- plain-text editor niceties (Tab, spell check, wrap) ---
+
+function applyEditorPrefs() {
+  const ta = $("editbody");
+  ta.spellcheck = getSetting("spellcheck") === "on";
+  ta.style.whiteSpace = getSetting("wrap") === "on" ? "pre-wrap" : "pre";
+  ta.style.overflowWrap = getSetting("wrap") === "on" ? "break-word" : "normal";
+}
+
+function tabUnit() {
+  const t = getSetting("tabKey");
+  if (t === "tab") return "\t";
+  if (t === "2") return "  ";
+  if (t === "4") return "    ";
+  return null; // "focus": leave Tab to the browser
+}
+
+$("editbody")?.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || !editing || editing.mode !== "textarea") return;
+  const unit = tabUnit();
+  if (!unit) return;
+  e.preventDefault();
+  const ta = $("editbody");
+  const edit = indentEdit(ta.value, ta.selectionStart, ta.selectionEnd, unit, e.shiftKey);
+  ta.setRangeText(edit.text, edit.start, edit.end, "preserve");
+  ta.setSelectionRange(edit.selStart, edit.selEnd);
+  markDirty();
+});
 
 // --- Resource Upload (stage 5) ---
 
 async function uploadResource(file) {
   if (!slug) throw new Error("no notebook selected");
-  // Stage 7: try presigned direct-to-S3 upload first.
   const pre = await presignUpload(slug, file);
   if (pre.mode === "exists") {
     return { sha: pre.sha, filename: file.name, mime: file.type, created: false };
   }
-  if (pre.mode === "s3") {
-    return pre.result;
-  }
-  if (pre.mode === "error") {
-    throw new Error(pre.error); // policy rejection from presign endpoint
-  }
-  // mode === "direct": no S3 configured (or WebCrypto unavailable) —
-  // fall through to the normal server-side upload.
+  if (pre.mode === "s3") return pre.result;
+  if (pre.mode === "error") throw new Error(pre.error);
   const url = uploadURL(slug, file.name);
   const res = await fetch(url, {
     method: "POST",
@@ -825,42 +959,35 @@ async function uploadResource(file) {
   return res.json();
 }
 
-// insertAtCursor inserts text into the textarea at the current selection.
 function insertAtCursor(text) {
   const ta = $("editbody");
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
-  const before = ta.value.slice(0, start);
-  const after = ta.value.slice(end);
-  ta.value = before + text + after;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
   const pos = start + text.length;
   ta.selectionStart = ta.selectionEnd = pos;
   ta.focus();
 }
 
-// insertIntoEditor inserts text at the cursor for whichever editor is active.
 async function insertIntoEditor(text) {
   if (!editing) return;
-  if (editing.mode === 'textarea') {
+  if (editing.mode === "textarea") {
     insertAtCursor(text);
     markDirty();
-  } else if (editing.mode === 'vim' && editing.editor) {
-    const ok = await editing.editor.sendMessage({ type: 'vim:insert', content: text });
+  } else if (editing.mode === "vim" && editing.editor) {
+    const ok = await editing.editor.insert(text);
     if (ok) {
       markDirty();
     } else {
-      // Never silently drop an upload embed: surface the snippet so it
-      // can be pasted by hand.
       setBanner(`<div class="warn">Uploaded, but Vim would not take the insert.` +
         ` Paste it yourself: <code>${esc(text)}</code></div>`);
     }
   }
 }
 
-// handleFileUpload uploads a file and inserts the embed at the cursor.
 async function handleFileUpload(file) {
   if (!editing) return;
-  $("savestate").textContent = `Uploading ${file.name}…`;
+  setSaveState(`Uploading ${file.name}…`, "dirty");
   try {
     const res = await uploadResource(file);
     if (!res || !/^[a-f0-9]{64}$/.test(res.sha || "")) {
@@ -868,45 +995,38 @@ async function handleFileUpload(file) {
     }
     const md = markdownFor(slug, res);
     await insertIntoEditor(md);
-    $("savestate").textContent = res.created
+    // Dirty the note first: markDirty() writes "Editing…", so the upload
+    // result has to come after it or the user would never see it.
+    markDirty();
+    setSaveState(res.created
       ? `Uploaded ${file.name} (${res.sha.slice(0, 8)}…)`
-      : `${file.name} already uploaded (dedup)`;
+      : `${file.name} already uploaded (dedup)`, "dirty");
   } catch (e) {
-    $("savestate").textContent = `Upload failed: ${e.message}`;
+    setSaveState(`Upload failed: ${e.message}`, "error");
   }
 }
 
-// setupDropZone wires drag-and-drop onto the editor container.
-function setupDropZone() {
+// Drag-and-drop onto the editor uploads and embeds; paste does the same
+// for clipboard images.
+function setupEditorDropZone() {
   const editorEl = $("editor");
-  if (!editorEl) return;
-
   editorEl.addEventListener("dragover", (e) => {
     if (!editing) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
     editorEl.classList.add("drag-over");
   });
-
   editorEl.addEventListener("dragleave", (e) => {
-    // Only remove highlight when leaving the editor entirely.
-    if (e.target === editorEl) {
-      editorEl.classList.remove("drag-over");
-    }
+    if (e.target === editorEl) editorEl.classList.remove("drag-over");
   });
-
   editorEl.addEventListener("drop", (e) => {
     if (!editing) return;
     e.preventDefault();
     editorEl.classList.remove("drag-over");
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    for (const file of files) {
-      handleFileUpload(file);
-    }
+    for (const file of files) handleFileUpload(file);
   });
-
-  // Paste image from clipboard.
   editorEl.addEventListener("paste", (e) => {
     if (!editing) return;
     const items = e.clipboardData?.items;
@@ -923,18 +1043,24 @@ function setupDropZone() {
   });
 }
 
-setupDropZone();
+setupEditorDropZone();
+
+for (const ev of ["keyup", "click", "select", "focus"]) {
+  $("editbody")?.addEventListener(ev, updateEditorStatus);
+}
+document.addEventListener("selectionchange", () => {
+  if (document.activeElement === $("editbody")) updateEditorStatus();
+});
 
 $("editbtn")?.addEventListener("click", openEditor);
 $("savebtn")?.addEventListener("click", () => saveNote(true));
 $("closebtn")?.addEventListener("click", async () => {
   const path = editing && editing.path;
-  closeEditor();
-  if (path && slug) {
-    current = null;
-    await openNote(path, null);
-  }
+  await flushEditor();
+  await closeEditor();
+  if (path && slug) await openNote(path, null);
 });
+
 window.addEventListener("pagehide", () => {
   if (editing) {
     writePad();
@@ -942,68 +1068,979 @@ window.addEventListener("pagehide", () => {
   }
 });
 
-// --- Settings Modal ---
+// --- keyboard shortcuts (single source of truth: lib/help.js) ---
 
-function openSettingsModal() {
-  const modal = $("settings-modal");
-  modal.hidden = false;
-  
-  // Load current preference
-  const pref = getEditorPreference();
-  const radio = document.querySelector(`input[name="editor-mode"][value="${pref}"]`);
+window.addEventListener("keydown", (e) => {
+  const typing = isTypingTarget(e.target) || (editing != null);
+  const action = shortcutFor(e, { typing });
+  if (!action) return;
+  if (action === "save") {
+    if (editing) {
+      e.preventDefault();
+      saveNote(true);
+    }
+    return;
+  }
+  if (action === "help") {
+    e.preventDefault();
+    openHelp();
+    return;
+  }
+  if (action === "search") {
+    e.preventDefault();
+    $("q").focus();
+    $("q").select?.();
+    return;
+  }
+  if (action === "edit") {
+    if (current) { e.preventDefault(); openEditor(); }
+    return;
+  }
+  if (action === "new-note") {
+    if (slug) { e.preventDefault(); actionNewNote(); }
+  }
+});
+
+// --- toast ---
+
+let toastTimer = 0;
+function toast(msg, isError = false) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = isError ? "toast error" : "toast";
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 6000 : 3000);
+}
+
+// --- note / folder CRUD ---
+
+function isPhone() {
+  return window.matchMedia("(max-width: 720px)").matches;
+}
+
+function contextDir() {
+  if (selectedFolder !== null) return selectedFolder;
+  return current ? parentDir(current) : "";
+}
+
+function revealPath(path) {
+  let changed = false;
+  for (const dir of ancestors(path)) {
+    if (collapsed.has(dir)) {
+      collapsed = setCollapsed(slug, dir, false);
+      changed = true;
+    }
+  }
+  if (changed) drawTree();
+}
+
+function ensureExpanded(dir) {
+  if (!dir) return;
+  for (const d of ancestors(`${dir}/x`)) {
+    if (collapsed.has(d)) collapsed = setCollapsed(slug, d, false);
+  }
+}
+
+function editorBlocks(path, isDir) {
+  if (!editing) return false;
+  const hit = isDir ? isWithin(editing.path, path) : editing.path === path;
+  if (hit) toast("Close the editor on this note first.", true);
+  return hit;
+}
+
+function followMove(from, to, isDir) {
+  if (current && (isDir ? isWithin(current, from) : current === from)) {
+    current = isDir ? to + current.slice(from.length) : to;
+    if (lastNote) lastNote.path = current;
+    if (editing) editing.path = current;
+  }
+}
+
+function clearViewIfGone(path, isDir) {
+  if (current && (isDir ? isWithin(current, path) : current === path)) {
+    current = null;
+    lastNote = null;
+    openSeq += 1;
+    showNoSelection();
+    setStatus("Read", { text: null });
+  }
+}
+
+async function guarded(fn) {
+  try {
+    await fn();
+  } catch (e) {
+    toast(e.status === 412 ? "That name already exists." : e.message, true);
+  }
+}
+
+async function actionNewNote(dir = contextDir()) {
+  const r = await formDialog({
+    title: "New note",
+    message: dir ? `In folder “${dir}”.` : "At the notebook root.",
+    fields: [{ name: "name", label: "Name", placeholder: "ideas/todo", hint: "Subfolders are created as needed; .md is added for you." }],
+    okLabel: "Create",
+    validate: (v) => { const c = resolveChild(dir, v.name, { asNote: true }); return c.ok ? null : c.error; },
+  });
+  if (!r) return;
+  await guarded(async () => {
+    const { path } = resolveChild(dir, r.name, { asNote: true });
+    await notesApi.createNote(slug, path, newNoteContent(path));
+    ensureExpanded(parentDir(path));
+    await refreshTree();
+    await openNote(path, null);
+    if (lastNote && lastNote.path === path) await openEditor();
+  });
+}
+
+async function actionNewFolder(dir = contextDir()) {
+  const r = await formDialog({
+    title: "New folder",
+    message: dir ? `Inside “${dir}”.` : "At the notebook root.",
+    fields: [{ name: "name", label: "Name", placeholder: "projects" }],
+    okLabel: "Create",
+    validate: (v) => { const c = resolveChild(dir, v.name); return c.ok ? null : c.error; },
+  });
+  if (!r) return;
+  await guarded(async () => {
+    const { path } = resolveChild(dir, r.name);
+    await notesApi.createFolder(slug, path);
+    ensureExpanded(path);
+    selectedFolder = path;
+    await refreshTree();
+    toast(`Created folder ${path}`);
+  });
+}
+
+async function actionRename(node) {
+  if (editorBlocks(node.path, node.isDir)) return;
+  const parent = parentDir(node.path);
+  const r = await formDialog({
+    title: node.isDir ? "Rename folder" : "Rename note",
+    message: `New name ${parent ? `inside “${parent}”` : "at the notebook root"}.`,
+    fields: [{ name: "name", label: "Name", value: displayName(node.path, node.isDir), hint: "To change folders, use Move…." }],
+    okLabel: "Rename",
+    preview: (v) => {
+      if (!v.name) return "";
+      return `${parent ? `${parent}/` : ""}${v.name}${node.isDir ? "" : ".md"}`;
+    },
+    validate: (v) => { const t = renameTarget(node.path, v.name, node.isDir); return t.ok ? null : t.error; },
+  });
+  if (!r) return;
+  const t = renameTarget(node.path, r.name, node.isDir);
+  if (!t.ok || t.same) return;
+  await guarded(async () => {
+    if (node.isDir) {
+      await notesApi.moveFolder(slug, node.path, t.path);
+      moveFolderPrefs(slug, node.path, t.path);
+      collapsed = getCollapsed(slug);
+      decorations = getDecorations(slug);
+      if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = t.path + selectedFolder.slice(node.path.length);
+    } else {
+      await notesApi.moveNote(slug, node.path, t.path);
+    }
+    followMove(node.path, t.path, node.isDir);
+    ensureExpanded(node.isDir ? t.path : parentDir(t.path));
+    await refreshTree();
+    toast(`Renamed to ${t.path}`);
+  });
+}
+
+async function actionMove(node) {
+  if (editorBlocks(node.path, node.isDir)) return;
+  const choices = folderChoices(treeData).map((c) => ({
+    value: c.value,
+    label: `${"\u2003".repeat(c.depth)}${c.label}`,
+    disabled: node.isDir && c.value === node.path,
+  }));
+  const r = await formDialog({
+    title: node.isDir ? "Move folder" : "Move note",
+    message: `Where should “${node.path}” go?`,
+    fields: [
+      { name: "dest", label: "Destination folder", type: "select", options: choices, value: parentDir(node.path) },
+      { name: "newFolder", label: "…or a new folder there", placeholder: "archive", hint: "Leave empty to use the folder above." },
+    ],
+    okLabel: "Move",
+    wide: false,
+    preview: (v) => {
+      const t = moveTarget(node.path, node.isDir, v.dest, v.newFolder);
+      return t.ok ? `${node.path} → ${t.path}` : t.error;
+    },
+    validate: (v) => { const t = moveTarget(node.path, node.isDir, v.dest, v.newFolder); return t.ok ? null : t.error; },
+  });
+  if (!r) return;
+  const t = moveTarget(node.path, node.isDir, r.dest, r.newFolder);
+  if (!t.ok || t.path === node.path) return;
+  await guarded(async () => {
+    if (String(r.newFolder ?? "").trim()) {
+      try {
+        await notesApi.createFolder(slug, t.dir);
+      } catch (e) {
+        if (e.status !== 409) throw e; // 409 = the folder already exists
+      }
+    }
+    if (node.isDir) {
+      await notesApi.moveFolder(slug, node.path, t.path);
+      moveFolderPrefs(slug, node.path, t.path);
+      collapsed = getCollapsed(slug);
+      decorations = getDecorations(slug);
+      if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = t.path + selectedFolder.slice(node.path.length);
+    } else {
+      await notesApi.moveNote(slug, node.path, t.path);
+    }
+    followMove(node.path, t.path, node.isDir);
+    ensureExpanded(node.isDir ? t.path : parentDir(t.path));
+    await refreshTree();
+    toast(`Moved to ${t.path}`);
+  });
+}
+
+async function actionDelete(node) {
+  if (editorBlocks(node.path, node.isDir)) return;
+  const n = node.isDir ? node.noteCount : 1;
+  const ok = await confirmDialog({
+    title: node.isDir ? "Delete folder" : "Delete note",
+    message: node.isDir
+      ? `Move ${n} note${n === 1 ? "" : "s"} in “${node.path}” to the trash and remove the folder?`
+      : `Move “${node.path}” to the trash?`,
+    okLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
+  await guarded(async () => {
+    if (node.isDir) {
+      await notesApi.deleteFolder(slug, node.path);
+      removeFolderPrefs(slug, node.path);
+      collapsed = getCollapsed(slug);
+      decorations = getDecorations(slug);
+      if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = null;
+    } else {
+      await notesApi.deleteNote(slug, node.path);
+    }
+    clearViewIfGone(node.path, node.isDir);
+    await refreshTree();
+    toast("Moved to trash. Restore it from the trash panel.");
+  });
+}
+
+// Download one note as a .md file.
+async function actionDownloadNote(node) {
+  await guarded(async () => {
+    const { text } = await notesApi.getSource(slug, node.path);
+    downloadBlob(new Blob([text], { type: "text/markdown;charset=utf-8" }), baseName(node.path));
+    toast(`Downloaded ${baseName(node.path)}`);
+  });
+}
+
+const DEFAULT_FOLDER_COLOR = "#2563eb";
+
+async function actionDecorate(node) {
+  const cur = decorations[node.path] || {};
+  const r = await formDialog({
+    title: `Icon & color — ${baseName(node.path)}`,
+    message: "Shown in this browser only.",
+    fields: [
+      { name: "emoji", label: "Icon (emoji)", value: cur.emoji || "", placeholder: "📁" },
+      { name: "useColor", label: "Custom name color", type: "checkbox", value: Boolean(cur.color) },
+      { name: "color", label: "Color", type: "color", value: cur.color || DEFAULT_FOLDER_COLOR },
+    ],
+    okLabel: "Save",
+    actions: [{ label: "Reset", name: "reset" }],
+  });
+  if (!r) return;
+  const deco = r.__action === "reset" ? {} : { emoji: r.emoji, color: r.useColor ? r.color : "" };
+  setDecoration(slug, node.path, deco);
+  decorations = getDecorations(slug);
+  drawTree();
+}
+
+function showNodeMenu(node, x, y) {
+  const items = node.isDir
+    ? [
+      { label: "New note here", onSelect: () => actionNewNote(node.path) },
+      { label: "New folder here", onSelect: () => actionNewFolder(node.path) },
+      { separator: true },
+      { label: "Rename…", onSelect: () => actionRename(node) },
+      { label: "Move…", onSelect: () => actionMove(node) },
+      { label: "Icon & color…", onSelect: () => actionDecorate(node) },
+      { separator: true },
+      { label: "Delete folder…", danger: true, onSelect: () => actionDelete(node) },
+    ]
+    : [
+      { label: "Open", onSelect: () => openNote(node.path, null) },
+      { label: "Rename…", onSelect: () => actionRename(node) },
+      { label: "Move…", onSelect: () => actionMove(node) },
+      { label: "Download .md", onSelect: () => actionDownloadNote(node) },
+      { separator: true },
+      { label: "Delete note…", danger: true, onSelect: () => actionDelete(node) },
+    ];
+  showMenu(x, y, items);
+}
+
+// The ⋯ button in the header opens the menu for the open note.
+$("notemenu")?.addEventListener("click", (e) => {
+  if (!current) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  showNodeMenu({ path: current, isDir: false }, r.left, r.bottom + 4);
+});
+
+$("new-note")?.addEventListener("click", () => actionNewNote());
+$("new-folder")?.addEventListener("click", () => actionNewFolder());
+$("tree-expand")?.addEventListener("click", () => {
+  collapsed = replaceCollapsed(slug, []);
+  drawTree();
+});
+$("tree-collapse")?.addEventListener("click", () => {
+  if (!treeData) return;
+  collapsed = replaceCollapsed(slug, folderPaths(treeData));
+  drawTree();
+});
+
+// --- trash panel ---
+
+// The notebook's retention, as last read from the server. Settings and
+// the trash panel both render from this so they cannot disagree.
+let trashRetention = RETENTION_NEVER;
+let trashCount = 0;
+
+async function renderTrash() {
+  const list = $("trash-list");
+  list.replaceChildren();
+  let entries = [];
+  try {
+    const data = await notesApi.listTrash(slug);
+    entries = data.entries;
+    trashRetention = normalizeRetention(data.retentionDays);
+    trashCount = entries.length;
+  } catch (e) {
+    list.textContent = e.message;
+    return;
+  }
+  $("trash-retention-note").textContent = describeRetention(trashRetention);
+  syncTrashSettings();
+  $("trash-empty-modal").disabled = !trashCount;
+  if (!entries.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "Trash is empty.";
+    list.append(li);
+    return;
+  }
+  for (const en of entries) {
+    list.append(trashRow(en));
+  }
+}
+
+function trashRow(en) {
+  const li = document.createElement("li");
+  const path = document.createElement("span");
+  path.className = "trash-path";
+  path.textContent = en.origPath;
+  const when = document.createElement("span");
+  when.className = "trash-when";
+  when.textContent = new Date(en.deletedAt * 1000).toLocaleString();
+  const due = describeExpiry(en.expiresAt);
+  if (due) {
+    const tag = document.createElement("span");
+    tag.className = "trash-due";
+    tag.textContent = due;
+    when.append(" · ", tag);
+  }
+
+  const restore = document.createElement("button");
+  restore.className = "btn small";
+  restore.textContent = "Restore";
+  restore.onclick = () => guarded(async () => {
+    const res = await notesApi.restoreTrash(slug, en.name);
+    toast(`Restored ${res.path}`);
+    await refreshTree();
+    await renderTrash();
+  });
+
+  const forget = document.createElement("button");
+  forget.className = "btn small danger";
+  forget.textContent = "Delete";
+  forget.title = "Delete this note permanently";
+  forget.onclick = () => guarded(async () => {
+    const ok = await confirmDialog({
+      title: "Delete permanently",
+      message: `Delete “${en.origPath}” for good? This cannot be undone.`,
+      okLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    await notesApi.deleteTrashEntry(slug, en.name);
+    toast(`Deleted ${en.origPath}`);
+    await renderTrash();
+  });
+
+  li.append(path, when, restore, forget);
+  return li;
+}
+
+// --- trash retention (a notebook setting, not a browser preference) ---
+
+/** Mirror the known retention into the Settings panel. */
+function syncTrashSettings() {
+  const sel = $("trash-retention");
+  if (!sel) return;
+  const choices = retentionChoices(trashRetention);
+  if (sel.options.length !== choices.length
+    || [...sel.options].some((o, i) => Number(o.value) !== choices[i].value)) {
+    sel.replaceChildren(...choices.map((c) => {
+      const o = document.createElement("option");
+      o.value = String(c.value);
+      o.textContent = c.label;
+      return o;
+    }));
+  }
+  sel.value = String(trashRetention);
+  sel.disabled = !slug;
+  $("retention-info").textContent = describeRetention(trashRetention);
+  $("trash-purge-now").disabled = !slug || trashRetention === RETENTION_NEVER;
+  $("trash-empty").disabled = !slug || !trashCount;
+  $("trash-count").textContent = slug
+    ? `${trashCount} note${trashCount === 1 ? "" : "s"} in the trash.`
+    : "Open a notebook to see its trash.";
+}
+
+/** Read the trash without opening the panel, to keep Settings honest. */
+async function refreshTrashState() {
+  if (!slug) {
+    trashRetention = RETENTION_NEVER;
+    trashCount = 0;
+    syncTrashSettings();
+    return;
+  }
+  try {
+    const data = await notesApi.listTrash(slug);
+    trashRetention = normalizeRetention(data.retentionDays);
+    trashCount = data.entries.length;
+  } catch {
+    /* the panel reports its own failures; Settings just goes stale */
+  }
+  syncTrashSettings();
+}
+
+async function applyRetention(days) {
+  await guarded(async () => {
+    const res = await notesApi.setTrashRetention(slug, days);
+    trashRetention = normalizeRetention(res.retentionDays);
+    toast(res.purged
+      ? `Saved. ${res.purged} trashed note${res.purged === 1 ? "" : "s"} removed.`
+      : "Saved.");
+    await refreshTrashState();
+    if (!$("trash-modal").hidden) await renderTrash();
+  });
+  // A rejected change must not leave the select showing something the
+  // server never accepted.
+  syncTrashSettings();
+}
+
+async function emptyTrash() {
+  const ok = await confirmDialog({
+    title: "Empty trash",
+    message: `Delete ${trashCount} trashed note${trashCount === 1 ? "" : "s"} for good? This cannot be undone.`,
+    okLabel: "Empty trash",
+    danger: true,
+  });
+  if (!ok) return;
+  await guarded(async () => {
+    const res = await notesApi.purgeTrash(slug, { all: true });
+    toast(`Deleted ${res.purged} note${res.purged === 1 ? "" : "s"}.`);
+    await refreshTrashState();
+    if (!$("trash-modal").hidden) await renderTrash();
+  });
+}
+
+$("trash-retention")?.addEventListener("change", (e) => applyRetention(e.target.value));
+$("trash-purge-now")?.addEventListener("click", () => guarded(async () => {
+  const res = await notesApi.purgeTrash(slug, {});
+  toast(res.purged
+    ? `Removed ${res.purged} expired note${res.purged === 1 ? "" : "s"}.`
+    : "Nothing was due for deletion.");
+  await refreshTrashState();
+  if (!$("trash-modal").hidden) await renderTrash();
+}));
+$("trash-empty")?.addEventListener("click", emptyTrash);
+$("trash-empty-modal")?.addEventListener("click", emptyTrash);
+$("trash-settings")?.addEventListener("click", () => {
+  closeTrash();
+  openSettingsModal("set-trash");
+});
+
+async function openTrash() {
+  if (!slug) return;
+  $("trash-modal").hidden = false;
+  await renderTrash();
+}
+const closeTrash = () => { $("trash-modal").hidden = true; };
+$("trash-btn")?.addEventListener("click", openTrash);
+$("trash-close")?.addEventListener("click", closeTrash);
+$("trash-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeTrash);
+
+// --- import / export ---
+
+async function actionExportNotebook() {
+  if (!slug) return;
+  await guarded(async () => {
+    const blob = await notesApi.exportNotebook(slug);
+    downloadBlob(blob, exportFileName(slug));
+    toast("Export downloaded");
+  });
+}
+
+// Render the dry-run plan (or the result) of an import.
+function planNode(entries) {
+  const s = summarizeImport(entries);
+  const box = document.createElement("div");
+  const summary = document.createElement("p");
+  summary.className = "plan-summary";
+  summary.textContent = describeImport(s, { dryRun: entries.__dryRun });
+  box.append(summary);
+  const ul = document.createElement("ul");
+  ul.className = "plan-list";
+  for (const e of entries) {
+    if (!e || e.status === "skipped") continue;
+    const li = document.createElement("li");
+    const chip = document.createElement("span");
+    chip.className = `chip ${e.status}`;
+    chip.textContent = e.status;
+    const path = document.createElement("span");
+    path.className = "plan-path";
+    path.textContent = e.path;
+    li.append(chip, path);
+    if (e.message) {
+      const m = document.createElement("span");
+      m.className = "plan-msg";
+      m.textContent = e.message;
+      li.append(m);
+    }
+    ul.append(li);
+  }
+  box.append(ul);
+  return box;
+}
+
+async function importArchive(file) {
+  const dry = await notesApi.importNotebook(slug, file, { dryRun: true });
+  const entries = dry.entries || [];
+  entries.__dryRun = true;
+  const r = await formDialog({
+    title: `Import ${file.name}`,
+    message: "Nothing has changed yet. Review and confirm.",
+    extra: planNode(entries),
+    okLabel: "Import",
+    wide: true,
+  });
+  if (!r) return;
+  await guarded(async () => {
+    const res = await notesApi.importNotebook(slug, file, {});
+    await refreshTree();
+    await infoDialog({
+      title: "Import complete",
+      message: describeImport(summarizeImport(res.entries || []), {}),
+      extra: planNode(res.entries || []),
+      wide: true,
+    });
+  });
+}
+
+async function importMarkdown(files) {
+  if (!treeData) return;
+  const choices = folderChoices(treeData).map((c) => ({
+    value: c.value,
+    label: `${"\u2003".repeat(c.depth)}${c.label}`,
+  }));
+  const r = await formDialog({
+    title: files.length === 1 ? "Import note" : `Import ${files.length} notes`,
+    message: "Choose where the notes should go. Existing names are kept.",
+    fields: [{ name: "dest", label: "Folder", type: "select", options: choices, value: contextDir() }],
+    okLabel: "Import",
+  });
+  if (!r) return;
+  await guarded(async () => {
+    const taken = new Set();
+    const collect = (root) => {
+      for (const c of root.children || []) {
+        if (c.isDir) collect(c); else taken.add(c.path);
+      }
+    };
+    if (treeData) collect(treeData);
+    let count = 0;
+    for (const file of files) {
+      const name = (file.name || "note.md").replace(/\.(md|markdown)$/i, "");
+      const target = uniquePath(joinPath(r.dest, `${cleanRelPath(name).ok ? cleanRelPath(name).path : name}.md`), (p) => taken.has(p) || false);
+      const text = await file.text();
+      await notesApi.saveNote(slug, target, text, { createOnly: true });
+      taken.add(target);
+      count += 1;
+    }
+    ensureExpanded(r.dest);
+    await refreshTree();
+    toast(`Imported ${count} note${count === 1 ? "" : "s"}`);
+  });
+}
+
+function importFiles(files) {
+  if (!slug || !files || !files.length) return;
+  const list = [...files];
+  if (list.some((f) => isArchive(f.name))) {
+    importArchive(list.find((f) => isArchive(f.name)));
+  } else if (list.every((f) => isMarkdown(f.name))) {
+    importMarkdown(list);
+  } else {
+    toast("Import accepts a .tar.gz export or .md files.", true);
+  }
+}
+
+// Drag-and-drop a file onto the tree to import it.
+function setupTreeDropZone() {
+  const side = $("sidebar");
+  let depth = 0;
+  side.addEventListener("dragover", (e) => {
+    if (!slug || !e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    side.classList.add("drop-target");
+  });
+  side.addEventListener("dragenter", (e) => {
+    if (!slug || !e.dataTransfer?.types?.includes("Files")) return;
+    depth += 1;
+  });
+  side.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) side.classList.remove("drop-target");
+  });
+  side.addEventListener("drop", (e) => {
+    if (!slug) return;
+    e.preventDefault();
+    depth = 0;
+    side.classList.remove("drop-target");
+    if (e.dataTransfer?.files?.length) importFiles(e.dataTransfer.files);
+  });
+}
+
+setupTreeDropZone();
+
+// --- theme, tree placement, phone drawer ---
+
+const THEME_ICON = { auto: "◐", light: "☀", dark: "☾" };
+
+function syncThemeUI() {
+  const t = getTheme();
+  const b = $("themebtn");
+  b.textContent = THEME_ICON[t];
+  b.setAttribute("aria-label", `Theme: ${t}`);
+  b.title = `Theme: ${t} (click to change)`;
+  const radio = q(`input[name="theme"][value="${t}"]`);
   if (radio) radio.checked = true;
-  
-  // Update circuit breaker status
+}
+
+function chooseTheme(theme) {
+  const t = setTheme(theme);
+  applyUserTheme(t);
+  if (t === "auto") refreshPluginPanels(slug);
+  syncThemeUI();
+}
+
+function syncPlacementUI() {
+  const p = getPlacement();
+  applyPlacement(p);
+  const radio = q(`input[name="tree-placement"][value="${p}"]`);
+  if (radio) radio.checked = true;
+  $("treebtn").setAttribute("aria-expanded", String(isPhone() ? document.body.classList.contains("tree-open") : p !== "hidden"));
+}
+
+function setDrawer(open) {
+  document.body.classList.toggle("tree-open", open);
+  $("treebtn").setAttribute("aria-expanded", String(open));
+}
+
+$("themebtn")?.addEventListener("click", () => chooseTheme(nextTheme(getTheme())));
+$("treebtn")?.addEventListener("click", () => {
+  if (isPhone()) setDrawer(!document.body.classList.contains("tree-open"));
+  else { togglePlacement(); syncPlacementUI(); }
+});
+$("tree-scrim")?.addEventListener("click", () => setDrawer(false));
+window.matchMedia("(max-width: 720px)").addEventListener?.("change", (e) => {
+  if (!e.matches) setDrawer(false);
+  syncPlacementUI();
+});
+
+qa('input[name="theme"]').forEach((r) => r.addEventListener("change", () => chooseTheme(r.value)));
+qa('input[name="tree-placement"]').forEach((r) => r.addEventListener("change", () => {
+  setPlacement(r.value);
+  syncPlacementUI();
+}));
+
+// --- settings modal ---
+
+const SETTING_KEYS = Object.keys(getSettings());
+
+function applyPreferences() {
+  const s = getSettings();
+  document.body.dataset.font = s.fontSize;
+  document.body.dataset.width = s.readingWidth;
+  document.body.dataset.counts = s.treeCounts;
+  $("statusbar").hidden = s.statusBar !== "on";
+  applyStatusFields();
+  if (editing && editing.mode === "textarea") applyEditorPrefs();
+  if (current && !editing) refreshViewStatus();
+}
+
+function applyStatusFields() {
+  const fields = getStatusFields();
+  for (const field of STATUS_FIELDS) {
+    const el = q(`#statusbar [data-sb="${field}"]`);
+    if (el) el.hidden = !fields[field];
+  }
+}
+
+// Bind every control carrying a data-setting attribute to the registry.
+function syncSettingsForm() {
+  for (const key of SETTING_KEYS) {
+    const el = q(`[data-setting="${key}"]`);
+    if (!el) continue;
+    if (el.type === "checkbox") el.checked = getSetting(key) === "on";
+    else el.value = getSetting(key);
+  }
+  const fields = getStatusFields();
+  for (const field of STATUS_FIELDS) {
+    const el = q(`[data-status-field="${field}"]`);
+    if (el) el.checked = fields[field];
+  }
+  const pref = getEditorPreference();
+  const radio = q(`input[name="editor-mode"][value="${pref}"]`);
+  if (radio) radio.checked = true;
+  syncThemeUI();
+  syncPlacementUI();
   updateVimStatus();
+  updateServerInfo();
+  syncTrashSettings();
+  refreshTrashState();
+}
+
+function updateVimStatus() {
+  const state = getVimModeState();
+  const st = $("cb-status");
+  st.textContent = state.enabled ? "Enabled" : "Disabled";
+  st.className = state.enabled ? "status-value enabled" : "status-value disabled";
+  $("cb-failures").textContent = String(state.failures);
+  $("cb-lastfail").textContent = state.lastFailure ? new Date(state.lastFailure).toLocaleString() : "Never";
+}
+
+async function updateServerInfo() {
+  const dl = $("server-info");
+  if (!dl) return;
+  if (!slug) {
+    dl.replaceChildren(infoRow("Status", "Open a notebook to see its storage."));
+    return;
+  }
+  dl.replaceChildren(infoRow("Notebook", slug), infoRow("Storage", "Loading…"));
+  try {
+    const s = await notesApi.resourceStats(slug);
+    if ($("server-info") !== dl || !slug) return;
+    const used = Number(s.usedBytes) || 0;
+    const reserved = Number(s.reservedBytes) || 0;
+    const quota = Number(s.quotaBytes) || 0;
+    const journal = Number(s.journal) || 0;
+    dl.replaceChildren(
+      infoRow("Notebook", slug),
+      infoRow("Backend", s.backend || "—"),
+      infoRow("Used", humanBytes(used + reserved)),
+      infoRow("Quota", quota > 0 ? humanSizePair(used, quota) : "unlimited"),
+      infoRow("Pending uploads", String(journal)),
+    );
+    if (quota > 0) dl.append(meterFor(used, quota));
+  } catch (e) {
+    if ($("server-info") === dl) dl.replaceChildren(infoRow("Notebook", slug), infoRow("Storage", e.message));
+  }
+}
+
+function humanBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function humanSizePair(used, quota) {
+  return `${humanBytes(used)} of ${humanBytes(quota)}`;
+}
+
+function infoRow(label, value) {
+  const frag = document.createDocumentFragment();
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  frag.append(dt, dd);
+  return frag;
+}
+
+function meterFor(used, quota) {
+  const dd = document.createElement("dd");
+  const meter = document.createElement("div");
+  const pct = quota > 0 ? Math.min(100, Math.round((used / quota) * 100)) : 0;
+  meter.className = pct >= 90 ? "meter high" : "meter";
+  const fill = document.createElement("span");
+  fill.style.width = `${pct}%`;
+  meter.append(fill);
+  dd.append(meter);
+  return dd;
+}
+
+function openSettingsModal(section) {
+  $("settings-modal").hidden = false;
+  syncSettingsForm();
+  if (section) focusSettingsSection(section);
 }
 
 function closeSettingsModal() {
   $("settings-modal").hidden = true;
 }
 
-function updateVimStatus() {
-  const state = getVimModeState();
-  
-  $("cb-status").textContent = state.enabled ? "Enabled" : "Disabled";
-  $("cb-status").className = state.enabled ? "status-value enabled" : "status-value disabled";
-  
-  $("cb-failures").textContent = String(state.failures);
-  
-  if (state.lastFailure) {
-    const date = new Date(state.lastFailure);
-    $("cb-lastfail").textContent = date.toLocaleString();
-  } else {
-    $("cb-lastfail").textContent = "Never";
-  }
+function focusSettingsSection(id) {
+  const sec = document.getElementById(id);
+  if (sec) sec.scrollIntoView({ block: "start" });
 }
 
-function saveEditorPreference() {
-  const selected = document.querySelector('input[name="editor-mode"]:checked');
-  if (selected) {
-    setEditorPreference(selected.value);
-  }
-}
-
-function resetCircuitBreaker() {
-  resetVimCircuitBreaker();
-  updateVimStatus();
-  alert("Circuit breaker has been reset. Vim mode is now enabled.");
-}
-
-// Settings event listeners
-$("settingsbtn")?.addEventListener("click", openSettingsModal);
+$("settingsbtn")?.addEventListener("click", () => openSettingsModal());
 $("settings-close")?.addEventListener("click", closeSettingsModal);
 $("settings-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeSettingsModal);
-$("reset-vim")?.addEventListener("click", resetCircuitBreaker);
 
-// Save preference when radio buttons change
-document.querySelectorAll('input[name="editor-mode"]').forEach(radio => {
-  radio.addEventListener("change", saveEditorPreference);
+// Setting controls: any [data-setting] change persists and applies.
+document.addEventListener("change", (e) => {
+  const el = e.target.closest?.("[data-setting]");
+  if (!el) return;
+  const key = el.dataset.setting;
+  const value = el.type === "checkbox" ? (el.checked ? "on" : "off") : el.value;
+  setSetting(key, value);
+  applyPreferences();
 });
 
-// Close modal with Escape key
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("settings-modal").hidden) {
-    closeSettingsModal();
+document.addEventListener("change", (e) => {
+  const el = e.target.closest?.("[data-status-field]");
+  if (!el) return;
+  setStatusField(el.dataset.statusField, el.checked);
+  applyStatusFields();
+});
+
+qa('input[name="editor-mode"]').forEach((radio) => {
+  radio.addEventListener("change", () => setEditorPreference(radio.value));
+});
+
+$("settings-modal")?.querySelectorAll(".settings-nav button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    focusSettingsSection(btn.dataset.target);
+    for (const b of qa("#settings-modal .settings-nav button")) b.classList.toggle("active", b === btn);
+  });
+});
+
+$("reset-vim")?.addEventListener("click", () => {
+  resetVimCircuitBreaker();
+  updateVimStatus();
+  toast("Vim mode re-enabled.");
+});
+
+$("export-notebook")?.addEventListener("click", actionExportNotebook);
+$("import-notes")?.addEventListener("click", () => $("import-file").click());
+$("import-file")?.addEventListener("change", (e) => {
+  if (e.target.files?.length) importFiles(e.target.files);
+  e.target.value = "";
+});
+
+$("create-backup")?.addEventListener("click", () => guarded(async () => {
+  const m = await notesApi.createBackup(slug);
+  const box = document.createElement("div");
+  const rows = [
+    ["Created", m.createdAt ? new Date(m.createdAt).toLocaleString() : "—"],
+    ["Bundle", m.bundlePath || "—"],
+    ["State", m.statePath || "—"],
+  ];
+  const dl = document.createElement("dl");
+  dl.className = "info-list";
+  for (const [k, v] of rows) dl.append(infoRow(k, v));
+  box.append(dl);
+  if (Array.isArray(m.errors) && m.errors.length) {
+    const p = document.createElement("p");
+    p.className = "help-text";
+    p.textContent = `Warnings: ${m.errors.join("; ")}`;
+    box.append(p);
   }
+  await infoDialog({ title: "Backup complete", message: "A full snapshot was written on the server.", extra: box });
+}));
+
+$("clear-drafts")?.addEventListener("click", async () => {
+  const n = clearDrafts();
+  toast(n ? `Cleared ${n} draft${n === 1 ? "" : "s"}.` : "No drafts to clear.");
+  updateServerInfo();
 });
+
+$("reset-prefs")?.addEventListener("click", () => {
+  resetPreferences();
+  applyPreferences();
+  syncSettingsForm();
+  toast("Preferences reset.");
+});
+
+$("open-help")?.addEventListener("click", () => { closeSettingsModal(); openHelp(); });
+
+// --- help overlay ---
+
+function openHelp({ welcome = false } = {}) {
+  renderHelp($("help-body"), { welcome });
+  $("help-modal").hidden = false;
+  $("help-done").textContent = welcome ? "Got it" : "Close";
+  $("help-done").focus();
+  if (welcome) markHelpSeen();
+}
+
+function closeHelp() {
+  $("help-modal").hidden = true;
+}
+
+$("helpbtn")?.addEventListener("click", () => openHelp());
+$("help-close")?.addEventListener("click", closeHelp);
+$("help-done")?.addEventListener("click", closeHelp);
+$("help-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeHelp);
+
+// First visit: open the guide once, automatically.
+let welcomeShown = false;
+function maybeWelcome() {
+  if (welcomeShown || isHelpSeen()) return;
+  welcomeShown = true;
+  openHelp({ welcome: true });
+}
+
+// --- global Escape / modal close ---
+
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("help-modal").hidden) closeHelp();
+  else if (!$("settings-modal").hidden) closeSettingsModal();
+  else if (!$("trash-modal").hidden) closeTrash();
+});
+
+// --- boot ---
+
+applyUserTheme(getTheme());
+applyPlacement(getPlacement());
+syncThemeUI();
+syncPlacementUI();
+applyPreferences();
+window.matchMedia("(max-width: 720px)").addEventListener?.("change", applyPreferences);
+
+boot()
+  .then(() => maybeWelcome())
+  .catch((e) => {
+    $("note").replaceChildren(emptyState({ icon: "⚠️", title: "Could not start", body: e.message }));
+  });
+
+// Expose a couple of helpers for debugging in the console.
+window.nr = { openNote, openEditor, current: () => current };

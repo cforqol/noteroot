@@ -13,9 +13,6 @@ import (
 	"time"
 )
 
-// TrashRetention is how long trashed notes survive the boot purge.
-const TrashRetention = 30 * 24 * time.Hour
-
 // ErrOccupied reports a restore whose original path is reoccupied.
 var ErrOccupied = errors.New("target occupied")
 
@@ -297,6 +294,35 @@ func (t *Trash) Restore(name string) (string, error) {
 // Purge deletes entries older than the cutoff. Per-file errors are collected
 // and returned joined; a purge failure must never abort the sweep.
 func (t *Trash) Purge(olderThan time.Time) (int, error) {
+	return t.removeWhere(func(e TrashEntry) bool { return e.DeletedAt.Before(olderThan) })
+}
+
+// Empty deletes every trashed note for good.
+func (t *Trash) Empty() (int, error) {
+	return t.removeWhere(func(TrashEntry) bool { return true })
+}
+
+// Delete removes a single trashed note and its sidecar for good. The name
+// is matched against the listing rules, so it can only ever name a file
+// this trash directory owns.
+func (t *Trash) Delete(name string) error {
+	if name == "" || name != path.Base(name) || !strings.HasSuffix(name, ".md") {
+		return errors.New("invalid trash name")
+	}
+	if err := os.Remove(filepath.Join(t.dir, name)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	_ = os.Remove(filepath.Join(t.dir, name+".json"))
+	return nil
+}
+
+// removeWhere deletes the entries the predicate selects. Per-file errors
+// are collected and returned joined: one unreadable entry must never
+// strand the rest.
+func (t *Trash) removeWhere(due func(TrashEntry) bool) (int, error) {
 	entries, err := t.List()
 	if err != nil {
 		return 0, err
@@ -304,7 +330,7 @@ func (t *Trash) Purge(olderThan time.Time) (int, error) {
 	var errs []error
 	n := 0
 	for _, e := range entries {
-		if !e.DeletedAt.Before(olderThan) {
+		if !due(e) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(t.dir, e.Name)); err != nil && !os.IsNotExist(err) {

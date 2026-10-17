@@ -646,3 +646,58 @@ func TestPresignRead_notFound(t *testing.T) {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
+
+// Presign short-circuits (non-S3 "direct" and dedup "exists") store
+// nothing, so they must not leave journal rows behind — the journal
+// would otherwise fill with aborted entries on every upload.
+func TestPresign_shortCircuitsLeaveNoJournalRows(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	journalLen := func() int {
+		t.Helper()
+		rec := get(t, srv, "/n/work/resources", nil)
+		var body struct {
+			Resources []map[string]any `json:"resources"`
+		}
+		decodeJSON(t, rec, &body)
+		return len(body.Resources)
+	}
+	presign := func(sha string) map[string]any {
+		t.Helper()
+		b := `{"sha":"` + sha + `","size":5,"filename":"p.txt","mime":"text/plain"}`
+		req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("presign = %d, %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		decodeJSON(t, rec, &out)
+		return out
+	}
+
+	// Unknown blob on a local store → direct upload, no row.
+	unknown := strings.Repeat("ab", 32)
+	if out := presign(unknown); out["direct"] != true {
+		t.Fatalf("presign = %v, want direct", out)
+	}
+	if n := journalLen(); n != 0 {
+		t.Fatalf("journal rows after direct presign = %d, want 0", n)
+	}
+
+	// Upload for real (one committed row), then presign the same blob.
+	rec := postResource(t, srv, "work", "p.txt", "text/plain", []byte("hello"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload = %d, %s", rec.Code, rec.Body.String())
+	}
+	var up struct {
+		SHA string `json:"sha"`
+	}
+	decodeJSON(t, rec, &up)
+	if out := presign(up.SHA); out["exists"] != true {
+		t.Fatalf("presign of stored blob = %v, want exists", out)
+	}
+	if n := journalLen(); n != 1 {
+		t.Fatalf("journal rows after dedup presign = %d, want 1 (the upload)", n)
+	}
+}

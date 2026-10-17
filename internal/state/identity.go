@@ -223,6 +223,27 @@ func (db *DB) RenameIdentity(ctx context.Context, oldPath, newPath string) error
 	return nil
 }
 
+// RenameIdentityPrefix rewrites every note_identity row under a folder
+// prefix after the folder was renamed or moved; uids never change. Rows
+// whose rewritten path already exists (stale leftovers of a deleted
+// note) are skipped so the UNIQUE(path) primary key is never violated —
+// identity is rebuildable, and the index sync re-points the stale row
+// on its next pass.
+func (db *DB) RenameIdentityPrefix(ctx context.Context, fromDir, toDir string) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE note_identity AS n
+		SET path = ?1 || SUBSTR(n.path, LENGTH(?2) + 1)
+		WHERE SUBSTR(n.path, 1, LENGTH(?2) + 1) = ?2 || '/'
+		  AND NOT EXISTS (
+			SELECT 1 FROM note_identity x
+			WHERE x.path = ?1 || SUBSTR(n.path, LENGTH(?2) + 1)
+		  )`, toDir, fromDir)
+	if err != nil {
+		return fmt.Errorf("rename identity prefix %s → %s: %w", fromDir, toDir, err)
+	}
+	return nil
+}
+
 // PathByUID resolves an identity to its current path. ok=false when the
 // uid is unknown.
 func (db *DB) PathByUID(ctx context.Context, uid string) (string, bool, error) {

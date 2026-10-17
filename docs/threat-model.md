@@ -55,5 +55,10 @@ consequences for design decisions elsewhere.
 - Cross-site request forgery is blocked by content-type and origin checks on
   every mutating route; no CORS is ever granted and the app mints no ambient
   cookie, so a malicious page cannot ride a forward-auth session into a write.
+- Folder create/move/delete mutate many notes at once and therefore exist only
+  on the session surface (CSRF-gated like every other mutation), never on the
+  token API where a path-qualified scope cannot describe a whole subtree. The
+  UI renders every server- and user-supplied string with `textContent`;
+  folder colors are validated as `#rrggbb` before they reach a style.
 - `/healthz` stays unauthenticated, accepting that it reveals that the service
   is running.

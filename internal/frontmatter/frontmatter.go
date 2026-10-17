@@ -52,13 +52,13 @@ func Split(src []byte) (block, body []byte, ok bool) {
 		return nil, src, false
 	}
 
+	// The closing delimiter must start within maxBlock bytes. The limit
+	// bounds the block, not the note: a large body after a small block
+	// is still frontmatter (bounding the whole rest made writers prepend
+	// a second block to every note over 64 KiB).
 	rest := src[nl+1:]
-	if len(rest) > maxBlock {
-		return nil, src, false
-	}
-
 	off := 0
-	for off < len(rest) {
+	for off < len(rest) && off <= maxBlock {
 		lineEnd := bytes.IndexByte(rest[off:], '\n')
 		var line []byte
 		if lineEnd < 0 {
@@ -93,6 +93,12 @@ func Parse(src []byte) Doc {
 	if err := yaml.Unmarshal(block, &d.Meta); err != nil {
 		d.Err = err
 		d.Meta = map[string]any{}
+		// A YAML slip elsewhere in the block must not cost the note its
+		// identity: writers mint (and WithID overwrites) when ID is
+		// empty, so recover a well-formed top-level id line textually.
+		if id := textualID(block); idRe.MatchString(id) {
+			d.ID = id
+		}
 		return d
 	}
 
@@ -103,6 +109,26 @@ func Parse(src []byte) Doc {
 	}
 	d.Title = str(d.Meta["title"])
 	return d
+}
+
+// textualID returns the unquoted value of the first top-level "id:" line
+// of a frontmatter block (the line WithID would rewrite), or "".
+func textualID(block []byte) string {
+	for _, ln := range strings.Split(string(block), "\n") {
+		if len(ln) == 0 || ln[0] == ' ' || ln[0] == '\t' {
+			continue
+		}
+		key, val, found := strings.Cut(ln, ":")
+		if !found || strings.TrimSpace(key) != "id" {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if i := strings.Index(val, " #"); i >= 0 {
+			val = strings.TrimSpace(val[:i])
+		}
+		return strings.Trim(val, `"'`)
+	}
+	return ""
 }
 
 // str coerces a decoded YAML value to a string. Needed because YAML turns

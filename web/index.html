@@ -3,104 +3,319 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>noteroot</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header>
+<header class="topbar">
+  <button id="treebtn" class="btn icon-btn ghost" aria-label="Toggle notebook tree" title="Toggle tree" aria-expanded="true">☰</button>
   <span class="brand">noteroot</span>
   <select id="notebooks" aria-label="Notebook"></select>
-  <input id="q" type="search" placeholder="Search…" aria-label="Search notes" autocomplete="off">
-  <button id="editbtn" class="btn" hidden>Edit</button>
-  <button id="settingsbtn" class="btn icon-btn" aria-label="Settings" title="Settings">⚙</button>
+  <input id="q" type="search" placeholder="Search notes…" aria-label="Search notes (press /)" autocomplete="off">
+  <span class="spacer"></span>
+  <button id="editbtn" class="btn primary" title="Edit this note (E)" hidden>Edit</button>
+  <button id="notemenu" class="btn icon-btn ghost" aria-label="Note actions" title="Note actions" hidden>⋯</button>
+  <span class="topbar-sep" aria-hidden="true"></span>
+  <button id="themebtn" class="btn icon-btn ghost" aria-label="Theme: auto" title="Theme: auto (click to change)">◐</button>
+  <button id="helpbtn" class="btn icon-btn ghost" aria-label="Help" title="Guide and shortcuts (?)">?</button>
+  <button id="settingsbtn" class="btn icon-btn ghost" aria-label="Settings" title="Settings">⚙</button>
 </header>
 <main>
-  <nav id="tree" aria-label="Notes"></nav>
+  <aside id="sidebar" aria-label="Notebook tree">
+    <div id="tree-tools" class="tree-tools">
+      <button id="new-note" class="btn small" title="New note (N)">+ Note</button>
+      <button id="new-folder" class="btn small" title="New folder">+ Folder</button>
+      <span class="spacer"></span>
+      <button id="tree-expand" class="btn small icon-btn ghost" aria-label="Expand all folders" title="Expand all">⊞</button>
+      <button id="tree-collapse" class="btn small icon-btn ghost" aria-label="Collapse all folders" title="Collapse all">⊟</button>
+      <button id="trash-btn" class="btn small icon-btn ghost" aria-label="Trash" title="Trash">🗑</button>
+    </div>
+    <nav id="tree" aria-label="Notes"></nav>
+    <div id="tree-status" class="tree-status" aria-live="polite"></div>
+    <div class="drop-hint" aria-hidden="true">Drop .md files or a .tar.gz archive to import</div>
+  </aside>
+  <div id="tree-scrim" class="tree-scrim"></div>
   <div id="content">
-    <article id="note"><p class="muted">Select a note.</p></article>
+    <article id="note"></article>
     <section id="editor" hidden>
       <div id="banner"></div>
       <div class="toolbar">
-        <span id="editormode" class="muted"></span>
-        <span id="lockstate" class="muted"></span>
+        <span id="editormode" class="mode-chip"></span>
+        <span id="lockstate" class="muted small"></span>
         <span class="spacer"></span>
-        <span id="savestate" class="muted"></span>
-        <button id="savebtn" class="btn">Save</button>
-        <button id="closebtn" class="btn">Close</button>
+        <span id="savestate" class="savestate" aria-live="polite"></span>
+        <button id="savebtn" class="btn" title="Save now (Ctrl/⌘+S)">Save</button>
+        <button id="closebtn" class="btn primary" title="Save and close the editor">Done</button>
       </div>
       <div id="vim-container" hidden>
-        <div id="vim-loading" class="vim-loading">Loading Vim...</div>
+        <div id="vim-loading" class="vim-loading">Starting Vim…</div>
         <canvas id="vim-canvas"></canvas>
-        <input id="vim-input" autocomplete="off" style="position:absolute;left:-9999px" />
+        <input id="vim-input" autocomplete="off" aria-label="Vim keyboard input">
       </div>
       <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
     </section>
   </div>
 </main>
 
+<footer id="statusbar" class="statusbar" aria-label="Editor status">
+  <span id="sb-mode" class="sb-item sb-mode" title="Editor mode">Read</span>
+  <span class="sb-item" data-sb="position" title="Cursor line:column">Ln:Col <b id="sb-pos">—</b></span>
+  <span class="sb-item" data-sb="words" title="Total words">Words <b id="sb-words">—</b></span>
+  <span class="sb-item" data-sb="selected" title="Words in selection">Selected <b id="sb-selected">—</b></span>
+  <span class="sb-item sb-extra" data-sb="chars" title="Characters excluding whitespace">Chars <b id="sb-chars">—</b></span>
+  <span class="sb-item sb-extra" data-sb="paragraphs" title="Paragraphs">Paras <b id="sb-paras">—</b></span>
+  <span class="sb-item sb-extra" data-sb="reading" title="Estimated reading time">Read <b id="sb-reading">—</b></span>
+  <span class="spacer"></span>
+  <span class="sb-item" data-sb="size" title="File size">Size <b id="sb-size">—</b></span>
+</footer>
+
 <footer id="plugin-status" class="plugin-status" hidden>
   <div id="plugin-panels" class="plugin-panels"></div>
 </footer>
 
-<div id="settings-modal" class="modal" hidden>
+<div id="trash-modal" class="modal" hidden>
   <div class="modal-backdrop"></div>
-  <div class="modal-content">
+  <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="trash-title">
     <div class="modal-header">
-      <h2>Settings</h2>
-      <button id="settings-close" class="btn icon-btn" aria-label="Close">×</button>
+      <h2 id="trash-title">Trash</h2>
+      <button id="trash-close" class="btn icon-btn ghost" aria-label="Close">×</button>
     </div>
     <div class="modal-body">
-      <section class="settings-section">
-        <h3>Editor Preference</h3>
-        <p class="help-text">Choose your preferred editor mode for desktop devices.</p>
-        <div class="radio-group">
-          <label>
-            <input type="radio" name="editor-mode" value="auto" checked>
-            <span>Auto (Vim on desktop, plain text on mobile)</span>
-          </label>
-          <label>
-            <input type="radio" name="editor-mode" value="vim">
-            <span>Always Vim (if available)</span>
-          </label>
-          <label>
-            <input type="radio" name="editor-mode" value="textarea">
-            <span>Always Plain Text</span>
-          </label>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <h3>Vim Mode Status</h3>
-        <div id="vim-status" class="status-display">
-          <div class="status-row">
-            <span class="status-label">Circuit breaker:</span>
-            <span id="cb-status" class="status-value">—</span>
-          </div>
-          <div class="status-row">
-            <span class="status-label">Consecutive failures:</span>
-            <span id="cb-failures" class="status-value">—</span>
-          </div>
-          <div class="status-row">
-            <span class="status-label">Last failure:</span>
-            <span id="cb-lastfail" class="status-value">—</span>
-          </div>
-        </div>
-        <button id="reset-vim" class="btn">Reset Circuit Breaker</button>
-        <p class="help-text small">Reset if Vim mode is disabled due to errors.</p>
-      </section>
-
-      <section class="settings-section">
-        <h3>About</h3>
-        <p class="help-text">
-          <strong>Vim mode</strong> runs real Vim (WASM) in the page with terminal emulation.
-          Mobile devices always use plain text editor.
-          The circuit breaker automatically disables Vim after 3 consecutive failures
-          and re-enables after 24 hours.
-        </p>
-      </section>
+      <p class="help-text">Deleted notes (folders are trashed note by note). Restore puts a note back at its original path.</p>
+      <p class="help-text" id="trash-retention-note">Trashed notes are kept until you delete them.</p>
+      <ul id="trash-list" class="trash-list"></ul>
+    </div>
+    <div class="modal-footer">
+      <button id="trash-settings" class="btn">Retention…</button>
+      <span class="spacer"></span>
+      <button id="trash-empty-modal" class="btn danger">Empty trash…</button>
     </div>
   </div>
 </div>
+
+<div id="help-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content help-content" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="modal-header">
+      <h2 id="help-title">Guide</h2>
+      <button id="help-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+    </div>
+    <div id="help-body" class="modal-body help-body"></div>
+    <div class="modal-footer">
+      <span class="help-text small">Reopen any time with <kbd>?</kbd></span>
+      <span class="spacer"></span>
+      <button id="help-done" class="btn primary">Got it</button>
+    </div>
+  </div>
+</div>
+
+<div id="settings-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content settings-content" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-header">
+      <h2 id="settings-title">Settings</h2>
+      <button id="settings-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+    </div>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="Settings sections">
+        <button type="button" data-target="set-appearance">Appearance</button>
+        <button type="button" data-target="set-editor">Editor</button>
+        <button type="button" data-target="set-tree">Tree</button>
+        <button type="button" data-target="set-status">Status bar</button>
+        <button type="button" data-target="set-data">Data</button>
+        <button type="button" data-target="set-trash">Trash</button>
+        <button type="button" data-target="set-server">Server</button>
+        <button type="button" data-target="set-about">About</button>
+      </nav>
+      <div id="settings-body" class="modal-body settings-body">
+        <section class="settings-section" id="set-appearance">
+          <h3>Appearance</h3>
+          <div class="setting">
+            <div class="setting-label">Theme<small>Auto follows your device.</small></div>
+            <div class="radio-group">
+              <label><input type="radio" name="theme" value="auto" checked><span>Auto (follow system)</span></label>
+              <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+              <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+            </div>
+          </div>
+          <label class="setting">
+            <span class="setting-label">Text size</span>
+            <select data-setting="fontSize">
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Reading width<small>Line length of notes in the reader.</small></span>
+            <select data-setting="readingWidth">
+              <option value="narrow">Narrow</option>
+              <option value="normal">Comfortable</option>
+              <option value="wide">Full width</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="settings-section" id="set-editor">
+          <h3>Editor</h3>
+          <div class="setting">
+            <div class="setting-label">Editor<small>Vim needs a desktop browser; phones always use plain text.</small></div>
+            <div class="radio-group">
+              <label><input type="radio" name="editor-mode" value="auto" checked><span>Auto (Vim on desktop, plain text on mobile)</span></label>
+              <label><input type="radio" name="editor-mode" value="vim"><span>Always Vim (if available)</span></label>
+              <label><input type="radio" name="editor-mode" value="textarea"><span>Always Plain Text</span></label>
+            </div>
+          </div>
+          <label class="setting">
+            <span class="setting-label">Save automatically<small>After you stop typing. Switching notes and Done always save.</small></span>
+            <select data-setting="autosave">
+              <option value="1000">After 1 second</option>
+              <option value="2000">After 2 seconds</option>
+              <option value="5000">After 5 seconds</option>
+              <option value="10000">After 10 seconds</option>
+              <option value="0">Off (Ctrl/⌘+S, Done or switching notes)</option>
+            </select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Tab key<small>In the plain-text editor.</small></span>
+            <select data-setting="tabKey">
+              <option value="focus">Moves focus (default)</option>
+              <option value="2">Inserts 2 spaces</option>
+              <option value="4">Inserts 4 spaces</option>
+              <option value="tab">Inserts a tab</option>
+            </select>
+          </label>
+          <label class="setting switch">
+            <span class="setting-label">Spell check<small>Plain-text editor.</small></span>
+            <input type="checkbox" data-setting="spellcheck">
+          </label>
+          <label class="setting switch">
+            <span class="setting-label">Wrap long lines<small>Plain-text editor.</small></span>
+            <input type="checkbox" data-setting="wrap">
+          </label>
+          <div class="setting setting-block">
+            <div class="setting-label">Vim status</div>
+            <div id="vim-status" class="status-display">
+              <div class="status-row"><span class="status-label">Circuit breaker:</span><span id="cb-status" class="status-value">—</span></div>
+              <div class="status-row"><span class="status-label">Consecutive failures:</span><span id="cb-failures" class="status-value">—</span></div>
+              <div class="status-row"><span class="status-label">Last failure:</span><span id="cb-lastfail" class="status-value">—</span></div>
+            </div>
+            <button id="reset-vim" class="btn">Reset Circuit Breaker</button>
+            <p class="help-text small">Vim switches itself off after 3 failed starts in a row and back on after 24 hours. Reset to try again now.</p>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-tree">
+          <h3>Tree</h3>
+          <div class="setting">
+            <div class="setting-label">Position<small>On phones the tree is always a slide-in panel opened with ☰.</small></div>
+            <div class="radio-group">
+              <label><input type="radio" name="tree-placement" value="left" checked><span>Left</span></label>
+              <label><input type="radio" name="tree-placement" value="right"><span>Right</span></label>
+              <label><input type="radio" name="tree-placement" value="hidden"><span>Hidden (toggle with ☰)</span></label>
+            </div>
+          </div>
+          <label class="setting switch">
+            <span class="setting-label">Show note counts<small>The [n] beside each folder.</small></span>
+            <input type="checkbox" data-setting="treeCounts">
+          </label>
+        </section>
+
+        <section class="settings-section" id="set-status">
+          <h3>Status bar</h3>
+          <label class="setting switch">
+            <span class="setting-label">Show the status bar</span>
+            <input type="checkbox" data-setting="statusBar">
+          </label>
+          <div class="setting setting-block">
+            <div class="setting-label">Show</div>
+            <div class="check-grid">
+              <label><input type="checkbox" data-status-field="position"><span>Line:column</span></label>
+              <label><input type="checkbox" data-status-field="words"><span>Words</span></label>
+              <label><input type="checkbox" data-status-field="selected"><span>Selected words</span></label>
+              <label><input type="checkbox" data-status-field="chars"><span>Characters</span></label>
+              <label><input type="checkbox" data-status-field="paragraphs"><span>Paragraphs</span></label>
+              <label><input type="checkbox" data-status-field="reading"><span>Reading time</span></label>
+              <label><input type="checkbox" data-status-field="size"><span>File size</span></label>
+            </div>
+          </div>
+          <label class="setting">
+            <span class="setting-label">Reading speed<small>Used for the reading time.</small></span>
+            <select data-setting="readingSpeed">
+              <option value="150">150 words/min</option>
+              <option value="200">200 words/min</option>
+              <option value="250">250 words/min</option>
+              <option value="300">300 words/min</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="settings-section" id="set-data">
+          <h3>Data</h3>
+          <div class="setting">
+            <div class="setting-label">Export<small>The whole notebook as a .tar.gz archive of Markdown files.</small></div>
+            <button id="export-notebook" class="btn">Export notebook</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Import<small>A .tar.gz export (you see what changes first) or .md files.</small></div>
+            <button id="import-notes" class="btn">Import…</button>
+            <input id="import-file" type="file" accept=".gz,.tgz,.md,.markdown,application/gzip,text/markdown" multiple hidden>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Server backup<small>A full snapshot (history and database), kept on the server.</small></div>
+            <button id="create-backup" class="btn">Back up now</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Drafts<small id="drafts-info">Unsaved edits kept in this browser.</small></div>
+            <button id="clear-drafts" class="btn">Clear drafts</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Preferences<small>Restore the defaults for this browser. Folder icons and drafts are kept.</small></div>
+            <button id="reset-prefs" class="btn">Reset preferences</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-trash">
+          <h3>Trash</h3>
+          <p class="help-text">These apply to the whole notebook, for everyone who uses it — not just this browser.</p>
+          <div class="setting">
+            <div class="setting-label">Delete trashed notes
+              <small id="retention-info">Trashed notes are kept until you delete them.</small>
+            </div>
+            <select id="trash-retention" aria-label="Delete trashed notes automatically" disabled>
+              <option value="0">Never — keep until I delete them</option>
+            </select>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Clean up now<small id="trash-count">Open a notebook to see its trash.</small></div>
+            <button id="trash-purge-now" class="btn" disabled>Apply retention now</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Empty the trash<small>Deletes every trashed note in this notebook for good.</small></div>
+            <button id="trash-empty" class="btn danger" disabled>Empty trash…</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-server">
+          <h3>Server</h3>
+          <dl id="server-info" class="info-list"><dt>Status</dt><dd class="muted">Open a notebook to see its storage.</dd></dl>
+        </section>
+
+        <section class="settings-section" id="set-about">
+          <h3>About</h3>
+          <p class="help-text">noteroot stores notes as plain Markdown files on your server. Preferences on this page are saved in this browser only.</p>
+          <p class="help-text">
+            <strong>Vim mode</strong> runs real Vim (WASM) in the page. Mobile devices always use the plain-text editor.
+          </p>
+          <button id="open-help" class="btn">Open the guide</button>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script type="module" src="/app.js"></script>
 </body>

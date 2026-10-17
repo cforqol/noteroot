@@ -113,6 +113,11 @@ async function dropFile(page, name, content, mimeType) {
   });
 }
 
+// Skip the first-run welcome modal so it never covers the page under test.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('nr.helpSeen', '1'));
+});
+
 test.describe('drag-and-drop upload (local mode)', () => {
   test('text upload inserts markdown, autosaves, and renders on reload', async ({ page }) => {
     await openEditor(page);

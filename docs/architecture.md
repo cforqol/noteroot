@@ -77,6 +77,20 @@ stores base sha; cleared only on HTTP 200/201. Restorable from any tab.
 rewriting is needed. Imports use staged validation with per-item isolation
 and batched writes.
 
+**Folders** — folders are real directories, so `Tree()` lists empty ones
+too. `POST /n/{slug}/folder` is `vault.Mkdir` (parents created, hidden or
+`*.md` names refused); `PATCH` is `vault.RenameDir`, one atomic directory
+rename that refuses to move a folder into itself or onto an existing path,
+followed by `RenameIdentityPrefix` so every note's uid row follows; `DELETE`
+sends each note to the trash through the existing `Trash.Put` directory path
+(restorable one by one), then `vault.RemoveDir` prunes the now-empty
+skeleton. A folder that still holds a file (even an ignored one) is left in
+place — nothing is deleted silently. Folder routes are on the session
+(forward-auth) surface only: bulk moves/deletes are not offered to path-scoped
+tokens, whose qualifier is a single path. Each notebook has a trash‑retention
+setting (default 30 days, never = 0) stored in `notebook.toml`; the GC sweep
+removes entries past their expiry.
+
 ## 5. Read path
 
 Scanner with mtime as truth, walking `vault/` only (fsnotify as a change
@@ -112,6 +126,28 @@ Two modes. Desktop vim mode runs vim.wasm in-page (xterm.js;
 textarea fallback via circuit breaker), source view (stage 4). Phone/shell
 mode is a plain textarea with debounced autosave, crash pad, and advisory
 locks (shipped in stage 3).
+
+### Frontend structure
+
+A framework-free ES-module SPA embedded in the binary (`web/embed.go`).
+`web/app.js` is the DOM glue; everything with logic lives in `web/lib/` and
+is held to 100 % Jest coverage:
+
+| Module | Role |
+|---|---|
+| `lib/stats.js` | word/char/paragraph/reading-time counts, row:col, human sizes, `describeStatus` |
+| `lib/tree.js` | counts per folder, tree status text, path validation (`cleanRelPath`, `resolveChild`) |
+| `lib/tree-view.js` | collapsible tree renderer: icons, colors, `[n]` badges, row actions |
+| `lib/prefs.js` | browser-local theme, tree placement, folder icon/color, collapsed state |
+| `lib/notes-api.js` | note/folder/trash HTTP client (CSRF-safe JSON types) |
+| `lib/dialog.js` | promise-based form/confirm dialogs and context menu (no `window.prompt`) |
+
+Preferences are per browser (`localStorage`), never server state. Layout is
+CSS-only: `body[data-tree=left|right|hidden]` selects the grid, and below
+720 px the tree becomes an off-canvas drawer (`body.tree-open`). The status
+bar reads the textarea live; vim.wasm exposes no buffer, cursor or selection
+API, so Vim mode shows the last synced buffer (open and each save) and no
+row:col. See [ui-guide.md](ui-guide.md).
 
 ## 9. Extensibility
 

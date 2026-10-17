@@ -33,6 +33,10 @@ export class VimWasm {
     // Mock focus
   }
 
+  resize(pixelWidth, pixelHeight) {
+    this.resized = { pixelWidth, pixelHeight };
+  }
+
   isRunning() {
     return this.running;
   }

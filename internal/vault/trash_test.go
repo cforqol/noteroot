@@ -710,3 +710,93 @@ func TestTrash_restoreUncreatableParent(t *testing.T) {
 		t.Error("uncreatable parent: expected error")
 	}
 }
+
+func TestTrash_emptyRemovesEverything(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "one")
+	write(t, root, "b/c.md", "two")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	if _, err := tr.Put("a.md", WriteOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Put("b/c.md", WriteOpts{}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := tr.Empty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("Empty() removed %d, want 2", n)
+	}
+	after, err := tr.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Errorf("trash still holds %+v", after)
+	}
+	// Sidecars go with the notes, not just the notes themselves.
+	left, _ := os.ReadDir(tr.dir)
+	if len(left) != 0 {
+		t.Errorf("trash dir still holds %d files", len(left))
+	}
+
+	// Emptying an already-empty trash is a no-op, not an error.
+	if n, err := tr.Empty(); err != nil || n != 0 {
+		t.Errorf("second Empty() = %d, %v", n, err)
+	}
+}
+
+func TestTrash_deleteOneEntry(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "one")
+	write(t, root, "b.md", "two")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	if _, err := tr.Put("a.md", WriteOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Put("b.md", WriteOpts{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.Delete("a.md"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	rest, err := tr.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 1 || rest[0].Name != "b.md" {
+		t.Fatalf("remaining = %+v, want just b.md", rest)
+	}
+	if _, err := os.Stat(filepath.Join(tr.dir, "a.md.json")); !os.IsNotExist(err) {
+		t.Error("sidecar outlived its note")
+	}
+	if err := tr.Delete("a.md"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second Delete err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestTrash_deleteRejectsNamesOutsideTheTrash(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "one")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	if _, err := tr.Put("a.md", WriteOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	// Anything that is not a plain *.md name in this directory is refused
+	// before it can reach the filesystem.
+	for _, bad := range []string{"", "../a.md", "sub/a.md", "a.md.json", "a.txt", "."} {
+		if err := tr.Delete(bad); err == nil {
+			t.Errorf("Delete(%q) was accepted", bad)
+		}
+	}
+	if rest, _ := tr.List(); len(rest) != 1 {
+		t.Errorf("trash was disturbed: %+v", rest)
+	}
+}

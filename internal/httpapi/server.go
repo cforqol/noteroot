@@ -73,7 +73,13 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("PUT /n/{slug}/note", mutating(s.putNote))
 	mux.Handle("PATCH /n/{slug}/note", mutating(s.moveNote))
 	mux.Handle("DELETE /n/{slug}/note", mutating(s.deleteNote))
+	mux.Handle("POST /n/{slug}/folder", mutating(s.createFolder))
+	mux.Handle("PATCH /n/{slug}/folder", mutating(s.moveFolder))
+	mux.Handle("DELETE /n/{slug}/folder", mutating(s.deleteFolder))
 	mux.Handle("POST /n/{slug}/trash/restore", mutating(s.restoreTrash))
+	mux.Handle("DELETE /n/{slug}/trash", mutating(s.deleteTrashEntry))
+	mux.Handle("PUT /n/{slug}/trash/settings", mutating(s.putTrashSettings))
+	mux.Handle("POST /n/{slug}/trash/purge", mutating(s.purgeTrashNow))
 	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))
 	mux.Handle("DELETE /n/{slug}/lock", mutating(s.deleteLock))
 
@@ -169,18 +175,30 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 }
 
 // purgeTrash removes trash entries past retention in every notebook.
-// Failures are logged; a stuck purge must never block boot.
+// Failures are logged; a stuck purge must never block boot or a sweep.
 func (s *Server) purgeTrash() {
-	cutoff := time.Now().Add(-vault.TrashRetention)
 	for _, nb := range s.reg.List() {
-		tr := vault.OpenTrash(vault.Open(nb.Layout.Vault()), nb.Layout.Trash())
-		n, err := tr.Purge(cutoff)
-		if err != nil {
-			s.log.Warn("trash purge failed", "notebook", nb.Manifest.Slug, "err", err)
-		} else if n > 0 {
-			s.log.Info("trash purged", "notebook", nb.Manifest.Slug, "entries", n)
-		}
+		s.purgeNotebookTrash(nb)
 	}
+}
+
+// purgeNotebookTrash applies one notebook's retention and reports how
+// many entries went. A notebook set to "never" is left alone, and a
+// failure is logged rather than surfaced: losing a purge only costs
+// disk, while failing the caller would cost the user their action.
+func (s *Server) purgeNotebookTrash(nb *notebooks.Notebook) int {
+	cutoff, ok := nb.Manifest.TrashCutoff(time.Now())
+	if !ok {
+		return 0
+	}
+	tr := vault.OpenTrash(vault.Open(nb.Layout.Vault()), nb.Layout.Trash())
+	n, err := tr.Purge(cutoff)
+	if err != nil {
+		s.log.Warn("trash purge failed", "notebook", nb.Manifest.Slug, "err", err)
+	} else if n > 0 {
+		s.log.Info("trash purged", "notebook", nb.Manifest.Slug, "entries", n)
+	}
+	return n
 }
 
 func (s *Server) ListenAndServe() error { return s.http.ListenAndServe() }
