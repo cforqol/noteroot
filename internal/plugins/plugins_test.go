@@ -85,6 +85,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, name, manifest, luaSrc string) *fixture {
 	t.Helper()
+	return newFixtureWithStore(t, name, manifest, luaSrc, newFakeStore())
+}
+
+func newFixtureWithStore(t *testing.T, name, manifest, luaSrc string, store NoteStore) *fixture {
+	t.Helper()
 	root := t.TempDir()
 	layout := notebooks.NewLayout(root)
 	dir := filepath.Join(layout.Plugins(), name)
@@ -99,11 +104,14 @@ func newFixture(t *testing.T, name, manifest, luaSrc string) *fixture {
 			t.Fatal(err)
 		}
 	}
-	store := newFakeStore()
 	bus := platform.NewBus("work", testLogger())
 	mgr := NewManager(testLogger(), func(string) NoteStore { return store })
 	t.Cleanup(func() { mgr.Close(); bus.Close() })
-	return &fixture{layout: layout, store: store, bus: bus, mgr: mgr, dir: dir}
+	f := &fixture{layout: layout, bus: bus, mgr: mgr, dir: dir}
+	if fs, ok := store.(*fakeStore); ok {
+		f.store = fs
+	}
+	return f
 }
 
 func (f *fixture) ensure(t *testing.T) {
@@ -261,6 +269,118 @@ register_command("ok", function() return "fine" end)
 	// The timeout tore the VM down and rebuilt it: commands work.
 	if v, err := f.run(t, "ok", ""); err != nil || v != "fine" {
 		t.Errorf("post-rebuild command = %v, %v", v, err)
+	}
+}
+
+// blockingStore simulates a capability whose Go side does blocking
+// I/O that honors its context (an HTTP NoteStore, a locked SQLite
+// call): Read signals entry, then parks until its ctx dies.
+type blockingStore struct {
+	*fakeStore
+	started chan struct{}
+}
+
+func newBlockingStore() *blockingStore {
+	return &blockingStore{fakeStore: newFakeStore(), started: make(chan struct{}, 1)}
+}
+
+func (b *blockingStore) Read(ctx context.Context, path string) (string, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// A blocking capability call must inherit the invocation's deadline:
+// when the command timeout fires, the parked Go call is cancelled
+// right away — it must not run detached on its own capabilityTimeout
+// (5s) while the invocation mutex stays held.
+func TestCapability_blockingCallInheritsInvocationDeadline(t *testing.T) {
+	bs := newBlockingStore()
+	f := newFixtureWithStore(t, "test", `
+name = "test"
+version = "0.1.0"
+permissions = ["note:read"]
+`, `
+register_command("peek", function()
+  local n, err = note.read("a.md")
+  return { found = n ~= nil, err = err }
+end)
+`, bs)
+	f.ensure(t)
+	p := f.plugin(t)
+	p.cmdTimeout = 80 * time.Millisecond
+
+	start := time.Now()
+	_, err := f.run(t, "peek", "")
+	elapsed := time.Since(start)
+
+	select {
+	case <-bs.started:
+	default:
+		t.Fatal("command never reached the blocking capability")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	// Generous CI margin: the point is that it returned long before
+	// capabilityTimeout (5s) would have expired the detached context.
+	if elapsed > 2*time.Second {
+		t.Errorf("blocking capability held the invocation for %v, want ~cmdTimeout", elapsed)
+	}
+	// The timeout tore the VM down once; a healthy follow-up works.
+	if p.br.open() {
+		t.Error("breaker opened on a single timeout")
+	}
+}
+
+// Close() must cancel an in-flight invocation blocked inside a
+// capability instead of waiting out its timeout: stopCtx is cancelled
+// first, the parked Go call returns, and p.mu is released.
+func TestCapability_closeCancelsInFlightInvocation(t *testing.T) {
+	bs := newBlockingStore()
+	f := newFixtureWithStore(t, "test", `
+name = "test"
+version = "0.1.0"
+permissions = ["note:read"]
+`, `
+register_command("peek", function()
+  local n, err = note.read("a.md")
+  return { found = n ~= nil, err = err }
+end)
+`, bs)
+	f.ensure(t)
+	p := f.plugin(t)
+	// A long timeout: without stopCtx cancellation Close would block
+	// here for the full command timeout.
+	p.cmdTimeout = 30 * time.Second
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.run(t, "peek", "")
+		done <- err
+	}()
+	select {
+	case <-bs.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("command never reached the blocking capability")
+	}
+
+	start := time.Now()
+	p.Close()
+	closeElapsed := time.Since(start)
+	if closeElapsed > 2*time.Second {
+		t.Errorf("Close blocked for %v behind an in-flight capability", closeElapsed)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("command err = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight command did not return after Close")
 	}
 }
 

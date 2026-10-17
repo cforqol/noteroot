@@ -70,6 +70,19 @@ func newSandbox(p *Plugin) (*lua.LState, error) {
 	return L, nil
 }
 
+// capCtx derives a capability's context from the current invocation's
+// context (set by invokeLocked while it holds p.mu): a blocking Go
+// call therefore inherits the hook/command deadline and dies with the
+// shutdown signal, instead of running detached for up to
+// capabilityTimeout.
+func (p *Plugin) capCtx() (context.Context, context.CancelFunc) {
+	base := p.invCtx
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(base, capabilityTimeout)
+}
+
 // require grants permission or raises a Lua error (catchable by the
 // plugin, fatal to nothing). Qualifier narrows like API tokens: a
 // grant without one matches everything, a grant with one only matches
@@ -127,7 +140,7 @@ func (p *Plugin) luaNoteRead(L *lua.LState) int {
 		return 0
 	}
 	p.require(L, "note", "read", rel)
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	text, err := p.store.Read(ctx, rel)
 	if err != nil {
@@ -169,7 +182,7 @@ func (p *Plugin) luaNoteWrite(L *lua.LState) int {
 		return 0
 	}
 	p.require(L, "note", "write", rel)
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	origin := pluginOrigin(p.Meta.Name)
 	err := p.store.Write(ctx, WriteRequest{
@@ -192,7 +205,7 @@ func (p *Plugin) kvNamespace() string { return "plugin:" + p.Meta.Name }
 func (p *Plugin) luaKVGet(L *lua.LState) int {
 	key := L.CheckString(1)
 	p.require(L, "kv", "read", key)
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	v, ok, err := p.db.KVGet(ctx, p.kvNamespace(), key)
 	if err != nil {
@@ -211,7 +224,7 @@ func (p *Plugin) luaKVSet(L *lua.LState) int {
 	key := L.CheckString(1)
 	value := L.CheckString(2)
 	p.require(L, "kv", "write", key)
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	if err := p.db.KVSet(ctx, p.kvNamespace(), key, value); err != nil {
 		L.RaiseError("kv.set: %s", err.Error())
@@ -224,7 +237,7 @@ func (p *Plugin) luaKVSet(L *lua.LState) int {
 func (p *Plugin) luaKVDelete(L *lua.LState) int {
 	key := L.CheckString(1)
 	p.require(L, "kv", "write", key)
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	if err := p.db.KVDelete(ctx, p.kvNamespace(), key); err != nil {
 		L.RaiseError("kv.delete: %s", err.Error())
@@ -251,7 +264,7 @@ func (p *Plugin) luaSetPanel(L *lua.LState) int {
 		L.RaiseError("ui.set_panel: %s", err.Error())
 		return 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), capabilityTimeout)
+	ctx, cancel := p.capCtx()
 	defer cancel()
 	if err := p.db.KVSet(ctx, "ui.panels", name, string(data)); err != nil {
 		L.RaiseError("ui.set_panel: %s", err.Error())

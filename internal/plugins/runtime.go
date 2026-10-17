@@ -114,6 +114,12 @@ func (b *breaker) open() bool {
 // commands) — one VM, one runner. The bus never touches the VM: it
 // only enqueues into evq (non-blocking, drop-on-full), so a slow or
 // wedged plugin can delay itself and nothing else.
+//
+// invCtx is the context for the current invokeLocked call; capability
+// functions (luaNoteWrite, luaKVSet, …) derive their own contexts from
+// it so a blocking Go call inherits the outer timeout and is cancelled
+// promptly when the hook/command deadline fires — or when stopCtx is
+// cancelled by Close(). invCtx is only valid while p.mu is held.
 type Plugin struct {
 	Meta   Manifest
 	Dir    string
@@ -125,12 +131,15 @@ type Plugin struct {
 	depth    int // event depth while a hook runs; capability writes add 1
 	br       *breaker
 	loadErr  string
+	invCtx   context.Context // current invocation ctx; set by invokeLocked
 
 	hooks atomic.Pointer[map[string][]*lua.LFunction]
 
-	sendMu sync.Mutex
-	evq    chan platform.Event
-	closed bool
+	sendMu     sync.Mutex
+	evq        chan platform.Event
+	closed     bool
+	stopCtx    context.Context    // cancelled by Close()
+	stopCancel context.CancelFunc // cancels stopCtx
 
 	loadTimeout time.Duration
 	hookTimeout time.Duration
@@ -143,6 +152,7 @@ type Plugin struct {
 }
 
 func newPlugin(f Found, grants []platform.Grant, slug string, store NoteStore, db *platform.DB, log *slog.Logger) *Plugin {
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &Plugin{
 		Meta:        f.Manifest,
 		Dir:         f.Dir,
@@ -153,6 +163,9 @@ func newPlugin(f Found, grants []platform.Grant, slug string, store NoteStore, d
 		loadTimeout: DefaultLoadTimeout,
 		hookTimeout: DefaultHookTimeout,
 		cmdTimeout:  DefaultCommandTimeout,
+		invCtx:      context.Background(), // safe zero: only used while mu is held
+		stopCtx:     stopCtx,
+		stopCancel:  stopCancel,
 		log:         log.With("plugin", f.Manifest.Name, "notebook", slug),
 		store:       store,
 		db:          db,
@@ -189,11 +202,14 @@ func (p *Plugin) resetLocked() error {
 	}
 	p.L = L
 
-	ctx, cancel := context.WithTimeout(context.Background(), p.loadTimeout)
+	ctx, cancel := context.WithTimeout(p.stopCtx, p.loadTimeout)
 	defer cancel()
+	prev := p.invCtx
+	p.invCtx = ctx // entry-script capabilities inherit the load deadline
 	L.SetContext(ctx)
 	err = L.DoFile(p.entryPath())
 	L.SetContext(context.Background())
+	p.invCtx = prev
 	if err != nil {
 		p.loadErr = err.Error()
 		p.L.Close()
@@ -216,6 +232,12 @@ func (p *Plugin) entryPath() string {
 // invokeLocked is the single path every VM execution takes: breaker
 // check, context deadline, panic recovery, teardown-and-rebuild on
 // timeout or panic, breaker accounting. Caller holds p.mu.
+//
+// The invocation context is derived from p.stopCtx so that Close()
+// cancels it immediately, and from the per-call timeout so that Lua's
+// context-poll and capability Go calls both respect it. The live
+// context is published to p.invCtx while the call runs so capability
+// functions can derive their own child contexts from it.
 func (p *Plugin) invokeLocked(timeout time.Duration, what string, fn func(L *lua.LState) (lua.LValue, error)) (lua.LValue, error) {
 	if p.L == nil {
 		return lua.LNil, ErrNotLoaded
@@ -223,8 +245,13 @@ func (p *Plugin) invokeLocked(timeout time.Duration, what string, fn func(L *lua
 	if !p.br.allow() {
 		return lua.LNil, ErrBreakerOpen
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Derive from stopCtx so Close() unblocks a Lua call that is stuck
+	// inside a blocking Go capability (note.write, kv.set, …).
+	ctx, cancel := context.WithTimeout(p.stopCtx, timeout)
 	defer cancel()
+
+	p.invCtx = ctx
+	defer func() { p.invCtx = context.Background() }()
 
 	var (
 		val      = lua.LNil
@@ -246,23 +273,35 @@ func (p *Plugin) invokeLocked(timeout time.Duration, what string, fn func(L *lua
 	}
 
 	timedOut := ctx.Err() != nil
-	if timedOut || panicked {
+	// If the plugin is shutting down (stopCtx cancelled), do not tear
+	// the VM down — it is about to be closed cleanly by Close().
+	stopping := p.stopCtx.Err() != nil
+	if (timedOut || panicked) && !stopping {
 		p.br.fail()
 		p.log.Warn("plugin invocation torn down",
 			"what", what, "timeout", timedOut, "panic", panicked, "err", err)
 		if rErr := p.resetLocked(); rErr != nil {
 			p.log.Error("plugin reload failed", "err", rErr, "load_error", p.loadErr)
 		}
-		if timedOut {
-			return lua.LNil, fmt.Errorf("%s: %w", what, context.DeadlineExceeded)
+	}
+	if timedOut {
+		if stopping {
+			return lua.LNil, fmt.Errorf("%s: %w", what, context.Canceled)
 		}
+		return lua.LNil, fmt.Errorf("%s: %w", what, context.DeadlineExceeded)
+	}
+	if panicked {
 		return lua.LNil, fmt.Errorf("%s: %v", what, err)
 	}
 	if err != nil {
-		p.br.fail()
+		if !stopping {
+			p.br.fail()
+		}
 		return lua.LNil, fmt.Errorf("%s: %w", what, err)
 	}
-	p.br.success()
+	if !stopping {
+		p.br.success()
+	}
 	return val, nil
 }
 
@@ -415,6 +454,13 @@ func (p *Plugin) Close() {
 	p.closed = true
 	close(p.evq)
 	p.sendMu.Unlock()
+
+	// Cancel first: an in-flight invocation blocked inside a capability
+	// Go call sees its derived context die and returns, releasing p.mu
+	// promptly instead of making Close wait out capabilityTimeout.
+	if p.stopCancel != nil {
+		p.stopCancel()
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
