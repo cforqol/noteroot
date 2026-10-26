@@ -40,6 +40,18 @@ type Config struct {
 	QuotaBytes int64
 	// GCInterval is how often the background GC sweep runs (e.g. "24h").
 	GCInterval string
+	// ReadTimeout is the maximum duration for reading the entire request, including the body.
+	// Defaults to "10s" if not set.
+	ReadTimeout string
+	// WriteTimeout is the maximum duration for writing the response.
+	// Defaults to "10s" if not set.
+	WriteTimeout string
+	// IdleTimeout is the maximum amount of time to wait for the next request when keep-alive is enabled.
+	// Defaults to "60s" if not set.
+	IdleTimeout string
+	// MaxHeaderBytes is the maximum size of the request headers.
+	// Defaults to 1 << 16 (65536) if not set.
+	MaxHeaderBytes int
 }
 
 // S3Enabled reports whether object storage is configured.
@@ -66,6 +78,11 @@ func Load() (Config, error) {
 
 		QuotaBytes: envInt64("NOTEROOT_QUOTA_BYTES", 0),
 		GCInterval: env("NOTEROOT_GC_INTERVAL", "24h"),
+
+		ReadTimeout:    env("NOTEROOT_READ_TIMEOUT", "10s"),
+		WriteTimeout:   env("NOTEROOT_WRITE_TIMEOUT", "10s"),
+		IdleTimeout:    env("NOTEROOT_IDLE_TIMEOUT", "60s"),
+		MaxHeaderBytes: envInt("NOTEROOT_MAX_HEADER_BYTES", 1<<16),
 	}
 	if !strings.HasPrefix(c.DataDir, "/") {
 		return c, fmt.Errorf("NOTEROOT_DATA_DIR must be absolute, got %q", c.DataDir)
@@ -115,6 +132,15 @@ func Load() (Config, error) {
 func envInt64(k string, def int64) int64 {
 	if v, ok := os.LookupEnv(k); ok && v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envInt(k string, def int) int {
+	if v, ok := os.LookupEnv(k); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
 	}

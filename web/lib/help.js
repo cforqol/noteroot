@@ -8,17 +8,22 @@
 
 export const SHORTCUTS = [
   { keys: ['Ctrl/⌘', 'S'], action: 'Save now (while editing)' },
+  { keys: ['Ctrl/⌘', 'Z'], action: 'Undo (plain-text editor)' },
+  { keys: ['Ctrl/⌘', 'Shift', 'Z'], action: 'Redo (plain-text editor)' },
+  { keys: ['Ctrl/⌘', 'Shift', 'N'], action: "Open today's daily note" },
   { keys: ['E'], action: 'Edit the open note' },
   { keys: ['N'], action: 'New note' },
+  { keys: ['J'], action: 'Read the next note' },
+  { keys: ['K'], action: 'Read the previous note' },
   { keys: ['/'], action: 'Search' },
   { keys: ['Ctrl/⌘', 'K'], action: 'Search' },
   { keys: ['?'], action: 'Open this guide' },
-  { keys: ['Esc'], action: 'Close a dialog, menu or panel' },
+  { keys: ['Esc'], action: 'Close a dialog, menu or panel; in the plain-text editor, save and close' },
 ];
 
 export const QUICK_START = [
   'Pick a notebook from the list at the top.',
-  'Create a note with **+ Note** (or press {N}). Typing `ideas/todo` puts it in a new “ideas” folder.',
+  'Create a note with **+ Note** (or press {N}). Typing `ideas/todo` puts it in a new "ideas" folder.',
   'Write in Markdown. **Edit** (or {E}) opens the editor; changes save by themselves when you pause and before you switch notes. {Ctrl/⌘}+{S} saves right away.',
   'Organize with the **⋯** button or a right-click on any note or folder: **Rename…**, **Move…**, **Delete…**.',
   'Find anything with the search box (press {/}).',
@@ -59,7 +64,7 @@ export const HELP_SECTIONS = [
       'Click a folder to fold it; the number beside it counts every note inside.',
       '**Rename…** changes only the name. **Move…** puts it in another folder, or a new one.',
       'Give a folder an icon and a color with **Icon & color…** (kept in this browser).',
-      'Deleted notes go to the trash (🗑 above the tree) and can be restored to where they were.',
+      'Deleted notes go to the trash (🗑 in the sidebar toolbar) and can be restored to where they were.',
     ],
   },
   {
@@ -67,7 +72,7 @@ export const HELP_SECTIONS = [
     title: 'Import, export & backups',
     items: [
       '**Settings → Data → Export** downloads the whole notebook as a `.tar.gz` archive.',
-      '**Import** takes such an archive (you see what will change before anything does) or `.md` files, which go into a folder you pick. You can also drop files onto the tree.',
+      '**Import** takes such an archive (you see what will change before anything does) or `.md` files, which go into a folder you pick. You can also drop files onto the sidebar.',
       'Download a single note as `.md` from its **⋯** menu.',
       '**Back up now** keeps a full snapshot (history and database) on the server.',
     ],
@@ -76,7 +81,8 @@ export const HELP_SECTIONS = [
     id: 'layout',
     title: 'Layout & privacy',
     items: [
-      'Put the tree on the left or right, or hide it with {☰}. On phones it slides in from the side.',
+      'Put the sidebar on the left or right, or hide it with {☰}. On phones it slides in from the side. Ctrl/⌘-click notes to pick several, Shift-click for a range, then Delete in the bar above the list.',
+      '◫ Split view puts a second pane next to the note. Open a note there from its **⋯** menu (**Open in split pane**), edit it in plain text and swap the panes with **⇄**.',
       'Theme, text size, reading width, the status bar and other preferences are stored in this browser only.',
     ],
   },
@@ -189,17 +195,39 @@ export function isTypingTarget(target) {
 /**
  * Map a keydown to an app action: 'save' | 'search' | 'help' | 'edit' |
  * 'new-note', or null. Single-key shortcuts never fire while typing.
+ *
+ * `bindings` (optional) overrides the built-in defaults; when omitted a
+ * small built-in map is used so the guide and tests stay self-contained.
+ * Both 'search' and 'search-mod' resolve to the 'search' action.
  */
-export function shortcutFor(e, { typing = false } = {}) {
+export function shortcutFor(e, { typing = false, bindings } = {}) {
   const key = String(e.key || '');
+  if (!key) return null;
   const lower = key.toLowerCase();
-  const mod = e.ctrlKey || e.metaKey;
-  if (mod && !e.altKey && !e.shiftKey && lower === 's') return 'save';
-  if (mod && !e.altKey && !e.shiftKey && lower === 'k') return 'search';
-  if (typing || mod || e.altKey) return null;
-  if (key === '?') return 'help';
-  if (key === '/') return 'search';
-  if (lower === 'e') return 'edit';
-  if (lower === 'n') return 'new-note';
+  const mod = Boolean(e.ctrlKey || e.metaKey);
+  const map = bindings || DEFAULT_SHORTCUT_BINDINGS;
+  for (const [action, spec] of Object.entries(map)) {
+    if (!spec) continue;
+    const bindKey = String(spec.key).toLowerCase();
+    if (lower !== bindKey) continue;
+    if (mod !== Boolean(spec.ctrl)) continue;
+    if (Boolean(e.altKey) !== Boolean(spec.alt)) continue;
+    if (Boolean(e.shiftKey) !== Boolean(spec.shift)) continue;
+    if (typing && !mod) continue;
+    return action === 'search-mod' ? 'search' : action;
+  }
   return null;
 }
+
+/** Built-in fallback bindings used when no user bindings are supplied. */
+const DEFAULT_SHORTCUT_BINDINGS = {
+  save: { key: 's', ctrl: true },
+  'search-mod': { key: 'k', ctrl: true },
+  help: { key: '?' },
+  search: { key: '/' },
+  edit: { key: 'e' },
+  'new-note': { key: 'n' },
+  undo: { key: 'z', ctrl: true },
+  redo: { key: 'z', ctrl: true, shift: true },
+  'daily-note': { key: 'n', ctrl: true, shift: true },
+};

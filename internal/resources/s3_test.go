@@ -203,7 +203,7 @@ func TestS3Store_invalidSHA(t *testing.T) {
 func TestS3Store_touchAndGC_noop(t *testing.T) {
 	s, _ := NewS3Store(testS3Config())
 	s.Touch("anything") // no panic
-	n, err := s.GC(time.Hour)
+	n, err := s.GC(time.Hour, nil)
 	if err != nil || n != 0 {
 		t.Errorf("GC = (%d, %v), want (0, nil)", n, err)
 	}

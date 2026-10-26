@@ -29,7 +29,7 @@ test.beforeAll(async () => {
       NOTEROOT_LISTEN: `127.0.0.1:${PORT}`,
       NOTEROOT_AUTH_MODE: 'none',
     },
-    stdio: 'pipe',
+    stdio: 'ignore',
   });
 
   // Wait for server to be ready by polling the endpoint
@@ -76,7 +76,7 @@ test.beforeEach(async ({ page }) => {
 test.describe('Page loads and navigation', () => {
   test('loads the notebook UI', async ({ page }) => {
     await page.goto(BASE);
-    await expect(page.locator('.brand')).toHaveText('noteroot');
+    await expect(page.locator('.brand')).toContainText('noteroot');
     await expect(page.locator('#notebooks')).toBeVisible();
   });
 

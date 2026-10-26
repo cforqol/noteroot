@@ -211,7 +211,13 @@ func WithID(src []byte, id string) []byte {
 		}
 		return append([]byte(header), body...)
 	}
-	lines := strings.Split(string(block), "\n")
+	// The block ends with its last line's newline; splitting that keeps
+	// an empty final piece, which joined back as a blank line before the
+	// closing delimiter. Blank lines the author wrote are kept.
+	var lines []string
+	if text := strings.TrimSuffix(string(block), "\n"); text != "" {
+		lines = strings.Split(text, "\n")
+	}
 	replaced := false
 	for i, ln := range lines {
 		// Only match top-level keys: the line must start at column 0.

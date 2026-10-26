@@ -15,6 +15,7 @@ const (
 	StatePending   = "pending"
 	StateCommitted = "committed"
 	StateAborted   = "aborted"
+	StateDeleted   = "deleted"
 )
 
 // JournalEntry is one row of the upload journal.
@@ -175,6 +176,56 @@ func (j *Journal) List(state string, limit int) ([]JournalEntry, error) {
 	return out, rows.Err()
 }
 
+// MIMEBySHA returns the recorded MIME of committed uploads, keyed by
+// blob sha, for the given shas. Unlike List it is not capped: serving a
+// blob must find its MIME however many uploads came after it. Shas with
+// no committed entry (or an empty MIME) are absent from the result; when
+// a blob was uploaded more than once the newest entry wins.
+func (j *Journal) MIMEBySHA(shas ...string) (map[string]string, error) {
+	out := make(map[string]string, len(shas))
+	const chunk = 500
+	for start := 0; start < len(shas); start += chunk {
+		end := start + chunk
+		if end > len(shas) {
+			end = len(shas)
+		}
+		part := shas[start:end]
+		marks := make([]byte, 0, len(part)*2)
+		args := make([]any, 0, len(part)+1)
+		args = append(args, StateCommitted)
+		for i, s := range part {
+			if i > 0 {
+				marks = append(marks, ',')
+			}
+			marks = append(marks, '?')
+			args = append(args, s)
+		}
+		rows, err := j.db.Query(`
+			SELECT sha, mime FROM upload_journal
+			WHERE state = ? AND mime != '' AND sha IN (`+string(marks)+`)
+			ORDER BY created_at DESC`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("journal mime lookup: %w", err)
+		}
+		for rows.Next() {
+			var sha, mime string
+			if err := rows.Scan(&sha, &mime); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if _, seen := out[sha]; !seen {
+				out[sha] = mime
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return out, nil
+}
+
 // Pending returns all entries still in StatePending — the crash-recovery set.
 func (j *Journal) Pending() ([]JournalEntry, error) {
 	return j.List(StatePending, 0)
@@ -237,6 +288,22 @@ func (j *Journal) GC(olderThan time.Duration) (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// MarkDeleted transitions all committed entries with a given SHA to the
+// deleted state. It is a soft delete: the audit trail is kept, but the
+// entries are excluded from the default listing. It is a no-op when no
+// committed entry has that SHA (returns nil).
+func (j *Journal) MarkDeleted(sha string) error {
+	_, err := j.db.Exec(`
+		UPDATE upload_journal
+		SET state = ?, updated_at = ?
+		WHERE sha = ? AND state = ?`,
+		StateDeleted, time.Now().UnixMilli(), sha, StateCommitted)
+	if err != nil {
+		return fmt.Errorf("journal mark deleted: %w", err)
+	}
+	return nil
 }
 
 // TotalStoredBytes returns the sum of sizes for unique committed blobs.
@@ -354,6 +421,34 @@ func (j *Journal) CountByState() (map[string]int, error) {
 			return nil, err
 		}
 		out[state] = n
+	}
+	return out, rows.Err()
+}
+
+// LiveSHAs returns the set of SHAs a store sweep must never remove:
+// every blob with a committed journal entry. Soft-deleted entries are
+// not live — MarkDeleted exists precisely so a later GC can take the
+// blob — and pending/aborted entries hold no committed sha.
+//
+// This is the reachability set Store.GC sweeps against. An age-based
+// sweep without it deletes every referenced blob, which is exactly the
+// bug that emptied a real notebook's store.
+func (j *Journal) LiveSHAs() (map[string]bool, error) {
+	rows, err := j.db.Query(
+		`SELECT DISTINCT sha FROM upload_journal WHERE state = ? AND sha != ''`,
+		StateCommitted,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]bool{}
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
+			return nil, err
+		}
+		out[sha] = true
 	}
 	return out, rows.Err()
 }

@@ -6,7 +6,7 @@
  */
 import { jest } from '@jest/globals';
 import {
-  VimEditor, vimFilePath, vimStartArgs, READ_COMMAND, QUIT_GRACE_MS, RESIZE_DEBOUNCE_MS,
+  VimEditor, vimFilePath, vimStartArgs, VIMRC_PATH, READ_COMMAND, QUIT_GRACE_MS, RESIZE_DEBOUNCE_MS,
 } from '../../lib/vim-editor.js';
 import { recordVimFailure, getVimModeState, shouldUseVim, resetVimCircuitBreaker } from '../../lib/vim-mode.js';
 
@@ -97,6 +97,32 @@ test('vimFilePath / vimStartArgs', () => {
   expect(args).toContain('autocmd VimEnter * export');
   expect(args).toContain('autocmd BufWritePost * export');
   expect(args.join(' ')).toMatch(/noswapfile.*hidden/);
+  expect(args.join(' ')).not.toContain('source');
+  const withRc = vimStartArgs('/tmp/x.md', true);
+  expect(withRc.join(' ')).toContain(`source ${VIMRC_PATH}`);
+  expect(withRc[withRc.length - 1]).toBe('/tmp/x.md');
+});
+
+describe('vimrc', () => {
+  test('a set vimrc is passed as a file and sourced, after the file arg', async () => {
+    const ed = editor({ getVimrc: () => 'set number\n' });
+    await ed.open('a.md', 'x');
+    const v = last();
+    expect(v.startOpts.files).toEqual({
+      '/tmp/a.md': 'x',
+      [VIMRC_PATH]: 'set number\n',
+    });
+    expect(v.startOpts.cmdArgs.join(' ')).toContain(`silent! source ${VIMRC_PATH}`);
+    expect(v.startOpts.cmdArgs.join(' ')).not.toContain('set number');
+  });
+
+  test('a blank vimrc is not passed at all', async () => {
+    const ed = editor({ getVimrc: () => '   \n' });
+    await ed.open('a.md', 'x');
+    const v = last();
+    expect(v.startOpts.files).toEqual({ '/tmp/a.md': 'x' });
+    expect(v.startOpts.cmdArgs.join(' ')).not.toContain('source');
+  });
 });
 
 describe('open', () => {
@@ -169,18 +195,20 @@ describe('resizing the canvas', () => {
     els.canvas.getBoundingClientRect = () => ({ width, height });
   }
 
-  test('resizeTo drives the backing store and tells Vim, once per size', async () => {
+  test('resizeTo truncates like vim.wasm, drives the backing store, once per size', async () => {
     const ed = editor();
     await ed.open('a.md', 'x');
     sizeCanvas(640, 480);
 
+    // Fractional sizes floor (matching vim.wasm's own measurement), they
+    // do not round up.
     expect(ed.resizeTo(640.4, 480.5)).toBe(true);
     expect(els.canvas.width).toBe(640);
-    expect(els.canvas.height).toBe(481);
-    expect(last().resizes).toEqual([[640, 481]]);
+    expect(els.canvas.height).toBe(480);
+    expect(last().resizes).toEqual([[640, 480]]);
     // Same size again is a no-op, so a chatty observer cannot spam the worker.
-    expect(ed.resizeTo(640, 481)).toBe(false);
-    expect(last().resizes).toEqual([[640, 481]]);
+    expect(ed.resizeTo(640, 480)).toBe(false);
+    expect(last().resizes).toEqual([[640, 480]]);
   });
 
   test('scales the backing store by the device pixel ratio', async () => {
@@ -332,6 +360,25 @@ describe('events from Vim', () => {
     expect(dirty).toHaveBeenCalledTimes(1);
   });
 
+  test('a bare modifier keydown never reaches listeners behind Vim', async () => {
+    const ed = editor();
+    await ed.open('a.md', 'x');
+    // vim.wasm attaches its own listener on the input; anything it sees
+    // after ours must not include a modifier-only key (Shift would be
+    // decoded as Ctrl-P and move the cursor up a line).
+    const seen = [];
+    els.input.addEventListener('keydown', (e) => seen.push(e.key));
+    for (const key of ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock']) {
+      els.input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    }
+    els.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));
+    expect(seen).toEqual(['a']);
+    // The guard goes away with the session.
+    ed.close();
+    els.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true, cancelable: true }));
+    expect(seen).toEqual(['a', 'Shift']);
+  });
+
   test('a quit closes the session and fails a pending read', async () => {
     const ed = editor();
     const closes = [];
@@ -386,16 +433,55 @@ describe('replace, insert, focus, close', () => {
     expect(els.container.hidden).toBe(true);
   });
 
+  // The insert first reads the live buffer (to find where a frontmatter
+  // block ends), so the double answers that read with `buffer`.
+  async function insertInto(buffer, text = '![img](/r/1)') {
+    const ed = editor();
+    await ed.open('a.md', buffer);
+    const v = last();
+    v.onCmd = (cmd) => { if (cmd === READ_COMMAND) setTimeout(() => v.export(buffer), 0); };
+    const ok = await ed.insert(text);
+    const cmds = v.cmds.slice(1); // drop the read
+    for (const c of cmds) expect(c.length).toBeLessThan(126); // vim.wasm's command-line cap
+    expect(cmds.at(-1)).toBe('silent! bwipeout! /tmp/.nr-insert');
+    return { ok, v, cmds: cmds.slice(0, -1) };
+  }
+
   test('insert stages the text as a file and reads it below the cursor', async () => {
     const ed = editor();
     expect(await ed.insert('nope')).toBe(false); // not running
-    await ed.open('a.md', 'x');
-    const v = last();
-    expect(await ed.insert('![img](/r/1)')).toBe(true);
+    const { ok, v, cmds } = await insertInto('plain note\n');
+    expect(ok).toBe(true);
     expect(v.drops).toEqual([['tmp/.nr-insert', '![img](/r/1)']]);
-    expect(v.cmds[v.cmds.length - 1]).toMatch(/^silent buffer # \| silent read \/tmp\/\.nr-insert/);
+    expect(cmds).toEqual(['silent buffer # | silent read /tmp/.nr-insert']);
     v.dropFails = true;
     expect(await ed.insert('again')).toBe(false);
+  });
+
+  test('insert never lands inside a leading frontmatter block', async () => {
+    // vim.wasm has no +eval, so the block's last line is computed here and
+    // :global with \%# picks whichever range holds the cursor.
+    for (const buffer of ['---\ntitle: x\n---\nbody\n', '---\r\ntitle: x\r\n---\r\nbody', '---\ntitle: x\n---']) {
+      const { ok, cmds } = await insertInto(buffer);
+      expect(ok).toBe(true);
+      expect(cmds).toEqual([
+        'silent buffer #',
+        'silent! 4,$g/\\%#/read /tmp/.nr-insert',
+        'silent! 1,3g/\\%#/3read /tmp/.nr-insert',
+      ]);
+    }
+    // Only a block at the very top counts; none of the commands needs +eval.
+    const { cmds } = await insertInto('intro\n---\nnot: frontmatter\n---\n');
+    expect(cmds).toEqual(['silent buffer # | silent read /tmp/.nr-insert']);
+    for (const c of cmds) expect(c).not.toMatch(/\bexe\b|getline|line\(/);
+  });
+
+  test('insert fails cleanly when the buffer cannot be read', async () => {
+    const ed = editor({ readTimeout: 10 });
+    await ed.open('a.md', 'x'); // the double never answers the read
+    const v = last();
+    expect(await ed.insert('md')).toBe(false);
+    expect(v.drops).toEqual([]);
   });
 
   test('focus forwards to Vim and is a no-op without it', async () => {

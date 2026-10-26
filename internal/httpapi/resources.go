@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"noteroot/internal/notebooks"
 	"noteroot/internal/resources"
 	"noteroot/internal/state"
+	"noteroot/internal/vault"
 )
 
 // resourcePolicy returns the policy applied to uploads. It reads limits
@@ -264,7 +269,17 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// resourceMaterializeLimit caps how large a blob may be to materialize
+// for Range serving. Uploads are ≤50 MiB (DefaultPolicy), so normal
+// traffic never falls back to whole-body streaming.
+const resourceMaterializeLimit = 100 << 20
+
 // getResource serves GET /n/{slug}/resources/{sha}.
+//
+// The blob is spooled to a temp file and handed to http.ServeContent so
+// Range/If-Range requests get 206 responses — HTML5 media players need
+// seeking. Content is immutable (content-addressed), so ETag+immutable
+// caching stays correct regardless of Range handling.
 func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 	nb, ok := s.reg.Get(r.PathValue("slug"))
 	if !ok {
@@ -290,28 +305,39 @@ func (s *Server) getResource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = rc.Close() }()
 
-	// Look up the recorded MIME from the journal's committed entries.
+	// Look up the recorded MIME from the journal's committed entries. A
+	// direct lookup, not List: List is capped, and a blob outside the
+	// newest rows would be served as octet-stream (+nosniff), which the
+	// browser will neither draw as an image nor play as audio.
 	mime := "application/octet-stream"
-	if entries, err := journal.List(resources.StateCommitted, 0); err == nil {
-		for _, e := range entries {
-			if e.SHA == sha && e.MIME != "" {
-				mime = e.MIME
-				break
-			}
-		}
+	if m, err := journal.MIMEBySHA(sha); err == nil && m[sha] != "" {
+		mime = m[sha]
 	}
 
 	size, _ := store.Size(sha)
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("ETag", `"`+sha+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if mime == "image/svg+xml" {
 		// Legacy blobs from before SVG uploads were rejected: never
 		// render inline, or embedded script runs same-origin.
 		w.Header().Set("Content-Disposition", `attachment; filename="`+sha+`.svg"`)
 	}
+
+	if size >= 0 && size <= resourceMaterializeLimit {
+		if tmp, terr := os.CreateTemp("", "nr-resource-*"); terr == nil {
+			defer func() { _ = tmp.Close(); _ = os.Remove(tmp.Name()) }()
+			if _, cerr := io.Copy(tmp, rc); cerr == nil {
+				_, _ = tmp.Seek(0, io.SeekStart)
+				// Handles Range → 206, If-None-Match → 304, Content-Length.
+				http.ServeContent(w, r, sha, time.Time{}, tmp)
+				return
+			}
+		}
+	}
+	// Fallback: oversized blob or temp-file trouble — stream whole.
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
 }
@@ -387,7 +413,7 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sha := strings.ToLower(r.PathValue("sha"))
-	store, _, cleanup, err := s.openResources(r.Context(), nb)
+	store, journal, cleanup, err := s.openResources(r.Context(), nb)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
 		return
@@ -402,6 +428,9 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete failed"})
 		return
 	}
+	// Soft-mark in the journal so the audit trail is preserved.
+	_ = journal.MarkDeleted(sha)
+	s.emit(r, nb, "resource.delete", sha, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": sha})
 }
 
@@ -625,4 +654,62 @@ func (s *Server) presignRead(w http.ResponseWriter, r *http.Request) {
 		"url":       readURL,
 		"expiresIn": int(ttl.Seconds()),
 	})
+}
+
+// listResourceRefs serves GET /n/{slug}/resources/{sha}/refs.
+//
+// Scans all markdown files in the notebook vault for any occurrence of
+// the given SHA and returns their vault-relative paths. The scan is
+// bounded by a 3-second context timeout and capped at 2000 files to
+// avoid blocking under very large vaults. Refs are lazily loaded by the
+// Attachments settings page.
+func (s *Server) listResourceRefs(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	sha := strings.ToLower(r.PathValue("sha"))
+	if !resources.ValidSHA(sha) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sha"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	v := vault.Open(nb.Layout.Vault())
+	needle := []byte(sha)
+	var refs []string
+	scanned := 0
+	const maxFiles = 2000
+
+	_ = filepath.WalkDir(v.Root(), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || ctx.Err() != nil {
+			return nil
+		}
+		if scanned >= maxFiles {
+			return filepath.SkipAll
+		}
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+			return nil
+		}
+		scanned++
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		if bytes.Contains(data, needle) {
+			rel, rerr := filepath.Rel(v.Root(), path)
+			if rerr == nil {
+				refs = append(refs, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+
+	if refs == nil {
+		refs = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"refs": refs})
 }

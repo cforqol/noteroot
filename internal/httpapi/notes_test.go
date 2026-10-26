@@ -99,6 +99,28 @@ func TestNote_rendersAndParsesFrontmatter(t *testing.T) {
 	}
 }
 
+func TestNote_irregularTableKeepsEveryCell(t *testing.T) {
+	// A body row wider than the header must keep its extra cells in the
+	// HTML the read view renders.
+	src := "| Name | Qty |\n|---|---|\n| apple | 3 | 4 |\n"
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": src}))
+	rec := get(t, srv, notePath("n.md"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		HTML string `json:"html"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<table>", "<td>3</td>", "<td>4</td>", "<td>apple</td>"} {
+		if !strings.Contains(body.HTML, want) {
+			t.Errorf("html missing %q:\n%s", want, body.HTML)
+		}
+	}
+}
+
 func TestNote_malformedFrontmatterStillOpens(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": "---\n: : [\n---\nbody text"}))
 	rec := get(t, srv, notePath("n.md"), nil)
@@ -339,6 +361,23 @@ func TestRaw_etagMatchesNote(t *testing.T) {
 	if noteRec.Header().Get("ETag") != rawRec.Header().Get("ETag") {
 		t.Errorf("ETag mismatch: note=%q raw=%q (must hash the same file bytes)",
 			noteRec.Header().Get("ETag"), rawRec.Header().Get("ETag"))
+	}
+}
+
+// Last-Modified alone would let browsers reuse a cached note heuristically
+// (10% of its age) — right after a write that served the old text and
+// sha, and the next save hit a spurious 412. Every note read and JSON
+// answer must be revalidated before reuse.
+func TestNoteReads_requireRevalidation(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": "# Hi\n"}))
+	for _, target := range []string{notePath("n.md"), "/n/work/raw?path=n.md", "/n/work/tree"} {
+		rec := get(t, srv, target, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", target, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
+			t.Errorf("%s: Cache-Control = %q, want %q", target, got, "private, no-cache")
+		}
 	}
 }
 

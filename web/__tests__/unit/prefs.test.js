@@ -3,9 +3,15 @@ import {
   getPlacement, setPlacement, togglePlacement, applyPlacement,
   getDecorations, setDecoration, moveFolderPrefs, removeFolderPrefs,
   getCollapsed, setCollapsed, replaceCollapsed,
+  getHomepage, setHomepage,
   SETTINGS, getSetting, setSetting, getSettings,
   STATUS_FIELDS, getStatusFields, setStatusField,
   isHelpSeen, markHelpSeen, resetPreferences, listDrafts, clearDrafts,
+  exportPreferences, importPreferences,
+  getTagsCollapsed, setTagsCollapsed, getVimrc, setVimrc,
+  getBookmarks, addBookmark, removeBookmark, toggleBookmark,
+  DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, getKeybindings, setKeybinding,
+  resetKeybindings, matchesBinding,
 } from '../../lib/prefs.js';
 
 const broken = {
@@ -140,6 +146,22 @@ describe('collapsed folders', () => {
     localStorage.setItem('nr.treeCollapsed', JSON.stringify({ nb: 'text' }));
     expect(getCollapsed('nb').size).toBe(0);
     expect([...setCollapsed('nb', 'z', true)]).toEqual(['z']);
+  });
+});
+
+describe('homepage', () => {
+  test('unset by default; set / get / clear per notebook', () => {
+    expect(getHomepage('nb')).toBe('');
+    expect(setHomepage('nb', 'Home.md')).toBe('Home.md');
+    expect(getHomepage('nb')).toBe('Home.md');
+    // Trims; notebooks are independent.
+    expect(setHomepage('nb', '  dash/start.md  ')).toBe('dash/start.md');
+    expect(getHomepage('other')).toBe('');
+    // Empty clears; junk storage reads as unset.
+    expect(setHomepage('nb', '')).toBe('');
+    expect(getHomepage('nb')).toBe('');
+    localStorage.setItem('nr.homepage', JSON.stringify({ nb: 42 }));
+    expect(getHomepage('nb')).toBe('');
   });
 });
 
@@ -294,3 +316,258 @@ describe('drafts', () => {
   });
 });
 
+
+describe('exportPreferences', () => {
+  test('is a tagged snapshot of whatever this browser has stored', () => {
+    const data = exportPreferences();
+    expect(data).toEqual({ app: 'noteroot', kind: 'preferences', version: 1, prefs: {} });
+
+    setTheme('dark');
+    setPlacement('right');
+    setHomepage('work', 'work/home.md');
+    const out = exportPreferences();
+    expect(out.prefs['nr.theme']).toBe('dark');
+    expect(out.prefs['nr.treePlacement']).toBe('right');
+    expect(out.prefs['nr.homepage']).toEqual({ work: 'work/home.md' });
+    expect(out.version).toBe(1);
+  });
+
+  test('never includes drafts or unrelated keys', () => {
+    setTheme('light');
+    localStorage.setItem('nr.pad.work.secret.md', JSON.stringify({ savedAt: 1, content: 'draft' }));
+    localStorage.setItem('nr.somethingelse', 'x');
+    const { prefs } = exportPreferences();
+    expect(prefs['nr.pad.work.secret.md']).toBeUndefined();
+    expect(prefs['nr.somethingelse']).toBeUndefined();
+    expect(prefs['nr.theme']).toBe('light');
+  });
+});
+
+describe('importPreferences', () => {
+  const file = (overrides = {}) => ({
+    app: 'noteroot',
+    kind: 'preferences',
+    version: 1,
+    prefs: { 'nr.theme': 'dark', 'nr.fontSize': 'large' },
+    ...overrides,
+  });
+
+  test('round-trips through export', () => {
+    setTheme('dark');
+    setSetting('fontSize', 'large');
+    setHomepage('work', 'index.md');
+    localStorage.setItem('nr.pad.keep.md', JSON.stringify({ savedAt: 7 }));
+
+    const data = exportPreferences();
+    localStorage.clear();
+    localStorage.setItem('nr.pad.keep.md', JSON.stringify({ savedAt: 7 }));
+
+    const res = importPreferences(data);
+    expect(res).toEqual({ imported: 3, skipped: 0, error: null });
+    expect(getTheme()).toBe('dark');
+    expect(getSetting('fontSize')).toBe('large');
+    expect(getHomepage('work')).toBe('index.md');
+    expect(localStorage.getItem('nr.pad.keep.md')).toBeTruthy(); // drafts untouched
+  });
+
+  test('only allowlisted keys are written; junk is counted, not stored', () => {
+    const data = file();
+    data.prefs['nr.pad.work.evil.md'] = 'draft-poison';
+    data.prefs['nr.unknown'] = 'x';
+    data.prefs['sessionish'] = { a: 1 };
+    localStorage.setItem('nr.pad.work.evil.md', 'original');
+
+    const res = importPreferences(data);
+    expect(res).toEqual({ imported: 2, skipped: 3, error: null });
+    expect(getTheme()).toBe('dark');
+    expect(localStorage.getItem('nr.pad.work.evil.md')).toBe('original');
+    expect(localStorage.getItem('nr.unknown')).toBeNull();
+    expect(localStorage.getItem('sessionish')).toBeNull();
+  });
+
+  test('rejects foreign or future files without touching storage', () => {
+    for (const bad of [
+      null,
+      'string',
+      [],
+      {},
+      file({ app: 'other' }),
+      file({ kind: 'backup' }),
+      file({ version: 2 }),
+      file({ version: '1' }),
+      file({ prefs: undefined }),
+      file({ prefs: 'nope' }),
+    ]) {
+      const res = importPreferences(bad);
+      expect(res.error).toBeTruthy();
+      expect(res.imported).toBe(0);
+    }
+    expect(localStorage.getItem('nr.theme')).toBeNull();
+  });
+
+  test('null values are skipped, storage failures reported', () => {
+    const res = importPreferences(file({ prefs: { 'nr.theme': null, 'nr.fontSize': 'small' } }));
+    expect(res).toEqual({ imported: 1, skipped: 1, error: null });
+    expect(localStorage.getItem('nr.theme')).toBeNull();
+    expect(localStorage.getItem('nr.fontSize')).toBe('small');
+
+    const blocked = importPreferences(file(), broken);
+    expect(blocked).toEqual({ imported: 0, skipped: 2, error: null });
+  });
+});
+
+describe('bookmarks', () => {
+  function storage() {
+    const m = new Map();
+    return {
+      getItem: (k) => (m.has(k) ? m.get(k) : null),
+      setItem: (k, v) => m.set(k, String(v)),
+      removeItem: (k) => m.delete(k),
+    };
+  }
+
+  test('add, move to front, remove and toggle per notebook', () => {
+    const s = storage();
+    expect(getBookmarks('nb', s)).toEqual([]);
+    expect(addBookmark('nb', 'a.md', s)).toEqual(['a.md']);
+    expect(addBookmark('nb', 'b.md', s)).toEqual(['b.md', 'a.md']);
+    expect(addBookmark('nb', 'a.md', s)).toEqual(['a.md', 'b.md']);
+    expect(getBookmarks('other', s)).toEqual([]);
+    expect(removeBookmark('nb', 'a.md', s)).toEqual(['b.md']);
+    expect(removeBookmark('nb', 'missing.md', s)).toEqual(['b.md']);
+    expect(toggleBookmark('nb', 'b.md', s)).toEqual({ bookmarked: false, list: [] });
+    expect(toggleBookmark('nb', 'c.md', s)).toEqual({ bookmarked: true, list: ['c.md'] });
+  });
+
+  test('caps the list at 20 and tolerates junk storage', () => {
+    const s = storage();
+    for (let i = 0; i < 25; i++) addBookmark('nb', `n${i}.md`, s);
+    const list = getBookmarks('nb', s);
+    expect(list).toHaveLength(20);
+    expect(list[0]).toBe('n24.md');
+    expect(list).not.toContain('n0.md');
+
+    s.setItem('nr.bookmarks', JSON.stringify({ nb: ['ok.md', 3, null] }));
+    expect(getBookmarks('nb', s)).toEqual(['ok.md']);
+    s.setItem('nr.bookmarks', 'not json');
+    expect(getBookmarks('nb', s)).toEqual([]);
+    expect(getBookmarks('nb', broken)).toEqual([]);
+  });
+});
+
+describe('tags section state', () => {
+  test('open by default; the fold is remembered', () => {
+    expect(getTagsCollapsed()).toBe(false);
+    expect(setTagsCollapsed(true)).toBe(true);
+    expect(getTagsCollapsed()).toBe(true);
+    setTagsCollapsed(false);
+    expect(getTagsCollapsed()).toBe(false);
+  });
+  test('inaccessible storage reads as open', () => {
+    const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    expect(getTagsCollapsed(broken)).toBe(false);
+    expect(setTagsCollapsed(true, broken)).toBe(true);
+  });
+});
+
+describe('vimrc and tab defaults', () => {
+  test('Tab inserts 4 spaces by default', () => {
+    expect(getSetting('tabKey')).toBe('4');
+    expect(setSetting('tabKey', 'focus')).toBe('focus');
+    expect(setSetting('tabKey', 'bogus')).toBe('4');
+  });
+  test('the vimrc round-trips; blank text removes it', () => {
+    expect(getVimrc()).toBe('');
+    expect(setVimrc('set number\n')).toBe('set number\n');
+    expect(getVimrc()).toBe('set number\n');
+    expect(setVimrc('   \n')).toBe('');
+    expect(getVimrc()).toBe('');
+  });
+  test('the vimrc travels with exported preferences', () => {
+    setVimrc('set tabstop=4');
+    const snap = exportPreferences();
+    expect(snap.prefs['nr.vimrc']).toBe('set tabstop=4');
+    localStorage.clear();
+    expect(importPreferences(snap).imported).toBeGreaterThan(0);
+    expect(getVimrc()).toBe('set tabstop=4');
+  });
+  test('inaccessible storage reads as empty', () => {
+    const broken = { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); }, removeItem() { throw new Error('x'); } };
+    expect(getVimrc(broken)).toBe('');
+    expect(setVimrc('x', broken)).toBe('x');
+    expect(setVimrc('', broken)).toBe('');
+  });
+});
+
+describe('keybindings', () => {
+  beforeEach(() => resetKeybindings());
+
+  const norm = (b) => (b === null ? null
+    : { key: b.key, ctrl: Boolean(b.ctrl), shift: Boolean(b.shift), alt: Boolean(b.alt) });
+
+  test('defaults are returned and cover every labelled action', () => {
+    const kb = getKeybindings();
+    for (const action of Object.keys(DEFAULT_KEYBINDINGS)) {
+      expect(kb[action]).toEqual(norm(DEFAULT_KEYBINDINGS[action]));
+      expect(KEYBINDING_LABELS[action]).toBeTruthy();
+    }
+    expect(kb.save).toEqual({ key: 's', ctrl: true, shift: false, alt: false });
+  });
+
+  test('an override replaces only that action', () => {
+    expect(setKeybinding('save', { key: 'd', ctrl: true })).toEqual({ key: 'd', ctrl: true, shift: false, alt: false });
+    expect(getKeybindings().save).toEqual({ key: 'd', ctrl: true, shift: false, alt: false });
+    expect(getKeybindings().edit).toEqual(norm(DEFAULT_KEYBINDINGS.edit));
+  });
+
+  test('null unbinds an action; reset restores it (one or all)', () => {
+    setKeybinding('help', null);
+    expect(getKeybindings().help).toBeNull();
+    resetKeybindings('help');
+    expect(getKeybindings().help).toEqual(norm(DEFAULT_KEYBINDINGS.help));
+    setKeybinding('edit', { key: 'z' });
+    resetKeybindings();
+    expect(getKeybindings().edit).toEqual(norm(DEFAULT_KEYBINDINGS.edit));
+  });
+
+  test('unknown actions and malformed bindings are ignored', () => {
+    expect(setKeybinding('nope', { key: 'x' })).toBeNull();
+    expect(setKeybinding('save', { ctrl: true })).toBeNull();
+    expect(setKeybinding('save', 'nope')).toBeNull();
+    expect(setKeybinding('save', 42)).toBeNull();
+    expect(getKeybindings().save).toEqual(norm(DEFAULT_KEYBINDINGS.save));
+  });
+
+  test('a corrupt stored override falls back to the default', () => {
+    localStorage.setItem('nr.keybindings', JSON.stringify({ save: { nokey: true }, edit: ['x'] }));
+    expect(getKeybindings().save).toEqual(norm(DEFAULT_KEYBINDINGS.save));
+    expect(getKeybindings().edit).toEqual(norm(DEFAULT_KEYBINDINGS.edit));
+  });
+
+  test('matchesBinding compares key and modifiers exactly', () => {
+    const b = { key: 's', ctrl: true, shift: false, alt: false };
+    expect(matchesBinding({ key: 's', ctrlKey: true }, b)).toBe(true);
+    expect(matchesBinding({ key: 'S', metaKey: true }, b)).toBe(true);
+    expect(matchesBinding({ key: 's' }, b)).toBe(false);
+    expect(matchesBinding({ key: 's', ctrlKey: true, shiftKey: true }, b)).toBe(false);
+    expect(matchesBinding({ key: 'x', ctrlKey: true }, b)).toBe(false);
+    expect(matchesBinding({ key: 's', ctrlKey: true }, null)).toBe(false);
+    expect(matchesBinding({ key: 'Escape' }, { key: 'Escape' })).toBe(true);
+  });
+
+  test('keybindings travel with exported preferences', () => {
+    setKeybinding('save', { key: 'd', ctrl: true });
+    const snap = exportPreferences();
+    expect(snap.prefs['nr.keybindings']).toEqual({ save: { key: 'd', ctrl: true, shift: false, alt: false } });
+    localStorage.clear();
+    expect(importPreferences(snap).imported).toBeGreaterThan(0);
+    expect(getKeybindings().save.key).toBe('d');
+  });
+
+  test('inaccessible storage reads as defaults', () => {
+    const brokenStore = { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); }, removeItem() { throw new Error('x'); } };
+    expect(getKeybindings(brokenStore).save).toEqual(norm(DEFAULT_KEYBINDINGS.save));
+    expect(setKeybinding('save', { key: 'q' }, brokenStore)).toEqual({ key: 'q', ctrl: false, shift: false, alt: false });
+    expect(resetKeybindings(undefined, brokenStore)).toBeUndefined();
+  });
+});

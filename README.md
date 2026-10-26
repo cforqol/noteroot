@@ -70,7 +70,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
 | 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
 | 9 | Plugins and integrations | ✓ done |
-| UI | Workspace UI: note/folder CRUD, collapsible tree, status bar, themes, responsive layout | ✓ done |
+| UI | Workspace UI: note/folder CRUD, collapsible sidebar, status bar, themes, responsive layout | ✓ done |
 
 ## Features
 
@@ -82,8 +82,8 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Structured JSON logging, request IDs, panic recovery
 - Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
 - Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
-- Web UI: notebook picker, tree, rendered note view
-- Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the tree (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the tree, per-folder emoji and name color (kept in the browser), tree on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in tree drawer
+- Web UI: notebook picker, sidebar, rendered note view
+- Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the sidebar (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the sidebar, per-folder emoji and name color (kept in the browser), sidebar on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in sidebar drawer
 - Folders: `POST` / `PATCH` / `DELETE /n/{slug}/folder` create an empty folder, rename or move a folder with everything in it (identity map follows), or move its notes to the trash and remove it. Session surface only — not exposed on the token API
 - Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
 - Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad

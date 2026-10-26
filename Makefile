@@ -9,6 +9,8 @@
 BIN  := bin/noteroot
 PKG  := ./cmd/noteroot
 DATA := $(NOTEROOT_DATA_DIR)
+# Stamped into internal/version.V; dev builds fall back to "dev".
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 # Compose CLI: v2 plugin by default; set COMPOSE=docker-compose for v1.
 COMPOSE ?= docker compose
 
@@ -65,7 +67,7 @@ check: fmt vet lint test vuln
 
 ## build: compile to bin/noteroot
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) $(PKG)
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X noteroot/internal/version.V=$(VERSION)" -o $(BIN) $(PKG)
 
 ## run: build and run once
 run: guard build
@@ -99,7 +101,7 @@ data-wipe: guard
 
 ## docker-build: build the container image
 docker-build:
-	$(COMPOSE) -f deploy/compose.yaml build
+	NOTEROOT_VERSION=$(VERSION) $(COMPOSE) -f deploy/compose.yaml build
 
 ## docker-up: start the stack
 docker-up:

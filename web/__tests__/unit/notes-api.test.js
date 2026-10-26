@@ -3,7 +3,11 @@ import {
   getTree, createNote, deleteNote, moveNote, createFolder, moveFolder,
   deleteFolder, listTrash, restoreTrash, getNote, getSource, getRaw,
   deleteTrashEntry, setTrashRetention, purgeTrash,
+  restoreTrashFolder, deleteTrashFolder,
   saveNote, exportNotebook, importNotebook, createBackup, resourceStats,
+  createNotebook, renameNotebook, deleteNotebook,
+  listResources, deleteResource, listTags,
+  lockStatus, setLock, removeLock, unlock, relock,
 } from '../../lib/notes-api.js';
 
 function mockFetch(responses) {
@@ -264,6 +268,44 @@ describe('notebook transfer', () => {
   });
 });
 
+describe('notebook CRUD', () => {
+  test('createNotebook POSTs slug and name as JSON', async () => {
+    const f = mockFetch([{ status: 201, body: { slug: 'new-nb', name: 'new-nb' } }]);
+    expect(await createNotebook('new-nb', 'My Notebook', f)).toEqual({ slug: 'new-nb', name: 'new-nb' });
+    expect(f.calls[0].url).toBe('/api/v1/notebooks');
+    expect(f.calls[0].init.method).toBe('POST');
+    expect(f.calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(f.calls[0].init.body)).toEqual({ slug: 'new-nb', name: 'My Notebook' });
+  });
+
+  test('renameNotebook PATCHes the new slug', async () => {
+    const f = mockFetch([{ status: 200, body: { slug: 'renamed' } }]);
+    expect(await renameNotebook('old', 'renamed', f)).toEqual({ slug: 'renamed' });
+    expect(f.calls[0].url).toBe('/api/v1/notebooks/old');
+    expect(f.calls[0].init.method).toBe('PATCH');
+    expect(f.calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(f.calls[0].init.body)).toEqual({ slug: 'renamed' });
+  });
+
+  test('deleteNotebook DELETEs and reports the archive path', async () => {
+    const f = mockFetch([{ status: 200, body: { deleted: 'gone', archived: '/d/notebooks/.archive/gone-1' } }]);
+    expect(await deleteNotebook('gone', f)).toEqual({
+      deleted: 'gone', archived: '/d/notebooks/.archive/gone-1',
+    });
+    expect(f.calls[0].url).toBe('/api/v1/notebooks/gone');
+    expect(f.calls[0].init.method).toBe('DELETE');
+    expect(f.calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(f.calls[0].init.body).toBeUndefined();
+  });
+
+  test('notebook errors surface status and message', async () => {
+    const f = mockFetch([{ status: 409, body: { error: 'already exists' } }]);
+    await expect(createNotebook('dup', '', f)).rejects.toMatchObject({
+      message: 'already exists', status: 409,
+    });
+  });
+});
+
 test('every client falls back to the global fetch and default options', async () => {
   const real = globalThis.fetch;
   const calls = [];
@@ -300,8 +342,137 @@ test('every client falls back to the global fetch and default options', async ()
     await importNotebook('nb', new File(['x'], 'n.tar.gz'));
     await createBackup('nb');
     await resourceStats('nb');
+    await createNotebook('nb2');
+    await renameNotebook('nb2', 'nb3');
+    await deleteNotebook('nb3');
     expect(calls.length).toBeGreaterThan(0);
   } finally {
     globalThis.fetch = real;
   }
+});
+
+describe('trash folder bulk actions', () => {
+  test('restoreTrashFolder scopes to a folder, all, or the notebook', async () => {
+    const f = mockFetch([
+      { status: 200, body: { restored: 1 } },
+      { status: 200, body: { restored: 2 } },
+      { status: 200, body: { restored: 3 } },
+    ]);
+    expect(await restoreTrashFolder('nb', { path: 'work/deep' }, f)).toEqual({ restored: 1 });
+    expect(await restoreTrashFolder('nb', { all: true }, f)).toEqual({ restored: 2 });
+    expect(await restoreTrashFolder('nb', {}, f)).toEqual({ restored: 3 });
+    expect(f.calls[0].url).toBe('/n/nb/trash/restore-folder?path=work%2Fdeep');
+    expect(f.calls[1].url).toBe('/n/nb/trash/restore-folder?all=1');
+    expect(f.calls[2].url).toBe('/n/nb/trash/restore-folder');
+    for (const c of f.calls) {
+      expect(c.init.method).toBe('POST');
+      expect(c.init.headers['Content-Type']).toBe('application/json');
+    }
+  });
+
+  test('deleteTrashFolder deletes one folder path for good', async () => {
+    const f = mockFetch([{ status: 200, body: { purged: 4 } }]);
+    expect(await deleteTrashFolder('nb', 'work/ideas', f)).toEqual({ purged: 4 });
+    expect(f.calls[0].url).toBe('/n/nb/trash/folder?path=work%2Fideas');
+    expect(f.calls[0].init.method).toBe('DELETE');
+  });
+});
+
+describe('tags', () => {
+  test('listTags GETs the notebook tag map', async () => {
+    const f = mockFetch([{ status: 200, body: { tags: { a: ['x.md'] } } }]);
+    expect(await listTags('my nb', f)).toEqual({ tags: { a: ['x.md'] } });
+    expect(f.calls[0].url).toBe('/n/my%20nb/tags');
+  });
+});
+
+describe('resource attachments', () => {
+  test('listResources scopes the state and limit', async () => {
+    const f = mockFetch([{ status: 200, body: { resources: [] } }]);
+    expect(await listResources('my nb', undefined, f)).toEqual({ resources: [] });
+    expect(f.calls[0].url).toBe('/n/my%20nb/resources?state=committed&limit=500');
+    expect(f.calls[0].init.method).toBe('GET');
+    await listResources('nb', 'reserved', f);
+    expect(f.calls[1].url).toBe('/n/nb/resources?state=reserved&limit=500');
+  });
+
+  test('deleteResource DELETEs by SHA', async () => {
+    const f = mockFetch([{ status: 204 }]);
+    expect(await deleteResource('my nb', 'a/b', f)).toEqual({});
+    expect(f.calls[0].url).toBe('/n/my%20nb/resources/a%2Fb');
+    expect(f.calls[0].init.method).toBe('DELETE');
+    expect(f.calls[0].init.headers.Accept).toBe('application/json');
+  });
+
+  test('deleteResource surfaces a failure', async () => {
+    const f = mockFetch([{ status: 404, body: { error: 'no such resource' } }]);
+    await expect(deleteResource('nb', 'x', f)).rejects.toThrow('no such resource');
+  });
+});
+
+describe('content locks', () => {
+  test('lockStatus omits path and kind when not given', async () => {
+    const f = mockFetch([{ status: 200, body: { locked: false, unlocked: true } }]);
+    expect(await lockStatus('my nb', '', '', f)).toEqual({ locked: false, unlocked: true });
+    expect(f.calls[0].url).toBe('/n/my%20nb/contentlock');
+    expect(f.calls[0].init.method).toBe('GET');
+  });
+
+  test('lockStatus passes path and kind as a query', async () => {
+    const f = mockFetch([{ status: 200, body: {} }]);
+    await lockStatus('nb', 'a/b.md', 'note', f);
+    expect(f.calls[0].url).toBe('/n/nb/contentlock?path=a%2Fb.md&kind=note');
+  });
+
+  test('lockStatus encodes a notebook-level path', async () => {
+    const f = mockFetch([{ status: 200, body: {} }]);
+    await lockStatus('nb', '', 'notebook', f);
+    expect(f.calls[0].url).toBe('/n/nb/contentlock?kind=notebook');
+  });
+
+  test('setLock PUTs a JSON body', async () => {
+    const f = mockFetch([{ status: 200, body: { locked: true } }]);
+    await setLock('nb', 'dir', 'folder', 'hunter2', f);
+    const { url, init } = f.calls[0];
+    expect(url).toBe('/n/nb/contentlock');
+    expect(init.method).toBe('PUT');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual({ path: 'dir', kind: 'folder', password: 'hunter2' });
+  });
+
+  test('setLock surfaces 423 when the target is already locked', async () => {
+    const f = mockFetch([{ status: 423, body: { error: 'locked' } }]);
+    await expect(setLock('nb', 'a.md', 'note', 'pw', f)).rejects.toMatchObject({ status: 423 });
+  });
+
+  test('removeLock DELETEs with path and kind', async () => {
+    const f = mockFetch([{ status: 200, body: { locked: false } }]);
+    await removeLock('nb', 'a/b', 'folder', f);
+    expect(f.calls[0].url).toBe('/n/nb/contentlock?path=a%2Fb&kind=folder');
+    expect(f.calls[0].init.method).toBe('DELETE');
+  });
+
+  test('unlock POSTs the password', async () => {
+    const f = mockFetch([{ status: 200, body: { unlocked: true } }]);
+    await unlock('nb', 'a.md', 'secr3t', 'note', f);
+    const { url, init } = f.calls[0];
+    expect(url).toBe('/n/nb/contentlock/unlock');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ path: 'a.md', kind: 'note', password: 'secr3t' });
+  });
+
+  test('unlock surfaces 401 for a wrong password', async () => {
+    const f = mockFetch([{ status: 401, body: { error: 'wrong password' } }]);
+    await expect(unlock('nb', 'a.md', 'nope', 'note', f)).rejects.toMatchObject({
+      status: 401, message: 'wrong password',
+    });
+  });
+
+  test('relock POSTs path and kind', async () => {
+    const f = mockFetch([{ status: 200, body: { locked: true } }]);
+    await relock('nb', '', 'notebook', f);
+    expect(f.calls[0].url).toBe('/n/nb/contentlock/lock');
+    expect(f.calls[0].init.method).toBe('POST');
+    expect(JSON.parse(f.calls[0].init.body)).toEqual({ path: '', kind: 'notebook' });
+  });
 });

@@ -40,6 +40,26 @@ var migrations = []string{
 		updated_at  INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS upload_journal_state ON upload_journal(state);`,
+	// Content locks are advisory access control (a UI gate), not secrecy:
+	// the file stays plaintext on disk, in git and in backups. A row here
+	// marks a path ("" = whole notebook, "dir/" = folder, "a/b.md" = note)
+	// as locked; the lock protects the path and every descendant. Sessions
+	// record that a password for a path was entered in this browser.
+	`CREATE TABLE IF NOT EXISTS locks_config (
+		path       TEXT PRIMARY KEY,
+		kind       TEXT NOT NULL,
+		hash       TEXT NOT NULL,
+		salt       TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS lock_sessions (
+		token      TEXT PRIMARY KEY,
+		path       TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS lock_sessions_path ON lock_sessions(path);`,
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {

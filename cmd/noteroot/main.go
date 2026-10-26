@@ -14,9 +14,14 @@ import (
 	"noteroot/internal/httpapi"
 	"noteroot/internal/log"
 	"noteroot/internal/notebooks"
+	"noteroot/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println(version.V)
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
 		os.Exit(1)

@@ -1,6 +1,7 @@
 package notebooks
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -241,5 +242,188 @@ func TestOpen_singleCharSlug(t *testing.T) {
 	}
 	if len(reg.List()) != 1 {
 		t.Errorf("expected 1 notebook, got %d", len(reg.List()))
+	}
+}
+
+func newRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg, problems := Open(t.TempDir())
+	if len(problems) != 0 {
+		t.Fatalf("Open problems: %v", problems)
+	}
+	return reg
+}
+
+func TestCreate(t *testing.T) {
+	reg := newRegistry(t)
+
+	nb, err := reg.Create("work", "Work notes")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if nb.Manifest.Slug != "work" || nb.Manifest.Name != "Work notes" {
+		t.Errorf("manifest = %+v", nb.Manifest)
+	}
+	if nb.Manifest.ID == "" || nb.Manifest.Profile != "plaintext" || nb.Manifest.LayoutVersion != LayoutVersion {
+		t.Errorf("manifest defaults missing: %+v", nb.Manifest)
+	}
+	for _, d := range nb.Layout.Dirs() {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			t.Errorf("dir %s missing: %v", d, err)
+		}
+	}
+	if _, err := os.Stat(nb.Layout.Manifest()); err != nil {
+		t.Errorf("manifest file missing: %v", err)
+	}
+	if got := len(reg.List()); got != 1 {
+		t.Errorf("registry has %d notebooks, want 1", got)
+	}
+
+	// Empty name defaults to the slug.
+	nb2, err := reg.Create("solo", "")
+	if err != nil {
+		t.Fatalf("Create empty name: %v", err)
+	}
+	if nb2.Manifest.Name != "solo" {
+		t.Errorf("name = %q, want %q", nb2.Manifest.Name, "solo")
+	}
+
+	// Duplicates and bad slugs.
+	if _, err := reg.Create("work", ""); !errors.Is(err, ErrSlugExists) {
+		t.Errorf("duplicate = %v, want ErrSlugExists", err)
+	}
+	if _, err := reg.Create("Bad_Slug", ""); !errors.Is(err, ErrBadSlug) {
+		t.Errorf("bad slug = %v, want ErrBadSlug", err)
+	}
+	if _, err := reg.Create("-lead", ""); !errors.Is(err, ErrBadSlug) {
+		t.Errorf("leading dash = %v, want ErrBadSlug", err)
+	}
+}
+
+func TestCreate_survivesRestart(t *testing.T) {
+	root := t.TempDir()
+	reg, _ := Open(root)
+	if _, err := reg.Create("keep", "Keep"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reg2, problems := Open(root)
+	if len(problems) != 0 {
+		t.Fatalf("reopen problems: %v", problems)
+	}
+	nb, ok := reg2.Get("keep")
+	if !ok || nb.Manifest.Name != "Keep" {
+		t.Fatalf("reopened notebook = %+v, %v", nb, ok)
+	}
+}
+
+func TestRename(t *testing.T) {
+	root := t.TempDir()
+	reg, _ := Open(root)
+	if _, err := reg.Create("old-name", "Old"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	nb, err := reg.Rename("old-name", "new-name")
+	if err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if nb.Manifest.Slug != "new-name" {
+		t.Errorf("slug = %q, want new-name", nb.Manifest.Slug)
+	}
+	if nb.Manifest.Name != "Old" {
+		t.Errorf("name changed on rename: %q", nb.Manifest.Name)
+	}
+	if _, ok := reg.Get("old-name"); ok {
+		t.Error("old slug still in registry")
+	}
+	if _, ok := reg.Get("new-name"); !ok {
+		t.Error("new slug missing from registry")
+	}
+	if _, err := os.Stat(filepath.Join(root, "notebooks", "new-name", ManifestFile)); err != nil {
+		t.Errorf("renamed dir missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notebooks", "old-name")); !os.IsNotExist(err) {
+		t.Error("old dir survived rename")
+	}
+
+	// The manifest slug key followed the rename on disk.
+	var m Manifest
+	if _, err := toml.DecodeFile(filepath.Join(root, "notebooks", "new-name", ManifestFile), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Slug != "new-name" {
+		t.Errorf("disk manifest slug = %q, want new-name", m.Slug)
+	}
+
+	// Rename survives restart.
+	reg2, problems := Open(root)
+	if len(problems) != 0 {
+		t.Fatalf("reopen problems: %v", problems)
+	}
+	if _, ok := reg2.Get("new-name"); !ok {
+		t.Error("renamed slug missing after restart")
+	}
+
+	// Error cases.
+	if _, err := reg.Rename("new-name", "old-name"); err != nil {
+		t.Errorf("rename back: %v", err)
+	}
+	if _, err := reg.Rename("ghost", "x"); !errors.Is(err, ErrNoNotebook) {
+		t.Errorf("missing = %v, want ErrNoNotebook", err)
+	}
+	if _, err := reg.Create("taken", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Rename("old-name", "taken"); !errors.Is(err, ErrSlugExists) {
+		t.Errorf("collision = %v, want ErrSlugExists", err)
+	}
+	if _, err := reg.Rename("old-name", "Bad_Slug"); !errors.Is(err, ErrBadSlug) {
+		t.Errorf("bad target = %v, want ErrBadSlug", err)
+	}
+	// Same slug is a no-op, not an error.
+	if nb, err := reg.Rename("old-name", "old-name"); err != nil || nb.Manifest.Slug != "old-name" {
+		t.Errorf("self-rename = %v, %v", nb, err)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	root := t.TempDir()
+	reg, _ := Open(root)
+	if _, err := reg.Create("gone", "Bye"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	archived, err := reg.Delete("gone")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := reg.Get("gone"); ok {
+		t.Error("deleted slug still in registry")
+	}
+	if got := len(reg.List()); got != 0 {
+		t.Errorf("registry has %d notebooks, want 0", got)
+	}
+	fi, err := os.Stat(archived)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("archive missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archived, ManifestFile)); err != nil {
+		t.Errorf("archive has no manifest: %v", err)
+	}
+
+	// The archive hides from a restart, but the slug is free to reuse.
+	reg2, problems := Open(root)
+	if len(problems) != 0 {
+		t.Fatalf("reopen problems: %v", problems)
+	}
+	if got := len(reg2.List()); got != 0 {
+		t.Errorf("archive leaked into registry: %d notebooks", got)
+	}
+	if _, err := reg2.Create("gone", "Again"); err != nil {
+		t.Errorf("slug not reusable after archive: %v", err)
+	}
+
+	if _, err := reg.Delete("ghost"); !errors.Is(err, ErrNoNotebook) {
+		t.Errorf("missing = %v, want ErrNoNotebook", err)
 	}
 }

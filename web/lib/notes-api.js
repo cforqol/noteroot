@@ -43,6 +43,32 @@ export function getTree(slug, f) {
   return request('GET', `/n/${enc(slug)}/tree`, {}, f);
 }
 
+/** Frontmatter tags: {tags: {tag: [note paths]}}. */
+export function listTags(slug, f) {
+  return request('GET', `/n/${enc(slug)}/tags`, {}, f);
+}
+
+/** Create a notebook: {slug, name, profile}. Slug is lowercase alnum+dash. */
+export function createNotebook(slug, name = '', f) {
+  return request('POST', '/api/v1/notebooks', {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ slug, name }),
+  }, f);
+}
+
+/** Rename a notebook's slug: {slug, name, profile}. */
+export function renameNotebook(slug, newSlug, f) {
+  return request('PATCH', `/api/v1/notebooks/${enc(slug)}`, {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ slug: newSlug }),
+  }, f);
+}
+
+/** Archive a notebook: {deleted, archived}. Leaves the list; recoverable on the server. */
+export function deleteNotebook(slug, f) {
+  return request('DELETE', `/api/v1/notebooks/${enc(slug)}`, { headers: JSON_TYPE }, f);
+}
+
 /** A note's rendered view: {path, id, title, sha, html, outgoing, backlinks, ...}. */
 export function getNote(slug, path, f) {
   return request('GET', `/n/${enc(slug)}/note?path=${enc(path)}`, {}, f);
@@ -125,10 +151,24 @@ export function restoreTrash(slug, name, f) {
   return request('POST', `/n/${enc(slug)}/trash/restore?name=${enc(name)}`, { headers: JSON_TYPE }, f);
 }
 
-/** Remove one trashed note for good. */
+/** Permanently delete one trash entry by its server-side name. */
 export function deleteTrashEntry(slug, name, f) {
   return request('DELETE', `/n/${enc(slug)}/trash?name=${enc(name)}`, { headers: JSON_TYPE }, f);
 }
+
+/** Restore every trashed note from a folder (`path`) or all (`all`). */
+export function restoreTrashFolder(slug, { path = null, all = false } = {}, f) {
+  let q = '';
+  if (all) q = '?all=1';
+  else if (path) q = `?path=${enc(path)}`;
+  return request('POST', `/n/${enc(slug)}/trash/restore-folder${q}`, { headers: JSON_TYPE }, f);
+}
+
+/** Delete every trashed note from a folder for good. */
+export function deleteTrashFolder(slug, path, f) {
+  return request('DELETE', `/n/${enc(slug)}/trash/folder?path=${enc(path)}`, { headers: JSON_TYPE }, f);
+}
+
 
 /**
  * Set how long the notebook keeps trashed notes. `days` of 0 means
@@ -174,4 +214,76 @@ export function createBackup(slug, f) {
 /** Attachment storage: {backend, usedBytes, reservedBytes, quotaBytes, journal}. */
 export function resourceStats(slug, f) {
   return request('GET', `/n/${enc(slug)}/resources/stats`, {}, f);
+}
+
+/** List uploaded resources. state defaults to "committed". */
+export function listResources(slug, state = 'committed', f) {
+  return request('GET', `/n/${enc(slug)}/resources?state=${enc(state)}&limit=500`, {}, f);
+}
+
+/** Delete an uploaded resource by SHA. */
+export function deleteResource(slug, sha, f) {
+  return request('DELETE', `/n/${enc(slug)}/resources/${enc(sha)}`, { headers: { Accept: 'application/json' } }, f);
+}
+
+/**
+ * Content-lock status for a path: {path, locked, unlocked, locks, exact?,
+ * kind?, params}. `locked` is true when any lock covers the path;
+ * `unlocked` is true when the current session has opened them all.
+ * `kind` is present only when this exact path carries a lock.
+ */
+export function lockStatus(slug, path = '', kind = '', f) {
+  const q = new URLSearchParams();
+  if (path) q.set('path', path);
+  if (kind) q.set('kind', kind);
+  const qs = q.toString();
+  return request('GET', `/n/${enc(slug)}/contentlock${qs ? `?${qs}` : ''}`, {}, f);
+}
+
+/** Set or change the password on a notebook, folder or note. */
+export function setLock(slug, path, kind, password, f) {
+  return request('PUT', `/n/${enc(slug)}/contentlock`, {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ path, kind, password }),
+  }, f);
+}
+
+/** Remove a lock. Requires the path to be unlocked first. */
+export function removeLock(slug, path, kind, f) {
+  const q = new URLSearchParams({ path, kind });
+  return request('DELETE', `/n/${enc(slug)}/contentlock?${q.toString()}`, { headers: JSON_TYPE }, f);
+}
+
+/** Enter a password to open a locked path. Sets the unlock cookie. */
+export function unlock(slug, path, password, kind = '', f) {
+  return request('POST', `/n/${enc(slug)}/contentlock/unlock`, {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ path, kind, password }),
+  }, f);
+}
+
+/** Re-lock a path, dropping the session that opened it. */
+export function relock(slug, path, kind = '', f) {
+  return request('POST', `/n/${enc(slug)}/contentlock/lock`, {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ path, kind }),
+  }, f);
+}
+
+/** Get note history (git log for a file). */
+export function getHistory(slug, path, { limit = 50, before = '' } = {}, f) {
+  const q = new URLSearchParams();
+  q.set('path', path);
+  if (limit !== 50) q.set('limit', String(limit));
+  if (before) q.set('before', before);
+  return request('GET', `/n/${enc(slug)}/note/history?${q}`, {}, f);
+}
+
+/** Get diff between two commits for a note. */
+export function getDiff(slug, path, from, to, f) {
+  const q = new URLSearchParams();
+  q.set('path', path);
+  q.set('from', from);
+  q.set('to', to);
+  return request('GET', `/n/${enc(slug)}/note/diff?${q}`, {}, f);
 }

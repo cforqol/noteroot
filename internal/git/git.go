@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +44,19 @@ type Flusher struct {
 // New returns a Flusher for the git repo rooted at dir.
 func New(dir string, log *slog.Logger) *Flusher {
 	return &Flusher{dir: dir, log: log, window: defaultWindow}
+}
+
+// Init creates a git repository in dir when one does not exist yet.
+// A failure only means autocommit history will be missing — the caller
+// logs it and carries on, because the write path never depends on git.
+func Init(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "init", "-q")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // MarkDirty records a mutation. The first mark after a flush starts the
@@ -159,4 +174,110 @@ func (f *Flusher) run(args ...string) error {
 		return fmt.Errorf("git %v: %w\n%s", args, err, out)
 	}
 	return nil
+}
+
+// Commit represents a git commit.
+type Commit struct {
+	Hash      string
+	ShortHash string
+	Date      time.Time
+	Author    string
+	Message   string
+	IsMerge   bool
+}
+
+// LogFile returns commits affecting a file, newest first.
+func LogFile(dir, path string, limit int, before string) ([]Commit, bool, error) {
+	args := []string{"log", "--oneline", "--follow", fmt.Sprintf("-%d", limit), "--pretty=format:%H|%h|%ct|%an|%s|%p"}
+	if before != "" {
+		args = append(args, before+"..")
+	}
+	args = append(args, "--", path)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// If the file doesn't exist in history, return empty
+		if strings.Contains(string(out), "does not exist") || strings.Contains(string(out), "bad revision") {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("git log: %w\n%s", err, out)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil, false, nil
+	}
+
+	var commits []Commit
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 6)
+		if len(parts) < 6 {
+			continue
+		}
+		ts, _ := strconv.ParseInt(parts[2], 10, 64)
+		parents := strings.Fields(parts[5])
+		commits = append(commits, Commit{
+			Hash:      parts[0],
+			ShortHash: parts[1],
+			Date:      time.Unix(ts, 0),
+			Author:    parts[3],
+			Message:   parts[4],
+			IsMerge:   len(parents) > 1,
+		})
+	}
+
+	hasMore := len(commits) >= limit
+	if hasMore {
+		commits = commits[:limit]
+	}
+	return commits, hasMore, nil
+}
+
+// DiffFile returns the unified diff between two commits for a file.
+func DiffFile(dir, path, from, to string) (string, error) {
+	args := []string{"diff", from, to, "--", path}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w\n%s", err, out)
+	}
+	return string(out), nil
+}
+
+// GetCommit returns commit info for a given hash.
+func GetCommit(dir, hash string) (*Commit, error) {
+	args := []string{"show", "-s", "--pretty=format:%H|%h|%ct|%an|%s|%p", hash}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git show: %w\n%s", err, out)
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return nil, fmt.Errorf("commit not found")
+	}
+	parts := strings.SplitN(line, "|", 6)
+	if len(parts) < 6 {
+		return nil, fmt.Errorf("unexpected git show output")
+	}
+	ts, _ := strconv.ParseInt(parts[2], 10, 64)
+	parents := strings.Fields(parts[5])
+	return &Commit{
+		Hash:      parts[0],
+		ShortHash: parts[1],
+		Date:      time.Unix(ts, 0),
+		Author:    parts[3],
+		Message:   parts[4],
+		IsMerge:   len(parents) > 1,
+	}, nil
 }

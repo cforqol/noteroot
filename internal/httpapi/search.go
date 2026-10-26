@@ -49,8 +49,20 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Locked notes are dropped from results rather than failing the whole
+	// search: the query is not secret, only the matching content is.
+	ls, lok := s.openLockState(r, slug)
+	if lok {
+		defer ls.close()
+	}
+
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
+		if lok {
+			if blocked, err := lockBlocked(ls, r, h.Path); err == nil && blocked {
+				continue
+			}
+		}
 		out = append(out, map[string]any{
 			"path":    h.Path,
 			"title":   h.Title,

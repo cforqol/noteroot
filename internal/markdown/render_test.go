@@ -43,6 +43,56 @@ func TestRender_GFM(t *testing.T) {
 	}
 }
 
+func TestRender_taskList(t *testing.T) {
+	out := render(t, "- [ ] todo\n- [x] done\n")
+	if n := strings.Count(out, `type="checkbox"`); n != 2 {
+		t.Errorf("checkboxes = %d, want 2:\n%s", n, out)
+	}
+	for _, want := range []string{"disabled", "checked", "todo", "done"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRender_rawInputHTMLNeverRenders(t *testing.T) {
+	// goldmark omits raw inline HTML before bluemonday ever sees it, so a
+	// note cannot smuggle in a form control even though task lists need
+	// <input> to pass the sanitizer.
+	for _, src := range []string{
+		`<input type="text" name="pw">ok`,
+		`<input type="checkbox" onclick="alert(1)">ok`,
+		`<form action="/x"><input type="text"></form>ok`,
+	} {
+		out := render(t, src)
+		if strings.Contains(out, "<input") || strings.Contains(out, "<form") {
+			t.Errorf("raw control HTML rendered for %q:\n%s", src, out)
+		}
+	}
+}
+
+func TestPolicy_inputTypePinned(t *testing.T) {
+	// Defense in depth: even if raw HTML ever reaches the sanitizer, an
+	// input keeps only type=checkbox plus checked/disabled — no name,
+	// value, form or handlers.
+	p := New().policy
+	got := string(p.SanitizeBytes([]byte(`<input type="text" name="pw" value="x">`)))
+	for _, bad := range []string{`type="text"`, `name=`, `value=`} {
+		if strings.Contains(got, bad) {
+			t.Errorf("text input kept %q: %s", bad, got)
+		}
+	}
+	got = string(p.SanitizeBytes([]byte(`<input type="checkbox" onclick="x" autofocus checked>`)))
+	if !strings.Contains(got, `type="checkbox"`) || !strings.Contains(got, "checked") {
+		t.Errorf("checkbox lost allowed attrs: %s", got)
+	}
+	for _, bad := range []string{"onclick", "autofocus"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("checkbox kept %q: %s", bad, got)
+		}
+	}
+}
+
 func TestRender_sanitizes(t *testing.T) {
 	tests := map[string]string{
 		"script tag":      "<script>alert(1)</script>",

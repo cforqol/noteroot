@@ -16,6 +16,7 @@ import (
 	"noteroot/internal/config"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/vault"
+	"noteroot/internal/version"
 
 	"github.com/BurntSushi/toml"
 )
@@ -76,6 +77,21 @@ func TestHealth_unauthenticated_in_forward_mode(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("healthz status = %d, want 200 (must be unauthenticated)", rec.Code)
+	}
+}
+
+// The frontend reads the build version from /healthz once at boot.
+func TestHealthAndReady_reportVersion(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, nil)
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		var resp map[string]any
+		decodeJSON(t, rec, &resp)
+		v, _ := resp["version"].(string)
+		if v != version.V {
+			t.Errorf("%s version = %q, want %q", path, v, version.V)
+		}
 	}
 }
 

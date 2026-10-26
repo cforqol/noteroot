@@ -4,9 +4,44 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"noteroot/internal/notebooks"
+	"noteroot/internal/resources"
 )
 
 const gcGrace = 24 * time.Hour
+
+// sweepBlobs removes unreachable blobs from the store and returns how
+// many went. Blobs with a committed journal entry are always kept: the
+// journal is the reachability set, and an age-only sweep would reclaim
+// every referenced blob the first time it runs (it did once).
+//
+// When the journal holds no rows at all there is nothing to check a
+// store against — a lost or freshly recreated state DB must not be read
+// as "nothing is referenced", so the store is left alone and the caller
+// is told via a warning.
+func (s *Server) sweepBlobs(nb *notebooks.Notebook, store resources.Store, journal *resources.Journal) int {
+	live, err := journal.LiveSHAs()
+	if err != nil {
+		s.log.Warn("gc: live shas unreadable; skipping store sweep",
+			"notebook", nb.Manifest.Slug, "err", err)
+		return 0
+	}
+	if len(live) == 0 {
+		counts, cerr := journal.CountByState()
+		if cerr == nil && len(counts) == 0 {
+			s.log.Warn("gc: journal empty; refusing to sweep store",
+				"notebook", nb.Manifest.Slug, "blobs_maybe_present", true)
+			return 0
+		}
+	}
+	n, err := store.GC(gcGrace, live)
+	if err != nil {
+		s.log.Warn("gc: store failed", "notebook", nb.Manifest.Slug, "err", err)
+		return 0
+	}
+	return n
+}
 
 // gcResources handles POST /n/{slug}/resources/gc — on-demand GC sweep.
 // It removes old aborted journal entries and unreachable store blobs.
@@ -27,10 +62,7 @@ func (s *Server) gcResources(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn("gc: journal failed", "notebook", nb.Manifest.Slug, "err", err)
 	}
-	blobN, err := store.GC(gcGrace)
-	if err != nil {
-		s.log.Warn("gc: store failed", "notebook", nb.Manifest.Slug, "err", err)
-	}
+	blobN := s.sweepBlobs(nb, store, journal)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"journalEntriesRemoved": journalN,
 		"blobsRemoved":          blobN,
@@ -73,7 +105,7 @@ func (s *Server) runGCSweep() {
 			continue
 		}
 		journalN, _ := journal.GC(gcGrace)
-		blobN, _ := store.GC(gcGrace)
+		blobN := s.sweepBlobs(nb, store, journal)
 		cleanup()
 		if journalN > 0 || blobN > 0 {
 			s.log.Info("gc sweep",

@@ -30,6 +30,18 @@ func (m *Manager) Bus(slug string) *Bus {
 	return b
 }
 
+// Drop closes and forgets one notebook's bus, for notebooks being
+// renamed or deleted. A later Bus(slug) call recreates it fresh.
+func (m *Manager) Drop(slug string) {
+	m.mu.Lock()
+	b := m.buses[slug]
+	delete(m.buses, slug)
+	m.mu.Unlock()
+	if b != nil {
+		b.Close()
+	}
+}
+
 // Close flushes and closes every bus (process shutdown).
 func (m *Manager) Close() {
 	m.mu.Lock()

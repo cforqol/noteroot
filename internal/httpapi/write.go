@@ -43,6 +43,9 @@ func (s *Server) putNote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
 		return
 	}
+	if !s.lockGuard(w, r, slug, rel) {
+		return
+	}
 	v := vault.Open(nb.Layout.Vault())
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, vault.MaxReadBytes+1))

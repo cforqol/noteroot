@@ -103,6 +103,12 @@ type Node struct {
 	Size     int64   `json:"size,omitempty"`
 	ModTime  int64   `json:"modTime,omitempty"`
 	Children []*Node `json:"children,omitempty"`
+
+	// Locked marks a node whose content is behind a content lock the
+	// current session has not opened. The node itself is still listed
+	// (its existence is not secret); a locked folder's children are
+	// omitted so the lock hides what is inside.
+	Locked bool `json:"locked,omitempty"`
 }
 
 // parentKey normalizes path.Dir so the vault root keys on "".

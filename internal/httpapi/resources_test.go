@@ -454,6 +454,44 @@ func TestThumb_notFound(t *testing.T) {
 	}
 }
 
+// A cached transform outlives its source: when the blob is gone (an old
+// sweep reclaimed it, or a vault was restored without its store) the
+// thumbnail still renders in read mode instead of 404ing.
+func TestThumb_servedFromCacheWhenBlobMissing(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	nb, ok := srv.reg.Get("work")
+	if !ok {
+		t.Fatal("notebook work missing")
+	}
+
+	sha := strings.Repeat("b", 64)
+	key := transformCacheKey(sha, "thumb", "800", "600")
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF, 0xD9}, []byte("cached pixels")...)
+	if err := os.MkdirAll(transformCacheDir(nb), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transformCacheDir(nb), key), jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/n/work/resources/"+sha+"/thumb?w=800&h=600", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if rec.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("X-Cache = %q, want HIT", rec.Header().Get("X-Cache"))
+	}
+	if !bytes.Equal(rec.Body.Bytes(), jpeg) {
+		t.Error("cached body not served verbatim")
+	}
+}
+
 func TestThumb_unsupportedMIME(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
 	up := postResource(t, srv, "work", "doc.pdf", "application/pdf", []byte("%PDF-1.4"))

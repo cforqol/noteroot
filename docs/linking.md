@@ -148,12 +148,17 @@ links die visibly instead of silently pointing at old paths).
 
 ## 9. Non-goals
 
-- Embeds, transclusion, block references (`[[note#heading]]` is not v1;
+- Note embeds and block references (`[[note#heading]]` is not v1;
   the `#` suffix is treated as part of the target and simply won't
-  resolve until headings are addressable).
+  resolve until headings are addressable). *Links to uploaded media are
+  not note embeds: the note renderer turns links to committed video/audio
+  blobs into `<video>`/`<audio>` players (see ui-guide, Attachments).*
 - Cross-notebook links.
-- Auto-complete / link picker in the editor.
-- Graph visualization.
+- Inline auto-complete while typing (the editor's **Attach ▸ Link to
+  note…** picker covers choosing a target).
+- Graph visualization (planned future feature: a Cytoscape.js-based note
+  network was prototyped and removed from the UI pending a dedicated
+  design pass; the backend graph endpoint was removed with it).
 
 ## 10. Build slices
 

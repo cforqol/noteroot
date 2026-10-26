@@ -6,11 +6,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/noteroot ./cmd/noteroot
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X noteroot/internal/version.V=${VERSION}" -o /out/noteroot ./cmd/noteroot
 
 FROM alpine:3.22
 
-RUN apk add --no-cache git ca-certificates tzdata \
+RUN apk add --no-cache git ca-certificates tzdata ffmpeg ffmpeg \
     && adduser -D -u 1000 noteroot \
     && mkdir -p /data \
     && chown noteroot:noteroot /data

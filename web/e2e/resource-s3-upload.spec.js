@@ -124,7 +124,7 @@ test.beforeAll(async () => {
       NOTEROOT_S3_SECRET_KEY: 'SECRETKEY',
       NOTEROOT_S3_PATH_STYLE: 'true',
     },
-    stdio: 'pipe',
+    stdio: 'ignore',
   });
 
   await new Promise((resolve, reject) => {

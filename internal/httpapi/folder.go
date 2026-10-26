@@ -38,6 +38,9 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
 		return
 	}
+	if !s.lockGuard(w, r, r.PathValue("slug"), req.Path) {
+		return
+	}
 
 	v := vault.Open(nb.Layout.Vault())
 	if err := v.Mkdir(req.Path); err != nil {
@@ -83,6 +86,10 @@ func (s *Server) moveFolder(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
 		return
 	}
+	slug := r.PathValue("slug")
+	if !s.lockGuard(w, r, slug, req.From) || !s.lockGuard(w, r, slug, req.To) {
+		return
+	}
 
 	v := vault.Open(nb.Layout.Vault())
 	if err := v.RenameDir(req.From, req.To); err != nil {
@@ -126,6 +133,9 @@ func (s *Server) deleteFolder(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
 	if rel == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
+		return
+	}
+	if !s.lockGuard(w, r, r.PathValue("slug"), rel) {
 		return
 	}
 

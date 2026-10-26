@@ -316,6 +316,36 @@ func TestWithID_insertMissingID(t *testing.T) {
 	}
 }
 
+// Regression: the block's final newline used to become a blank line
+// before the closing delimiter, which the client's header fix-up then
+// split the keys around.
+func TestWithID_addsNoBlankLines(t *testing.T) {
+	id := NewID()
+	cases := map[string]struct{ src, want string }{
+		"insert": {
+			"---\ntitle: My Note\n---\n\nbody\n",
+			"---\nid: " + id + "\ntitle: My Note\n---\n\nbody\n",
+		},
+		"replace": {
+			"---\nid: nope\ntitle: T\n---\nbody\n",
+			"---\nid: " + id + "\ntitle: T\n---\nbody\n",
+		},
+		"empty block": {
+			"---\n---\nbody\n",
+			"---\nid: " + id + "\n---\nbody\n",
+		},
+		"author's blank line kept": {
+			"---\ntitle: T\n\n---\nbody\n",
+			"---\nid: " + id + "\ntitle: T\n\n---\nbody\n",
+		},
+	}
+	for name, tc := range cases {
+		if got := string(WithID([]byte(tc.src), id)); got != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, tc.want)
+		}
+	}
+}
+
 func TestWithID_replacesMalformedID(t *testing.T) {
 	id := NewID()
 	src := []byte("---\nid: not-a-valid-id\ntitle: T\n---\nbody\n")

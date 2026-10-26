@@ -95,24 +95,45 @@ func (s *Server) thumbResource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cleanup()
 
+	// Determine source kind from the journal MIME. A direct lookup, not
+	// List: List is capped, so older blobs would read as "other" and 415.
+	mime := ""
+	if m, err := journal.MIMEBySHA(sha); err == nil {
+		mime = m[sha]
+	}
+	kind := resources.DetectKind(mime)
+
+	cacheDir := transformCacheDir(nb)
+	cache := transformCacheKey(sha, "thumb", strconv.Itoa(maxW), strconv.Itoa(maxH))
+	if kind == "video" {
+		cache = transformCacheKey(sha, "poster")
+	}
+
+	// A cached transform is served before the source blob is consulted:
+	// the pixels on disk stay valid even when the blob itself is gone
+	// (reclaimed by an older sweep, or a vault restored without its
+	// store), and a picture must keep rendering in read mode.
+	if b, err := os.ReadFile(filepath.Join(cacheDir, cache)); err == nil && len(b) > 0 {
+		writeTransformed(w, b, cache, true)
+		return
+	}
+
 	if !store.Has(sha) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 
-	// Determine source kind from journal MIME (fall back to extension).
-	mime := ""
-	if entries, err := journal.List(resources.StateCommitted, 0); err == nil {
-		for _, e := range entries {
-			if e.SHA == sha {
-				mime = e.MIME
-				break
-			}
-		}
-	}
+	// A thumbnail is only an optimisation for images: without a working
+	// transformer (ffmpeg missing, as in the stock container image) or
+	// when it fails, serve the original so the picture still shows.
+	serveOriginal := func() { s.getResource(w, r) }
 
 	tr := resources.NewFFmpegTransformer()
 	if !tr.Available() {
+		if kind == "image" {
+			serveOriginal()
+			return
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "transformer unavailable"})
 		return
 	}
@@ -125,24 +146,18 @@ func (s *Server) thumbResource(w http.ResponseWriter, r *http.Request) {
 	}
 	defer srcCleanup()
 
-	kind := resources.DetectKind(mime)
-	cacheDir := transformCacheDir(nb)
-
 	var (
-		out   []byte
-		hit   bool
-		cache string
+		out []byte
+		hit bool
 	)
 
 	switch kind {
 	case "image":
-		cache = transformCacheKey(sha, "thumb", strconv.Itoa(maxW), strconv.Itoa(maxH))
 		out, hit, err = cachedTransform(r.Context(), cacheDir, cache, func() ([]byte, error) {
 			b, _, _, e := tr.ResizeImage(r.Context(), srcPath, maxW, maxH)
 			return b, e
 		})
 	case "video":
-		cache = transformCacheKey(sha, "poster")
 		out, hit, err = cachedTransform(r.Context(), cacheDir, cache, func() ([]byte, error) {
 			return tr.VideoPoster(r.Context(), srcPath, 0)
 		})
@@ -154,10 +169,20 @@ func (s *Server) thumbResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		if kind == "image" {
+			s.log.Warn("thumbnail failed; serving original", "sha", sha, "err", err)
+			serveOriginal()
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transform failed: " + err.Error()})
 		return
 	}
 
+	writeTransformed(w, out, cache, hit)
+}
+
+// writeTransformed writes a cached-or-fresh JPEG transform.
+func writeTransformed(w http.ResponseWriter, body []byte, cache string, hit bool) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("ETag", `"`+cache+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
@@ -167,7 +192,7 @@ func (s *Server) thumbResource(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Cache", "MISS")
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out)
+	_, _ = w.Write(body)
 }
 
 // posterResource serves GET /n/{slug}/resources/{sha}/poster — video

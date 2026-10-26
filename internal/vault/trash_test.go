@@ -800,3 +800,139 @@ func TestTrash_deleteRejectsNamesOutsideTheTrash(t *testing.T) {
 		t.Errorf("trash was disturbed: %+v", rest)
 	}
 }
+
+func TestTrash_read(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	// sidecar from Put
+	e, src, err := tr.Read("a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Name != "a.md" || e.Actor != "tester" {
+		t.Errorf("entry = %+v", e)
+	}
+	if string(src) != "---\ntitle: A\n---\nhello" {
+		t.Errorf("body = %q", string(src))
+	}
+	// now delete the sidecar so entry() falls back to the file's mod time
+	_ = os.Remove(filepath.Join(tr.dir, "a.md.json"))
+	e2, _, err := tr.Read("a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e2.Name != "a.md" || e2.Size != 22 {
+		t.Errorf("fallback entry = %+v, want Size=22, got %d", e2, e2.Size)
+	}
+}
+
+func TestTrash_restoreUnder(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "sub")
+	_ = os.MkdirAll(nested, 0o755)
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello from a")
+	write(t, nested, "b.md", "---\ntitle: B\n---\nhello from b")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	_, _ = tr.Put("sub/b.md", WriteOpts{Actor: "tester"})
+	// now permanently delete from sub/folder, simulating that they are trashed there
+	restored, skipped, err := tr.RestoreUnder("sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0] != "sub/b.md" {
+		t.Errorf("restored = %v, want [sub/b.md]", restored)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("skipped = %+v, want empty", skipped)
+	}
+}
+
+func TestTrash_restoreUnder_root(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	restored, _, err := tr.RestoreUnder("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0] != "a.md" {
+		t.Errorf("restored = %v, want [a.md]", restored)
+	}
+}
+
+func TestTrash_deleteUnder(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "sub")
+	_ = os.MkdirAll(nested, 0o755)
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello")
+	write(t, nested, "b.md", "---\ntitle: B\n---\nhello from b")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	_, _ = tr.Put("sub/b.md", WriteOpts{Actor: "tester"})
+	// purge the sub folder
+	n, err := tr.DeleteUnder("sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("purged = %d, want 1", n)
+	}
+	_, err = tr.DeleteUnder("sub")
+	if err != nil {
+		t.Errorf("second delete err = %v, want nil", err)
+	}
+	// a.md is still there
+	list, _ := tr.List()
+	if len(list) != 1 || list[0].Name != "a.md" {
+		t.Errorf("list = %+v, want [a.md]", list)
+	}
+}
+
+func TestTrash_deleteUnder_root(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	n, err := tr.DeleteUnder("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("purged = %d, want 1", n)
+	}
+	list, _ := tr.List()
+	if len(list) != 0 {
+		t.Errorf("list = %+v, want [], got %+v", list, list)
+	}
+}
+
+// Verify that RestoreUnder + DeleteUnder correctly reject folder names
+// that escape the trash directory.
+func TestTrash_restoreUnderRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "sub")
+	_ = os.MkdirAll(nested, 0o755)
+	write(t, root, "a.md", "---\ntitle: A\n---\nhello")
+	v := Open(root)
+	tr := openTestTrash(t, v)
+	_, _ = tr.Put("a.md", WriteOpts{Actor: "tester"})
+	// Passing ".." or "../" should be rejected early
+	if _, _, err := tr.RestoreUnder(".."); err == nil {
+		t.Error("RestoreUnder(..) should be rejected")
+	}
+	if _, err := tr.DeleteUnder(".."); err == nil {
+		t.Error("DeleteUnder(..) should be rejected")
+	}
+	if _, _, err := tr.RestoreUnder("../a"); err == nil {
+		t.Error("RestoreUnder(../a) should be rejected")
+	}
+}

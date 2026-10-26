@@ -7,6 +7,7 @@ package markdown
 
 import (
 	"bytes"
+	"regexp"
 	"sync"
 
 	"github.com/microcosm-cc/bluemonday"
@@ -31,6 +32,12 @@ var get = sync.OnceValue(func() *Renderer {
 	p.AllowAttrs("class").OnElements("code", "pre", "span", "a")
 	p.AllowAttrs("data-path").OnElements("a")
 	p.AllowAttrs("id").OnElements("h1", "h2", "h3", "h4", "h5", "h6")
+	// GFM task lists render a checkbox. type is pinned to checkbox and
+	// name/value/form are never allowed, so raw HTML cannot smuggle in a
+	// form control; everything else on the element is dropped.
+	p.AllowElements("input")
+	p.AllowAttrs("type").Matching(regexp.MustCompile(`^checkbox$`)).OnElements("input")
+	p.AllowAttrs("checked", "disabled").OnElements("input")
 	return &Renderer{md: md, policy: p}
 })
 
@@ -41,7 +48,7 @@ func New() *Renderer { return get() }
 // never a silent drop.
 func (r *Renderer) Render(src []byte) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := r.md.Convert(src, &buf); err != nil {
+	if err := r.md.Convert(normalizeTables(src), &buf); err != nil {
 		return nil, err
 	}
 	return r.policy.SanitizeBytes(buf.Bytes()), nil
@@ -57,7 +64,7 @@ func (r *Renderer) RenderWithResolver(src []byte, resolve func(target string) (s
 		goldmark.WithRendererOptions(html.WithHardWraps()),
 	)
 	var buf bytes.Buffer
-	if err := md.Convert(src, &buf); err != nil {
+	if err := md.Convert(normalizeTables(src), &buf); err != nil {
 		return nil, err
 	}
 	return r.policy.SanitizeBytes(buf.Bytes()), nil

@@ -234,8 +234,8 @@ func (s *S3Store) Delete(sha string) error {
 // Touch is a no-op: S3 has no cheap per-object access-time update.
 func (s *S3Store) Touch(string) {}
 
-// GC is a no-op: use S3 lifecycle rules for expiry.
-func (s *S3Store) GC(time.Duration) (int, error) { return 0, nil }
+// GC is a no-op: use S3 lifecycle rules for expiry. keep is ignored.
+func (s *S3Store) GC(time.Duration, map[string]bool) (int, error) { return 0, nil }
 
 // Root returns the s3:// URL for display purposes.
 func (s *S3Store) Root() string { return "s3://" + s.cfg.Bucket }

@@ -21,6 +21,11 @@ if (typeof globalThis.crypto === 'undefined' || !globalThis.crypto.subtle) {
   });
 }
 
+// jsdom does not implement scrollIntoView (Settings nav uses it).
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 // localStorage is provided by jsdom, but ensure it's a clean object
 beforeEach(() => {
   if (globalThis.localStorage) {

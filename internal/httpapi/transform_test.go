@@ -121,9 +121,9 @@ func (m memStore) Size(sha string) (int64, error) {
 	}
 	return int64(len(b)), nil
 }
-func (m memStore) Delete(sha string) error         { delete(m.blobs, sha); return nil }
-func (m memStore) GC(_ time.Duration) (int, error) { return 0, nil }
-func (m memStore) Touch(_ string)                  {}
+func (m memStore) Delete(sha string) error                            { delete(m.blobs, sha); return nil }
+func (m memStore) GC(_ time.Duration, _ map[string]bool) (int, error) { return 0, nil }
+func (m memStore) Touch(_ string)                                     {}
 
 func TestMaterializeSource_roundTrip(t *testing.T) {
 	st := memStore{blobs: map[string][]byte{"abc": []byte("hello")}}

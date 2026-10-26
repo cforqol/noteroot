@@ -34,7 +34,7 @@ test.beforeAll(async () => {
       NOTEROOT_LISTEN: `127.0.0.1:${PORT}`,
       NOTEROOT_AUTH_MODE: 'none',
     },
-    stdio: 'pipe',
+    stdio: 'ignore',
   });
 
   await new Promise((resolve, reject) => {

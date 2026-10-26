@@ -44,10 +44,11 @@ export function normalizeRetention(days) {
 /** A sentence for the Settings panel. */
 export function describeRetention(days) {
   const n = normalizeRetention(days);
-  if (n === RETENTION_NEVER) return 'Trashed notes are kept until you delete them.';
-  if (n === 1) return 'Trashed notes are deleted a day after they are trashed.';
-  if (n === 365) return 'Trashed notes are deleted a year after they are trashed.';
-  return `Trashed notes are deleted ${n} days after they are trashed.`;
+  if (n === RETENTION_NEVER) return 'Trashed notes are kept until you delete them — the server never removes them on its own.';
+  const sweep = ' The server sweeps them automatically when it starts, on any setting change, and at least daily.';
+  if (n === 1) return `Trashed notes are deleted a day after they are trashed.${sweep}`;
+  if (n === 365) return `Trashed notes are deleted a year after they are trashed.${sweep}`;
+  return `Trashed notes are deleted ${n} days after they are trashed.${sweep}`;
 }
 
 /**

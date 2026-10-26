@@ -32,8 +32,17 @@ describe('summarizeImport', () => {
       { status: 'created' }, { status: 'created' }, { status: 'updated' },
       { status: 'skipped' }, { status: 'error' }, { status: 'weird' },
     ]);
-    expect(s).toEqual({ created: 2, updated: 1, skipped: 1, error: 1, total: 6 });
-    expect(summarizeImport()).toEqual({ created: 0, updated: 0, skipped: 0, error: 0, total: 0 });
+    expect(s).toEqual({ created: 2, updated: 1, skipped: 1, error: 1, files: 0, total: 6 });
+    expect(summarizeImport()).toEqual({ created: 0, updated: 0, skipped: 0, error: 0, files: 0, total: 0 });
+  });
+  test('attachments count as files; their failures as errors; skips are silent', () => {
+    const s = summarizeImport([
+      { status: 'created', kind: 'resource' }, { status: 'skipped', kind: 'resource' },
+      { status: 'error', kind: 'resource' }, { status: 'created' },
+    ]);
+    expect(s).toEqual({ created: 1, updated: 0, skipped: 0, error: 1, files: 1, total: 4 });
+    expect(describeImport(s)).toBe('1 new note, 1 attachment added, 1 failed');
+    expect(describeImport({ files: 2 }, { dryRun: true })).toBe('2 attachments to add');
   });
 });
 
@@ -50,7 +59,7 @@ describe('describeImport', () => {
   });
 
   test('an empty summary reads as no notes', () => {
-    expect(describeImport({ created: 0, updated: 0, skipped: 0, error: 0 })).toBe('No notes in this archive');
+    expect(describeImport({ created: 0, updated: 0, skipped: 0, error: 0 })).toBe('Nothing to import in this archive');
   });
 });
 

@@ -296,4 +296,3 @@ func TestTrashSettings_requiresCSRFLikeOtherMutations(t *testing.T) {
 		t.Errorf("status = %d, want 403", rec.Code)
 	}
 }
-

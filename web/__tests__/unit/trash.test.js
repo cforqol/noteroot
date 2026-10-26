@@ -33,7 +33,8 @@ describe('describeRetention', () => {
   test('spells out the schedule', () => {
     expect(describeRetention(RETENTION_NEVER)).toMatch(/until you delete them/);
     expect(describeRetention(1)).toMatch(/a day after/);
-    expect(describeRetention(30)).toBe('Trashed notes are deleted 30 days after they are trashed.');
+    expect(describeRetention(30)).toMatch(/deleted 30 days after/);
+    expect(describeRetention(30)).toMatch(/sweeps them automatically/);
     expect(describeRetention(365)).toMatch(/a year after/);
     expect(describeRetention(DEFAULT_RETENTION_DAYS)).toMatch(/30 days/);
   });

@@ -117,4 +117,19 @@ describe('shortcutFor', () => {
     expect(shortcutFor(e({ key: 'e', ctrlKey: true }))).toBeNull();
     expect(shortcutFor(e({ key: 'n', altKey: true }))).toBeNull();
   });
+
+  test('explicit bindings override the built-in map', () => {
+    const bindings = {
+      save: { key: 'd', ctrl: true },
+      search: { key: 'g' },
+      edit: { key: 'x' },
+      help: null,
+    };
+    expect(shortcutFor(e({ key: 'd', ctrlKey: true }), { bindings })).toBe('save');
+    expect(shortcutFor(e({ key: 's', ctrlKey: true }), { bindings })).toBeNull();
+    expect(shortcutFor(e({ key: 'g' }), { bindings })).toBe('search');
+    expect(shortcutFor(e({ key: 'x' }), { bindings })).toBe('edit');
+    expect(shortcutFor(e({ key: '?' }), { bindings })).toBeNull();
+    expect(shortcutFor(e({ key: 'x' }), { bindings, typing: true })).toBeNull();
+  });
 });

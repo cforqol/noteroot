@@ -74,7 +74,7 @@ test('clicks call onOpen for notes and onToggle (inverted state) for folders', (
   const onToggle = jest.fn();
   renderTree(el, tree(), { collapsed: new Set(['empty']), onOpen, onToggle });
   el.querySelector('[data-path="top.md"]').click();
-  expect(onOpen).toHaveBeenCalledWith('top.md', el.querySelector('[data-path="top.md"]'));
+  expect(onOpen).toHaveBeenCalledWith('top.md', el.querySelector('[data-path="top.md"]'), expect.anything());
   el.querySelector('[data-path="work"]').click();
   expect(onToggle).toHaveBeenLastCalledWith('work', true);
   el.querySelector('[data-path="empty"]').click();
@@ -121,4 +121,48 @@ test('interactions are safe without any callbacks', () => {
     el.querySelector('.row-menu').click();
     el.querySelector('.row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   }).not.toThrow();
+});
+
+test('a locked folder is dimmed, shows a lock and hides its children', () => {
+  const lockedTree = {
+    isDir: true,
+    children: [
+      { name: 'secret', path: 'secret', isDir: true, locked: true, noteCount: 2 },
+      { name: 'open.md', path: 'open.md' },
+    ],
+  };
+  renderTree(el, lockedTree);
+  const dir = el.querySelector('[data-path="secret"]');
+  expect(dir.classList.contains('locked')).toBe(true);
+  expect(dir.querySelector('.icon').textContent).toBe('🔒');
+  expect(dir.querySelector('.count').textContent).toBe('');
+  expect(el.querySelector('[data-path="secret/x.md"]')).toBeNull();
+});
+
+test('a locked note carries a lock glyph and the locked class', () => {
+  renderTree(el, {
+    isDir: true,
+    children: [{ name: 'vault.md', path: 'vault.md', locked: true }],
+  });
+  const note = el.querySelector('[data-path="vault.md"]');
+  expect(note.classList.contains('locked')).toBe(true);
+  expect(note.querySelector('.lock-icon').textContent).toBe('🔒');
+  expect(note.querySelector('.label').textContent).toBe('vault');
+});
+
+test('marks the split pane note and multi-selected notes', () => {
+  renderTree(el, tree(), {
+    current: 'top.md',
+    splitPath: 'work/plan.md',
+    multi: new Set(['work/plan.md', 'top.md']),
+  });
+  const top = el.querySelector('[data-path="top.md"]');
+  expect(top.classList.contains('active')).toBe(true);
+  expect(top.classList.contains('multi')).toBe(true);
+  const plan = el.querySelector('[data-path="work/plan.md"]');
+  expect(plan.classList.contains('split-open')).toBe(true);
+  expect(plan.getAttribute('aria-selected')).toBe('true');
+  const other = el.querySelector('[data-path="work/deep/x.md"]');
+  expect(other.classList.contains('split-open')).toBe(false);
+  expect(other.getAttribute('aria-selected')).toBe('false');
 });

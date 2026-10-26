@@ -85,7 +85,7 @@ test.beforeAll(async () => {
       GIT_AUTHOR_NAME: 'e2e', GIT_AUTHOR_EMAIL: 'e2e@test',
       GIT_COMMITTER_NAME: 'e2e', GIT_COMMITTER_EMAIL: 'e2e@test',
     },
-    stdio: 'pipe',
+    stdio: 'ignore',
   });
   serverProc = spawn(join(root, 'bin/noteroot'), [], {
     env: {
@@ -96,7 +96,7 @@ test.beforeAll(async () => {
       NOTEROOT_QUOTA_BYTES: String(QUOTA_BYTES),
       NOTEROOT_GC_INTERVAL: '999h',
     },
-    stdio: 'pipe',
+    stdio: 'ignore',
   });
 
   await new Promise((resolve, reject) => {

@@ -439,3 +439,84 @@ func TestSetSize_correctsPendingOnly(t *testing.T) {
 		t.Error("negative size accepted, want error")
 	}
 }
+
+func TestMIMEBySHA_findsOldBlobsPastTheListCap(t *testing.T) {
+	j := newTestJournal(t)
+	commit := func(name, mime, sha string) {
+		id, err := j.Begin(name, 1, mime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Commit(id, sha); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit("old.png", "image/png", "aaa")
+	for i := 0; i < 120; i++ { // more than List's default cap of 100
+		commit("f.txt", "text/plain", "sha"+string(rune('A'+i%26))+string(rune('a'+i/26)))
+	}
+	got, err := j.MIMEBySHA("aaa", "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["aaa"] != "image/png" || len(got) != 1 {
+		t.Fatalf("MIMEBySHA = %v", got)
+	}
+	if m, err := j.MIMEBySHA(); err != nil || len(m) != 0 {
+		t.Fatalf("no shas: %v %v", m, err)
+	}
+}
+
+// LiveSHAs is the reachability set a store sweep must respect: every
+// committed blob, and nothing that is pending, aborted or deleted.
+func TestLiveSHAs_committedOnly(t *testing.T) {
+	j := newTestJournal(t)
+
+	keepSHA := "1111111111111111111111111111111111111111111111111111111111111111"
+	id, _ := j.Begin("keep.png", 1, "image/png")
+	if err := j.Commit(id, keepSHA); err != nil {
+		t.Fatal(err)
+	}
+
+	goneSHA := "2222222222222222222222222222222222222222222222222222222222222222"
+	id2, _ := j.Begin("gone.png", 1, "image/png")
+	if err := j.Commit(id2, goneSHA); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.MarkDeleted(goneSHA); err != nil {
+		t.Fatal(err)
+	}
+
+	id3, _ := j.Begin("aborted.png", 1, "image/png")
+	_ = j.Abort(id3)
+
+	id4, _ := j.Begin("pending.png", 1, "image/png")
+	_ = id4
+
+	live, err := j.LiveSHAs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live[keepSHA] {
+		t.Error("committed blob missing from the live set")
+	}
+	if live[goneSHA] {
+		t.Error("soft-deleted blob is still considered live")
+	}
+	if len(live) != 1 {
+		t.Errorf("live = %v, want exactly the committed sha", live)
+	}
+}
+
+// An empty journal must report an empty set rather than an error: the
+// caller decides whether sweeping against it is safe.
+func TestLiveSHAs_emptyJournal(t *testing.T) {
+	j := newTestJournal(t)
+	live, err := j.LiveSHAs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 0 {
+		t.Errorf("live = %v, want empty", live)
+	}
+}

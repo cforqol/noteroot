@@ -145,6 +145,13 @@ describe('normalizeNote', () => {
     expect(r.id).toBe(ID);
   });
 
+  test('new keys join the others, ahead of blank lines closing the block', () => {
+    // Headers written by older servers end in a blank line.
+    const src = `---\nid: ${ID}\ntitle: Long\n\n---\n\nbody\n`;
+    expect(normalizeNote(src, { ...fixed, created: '2020-02-02' }).content)
+      .toBe(`---\nid: ${ID}\ntitle: Long\ncreated: 2020-02-02\nupdated: 2020-02-02\n\n---\n\nbody\n`);
+  });
+
   test('replaces an invalid id in place and inserts a missing one first', () => {
     expect(normalizeNote('---\ntitle: T\nid: bad\ncreated: 1\nupdated: 2\n---\n', fixed).content)
       .toBe('---\ntitle: T\nid: 01HF7YAT00041061050R3GG28ARH\ncreated: 1\nupdated: 2\n---\n');

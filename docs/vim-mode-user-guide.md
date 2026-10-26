@@ -18,7 +18,7 @@ noteroot includes a full Vim editor for desktop browsers, powered by [vim.wasm](
 
 ### Opening a Note in Vim
 
-1. Click any note in the tree
+1. Click any note in the sidebar
 2. Click the "Edit" button
 3. Vim will load automatically on desktop (≥768px width)
 4. Wait for the loading indicator to disappear
@@ -72,7 +72,7 @@ If Vim crashes 3 times consecutively, it's automatically disabled:
 
 - **Small Feature Set**: Current build uses vim.wasm 'small' features (no syntax highlighting, limited plugins)
 - **Draft Autosave**: Only saves on `:w` command (not real-time like textarea)
-- **No File Uploads**: Vim edits in virtual filesystem; use `:w` to save to server
+- **Attach menu**: File uploads and links go through the 📎 Attach menu in the toolbar — the insert lands in the Vim buffer once Vim is ready; save with `:w` (or Save/Done) to store it on the server
 - **Startup Time**: Vim takes 1-2 seconds to load (larger binary than textarea)
 
 ## Troubleshooting

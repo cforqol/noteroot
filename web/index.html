@@ -9,39 +9,81 @@
 </head>
 <body>
 <header class="topbar">
-  <button id="treebtn" class="btn icon-btn ghost" aria-label="Toggle notebook tree" title="Toggle tree" aria-expanded="true">☰</button>
-  <span class="brand">noteroot</span>
+  <button id="treebtn" class="btn icon-btn ghost" aria-label="Toggle sidebar" title="Toggle sidebar" aria-expanded="true">☰</button>
+  <span class="brand">noteroot<small id="app-version" class="brand-version" hidden></small></span>
   <select id="notebooks" aria-label="Notebook"></select>
   <input id="q" type="search" placeholder="Search notes…" aria-label="Search notes (press /)" autocomplete="off">
   <span class="spacer"></span>
-  <button id="editbtn" class="btn primary" title="Edit this note (E)" hidden>Edit</button>
   <button id="notemenu" class="btn icon-btn ghost" aria-label="Note actions" title="Note actions" hidden>⋯</button>
+  <button id="splitbtn" class="btn icon-btn ghost" aria-label="Split view" title="Split view: two panes side by side" aria-pressed="false">◫</button>
+  <button id="readpanebtn" class="btn icon-btn ghost" aria-label="Note panel" title="Note panel: contents, tags and links" aria-pressed="true">▤</button>
   <span class="topbar-sep" aria-hidden="true"></span>
   <button id="themebtn" class="btn icon-btn ghost" aria-label="Theme: auto" title="Theme: auto (click to change)">◐</button>
   <button id="helpbtn" class="btn icon-btn ghost" aria-label="Help" title="Guide and shortcuts (?)">?</button>
   <button id="settingsbtn" class="btn icon-btn ghost" aria-label="Settings" title="Settings">⚙</button>
 </header>
 <main>
-  <aside id="sidebar" aria-label="Notebook tree">
+  <aside id="sidebar" aria-label="Sidebar">
     <div id="tree-tools" class="tree-tools">
-      <button id="new-note" class="btn small" title="New note (N)">+ Note</button>
-      <button id="new-folder" class="btn small" title="New folder">+ Folder</button>
+      <div class="split-btn" id="new-split">
+        <button id="new-note" class="btn small split-main" title="New note (N)">+</button>
+        <button id="new-more" class="btn small split-caret" aria-label="New note, folder or import" title="New note, folder or import file" aria-haspopup="menu" aria-expanded="false">▾</button>
+      </div>
+      <button id="todays-note" class="btn small icon-btn ghost" title="Today's note (Ctrl/⌘+Shift+N)" aria-label="Today's note">📅</button>
+      <!-- Kept for direct clicks/automation; the caret menu drives them now. -->
+      <button id="new-folder" class="btn small" title="New folder" hidden>+ Folder</button>
+      <button id="import-note-file" class="btn small" title="Import .md or .txt file as note" hidden>+ File</button>
       <span class="spacer"></span>
       <button id="tree-expand" class="btn small icon-btn ghost" aria-label="Expand all folders" title="Expand all">⊞</button>
       <button id="tree-collapse" class="btn small icon-btn ghost" aria-label="Collapse all folders" title="Collapse all">⊟</button>
-      <button id="trash-btn" class="btn small icon-btn ghost" aria-label="Trash" title="Trash">🗑</button>
+      <button id="trash-btn" class="btn small icon-btn ghost" aria-label="Trashbin" title="Trashbin">🗑</button>
+    </div>
+    <div id="multi-bar" class="multi-bar" hidden>
+      <span id="multi-count">0 selected</span>
+      <span class="spacer"></span>
+      <button id="multi-clear" class="btn small ghost" title="Clear the selection">Clear</button>
+      <button id="multi-move" class="btn small ghost" title="Move selected notes to a folder">Move…</button>
+      <button id="multi-delete" class="btn small ghost-danger" title="Move the selected notes to the trash">🗑 Delete</button>
+    </div>
+    <div id="bookmarks-section" class="bookmarks-section" hidden>
+      <div class="bookmarks-header"><span>Bookmarks</span></div>
+      <nav id="bookmarks-list" class="bookmarks-list" aria-label="Bookmarked notes"></nav>
     </div>
     <nav id="tree" aria-label="Notes"></nav>
+    <div id="daily-notes-section" class="daily-notes-section" hidden>
+      <button id="daily-notes-toggle" type="button" class="daily-notes-header" aria-expanded="true" aria-controls="daily-notes-list">
+        <span id="daily-notes-caret" class="caret">▾</span><span>Daily Notes</span>
+      </button>
+      <div id="daily-notes-list" class="daily-notes-list" role="list" aria-label="Daily notes"></div>
+    </div>
+    <div id="tags-section" class="tags-section" hidden>
+      <button id="tags-toggle" type="button" class="tags-header" aria-expanded="true" aria-controls="tags-list">
+        <span id="tags-caret" class="caret">▾</span><span>Tags</span>
+      </button>
+      <div id="tags-list" class="tags-list" role="list" aria-label="Tags"></div>
+    </div>
     <div id="tree-status" class="tree-status" aria-live="polite"></div>
     <div class="drop-hint" aria-hidden="true">Drop .md files or a .tar.gz archive to import</div>
   </aside>
   <div id="tree-scrim" class="tree-scrim"></div>
   <div id="content">
+    <div id="note-bar" class="split-head note-bar" hidden>
+      <span id="note-path" class="split-path"></span>
+      <span class="spacer"></span>
+      <button id="copybtn" class="btn small ghost" title="Copy the note contents without its frontmatter" hidden>⧉ Copy</button>
+      <button id="historybtn" class="btn small ghost" title="Note history" hidden>🕐 History</button>
+      <button id="editbtn" class="btn small edit-inline" title="Edit this note (E)" hidden>Edit</button>
+    </div>
     <article id="note"></article>
     <section id="editor" hidden>
       <div id="banner"></div>
       <div class="toolbar">
         <span id="editormode" class="mode-chip"></span>
+        <button id="modeswitch" type="button" class="btn small ghost" hidden>Use plain text</button>
+        <button id="undobtn" type="button" class="btn small ghost" title="Undo (Ctrl/⌘+Z)" hidden>↶ Undo</button>
+        <button id="redobtn" type="button" class="btn small ghost" title="Redo (Ctrl/⌘+Shift+Z)" hidden>↷ Redo</button>
+        <button id="attachbtn" type="button" class="btn small ghost" title="Attach a file, link or note">📎 Attach</button>
+        <input id="attach-file" type="file" multiple hidden>
         <span id="lockstate" class="muted small"></span>
         <span class="spacer"></span>
         <span id="savestate" class="savestate" aria-live="polite"></span>
@@ -53,8 +95,56 @@
         <canvas id="vim-canvas"></canvas>
         <input id="vim-input" autocomplete="off" aria-label="Vim keyboard input">
       </div>
-      <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
+      <div class="editor-wrap">
+        <div class="line-gutter" id="editgutter" aria-hidden="true"></div>
+        <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
+        <div class="line-mirror" id="editmirror" aria-hidden="true"></div>
+      </div>
     </section>
+    <section id="split-pane" hidden aria-label="Second pane">
+      <div class="split-head">
+        <span id="split-path" class="split-path">Nothing open</span>
+        <span class="spacer"></span>
+        <button id="split-swap" class="btn small ghost" title="Swap this note with the main pane" disabled>⇄</button>
+        <button id="split-edit" class="btn small edit-inline" title="Edit this note in the second pane" disabled>Edit</button>
+        <button id="split-close" class="btn small icon-btn ghost" aria-label="Close the second pane" title="Close the second pane">✕</button>
+      </div>
+      <article id="split-note"></article>
+      <div class="editor-wrap">
+        <div class="line-gutter" id="splitgutter" aria-hidden="true"></div>
+        <textarea id="split-body" hidden spellcheck="false" aria-label="Second pane note source"></textarea>
+        <div class="line-mirror" id="splitmirror" aria-hidden="true"></div>
+      </div>
+      <div class="split-foot">
+        <span id="split-savestate" class="savestate" aria-live="polite"></span>
+        <span class="spacer"></span>
+        <button id="split-save" class="btn small" hidden>Save</button>
+        <button id="split-done" class="btn small primary" hidden>Done</button>
+      </div>
+    </section>
+    <aside id="readpane" hidden aria-label="Note panel">
+      <div class="rp-head">
+        <span class="rp-title">Note panel</span>
+        <button id="readpane-close" class="btn icon-btn ghost" aria-label="Hide the note panel" title="Hide the note panel">✕</button>
+      </div>
+      <section class="rp-sec" id="rp-toc" hidden>
+        <h2>Contents</h2>
+        <nav class="rp-toc" aria-label="Table of contents"></nav>
+      </section>
+      <section class="rp-sec" id="rp-tags" hidden>
+        <h2>Tags</h2>
+        <div class="rp-tags" aria-label="Tags"></div>
+      </section>
+      <section class="rp-sec" id="rp-out" hidden>
+        <h2>Outgoing links</h2>
+        <ul class="rp-list"></ul>
+      </section>
+      <section class="rp-sec" id="rp-back" hidden>
+        <h2>Backlinks</h2>
+        <ul class="rp-list"></ul>
+      </section>
+      <p class="rp-empty" hidden>Nothing to show for this note.</p>
+    </aside>
   </div>
 </main>
 
@@ -78,7 +168,7 @@
   <div class="modal-backdrop"></div>
   <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="trash-title">
     <div class="modal-header">
-      <h2 id="trash-title">Trash</h2>
+      <h2 id="trash-title">Trashbin</h2>
       <button id="trash-close" class="btn icon-btn ghost" aria-label="Close">×</button>
     </div>
     <div class="modal-body">
@@ -89,7 +179,7 @@
     <div class="modal-footer">
       <button id="trash-settings" class="btn">Retention…</button>
       <span class="spacer"></span>
-      <button id="trash-empty-modal" class="btn danger">Empty trash…</button>
+      <button id="trash-empty-modal" class="btn danger">Clean up…</button>
     </div>
   </div>
 </div>
@@ -121,11 +211,16 @@
       <nav class="settings-nav" aria-label="Settings sections">
         <button type="button" data-target="set-appearance">Appearance</button>
         <button type="button" data-target="set-editor">Editor</button>
-        <button type="button" data-target="set-tree">Tree</button>
+        <button type="button" data-target="set-keybindings">Shortcuts</button>
+        <button type="button" data-target="set-tree">Sidebar</button>
+        <button type="button" data-target="set-homepage">Startpage</button>
         <button type="button" data-target="set-status">Status bar</button>
         <button type="button" data-target="set-data">Data</button>
         <button type="button" data-target="set-trash">Trash</button>
         <button type="button" data-target="set-server">Server</button>
+        <button type="button" data-target="set-attachments">Attachments</button>
+        <button type="button" data-target="set-lock">Lock</button>
+        <button type="button" data-target="set-templates">Templates</button>
         <button type="button" data-target="set-about">About</button>
       </nav>
       <div id="settings-body" class="modal-body settings-body">
@@ -155,6 +250,27 @@
               <option value="wide">Full width</option>
             </select>
           </label>
+          <label class="setting">
+            <span class="setting-label">External links<small>http(s) links in rendered notes.</small></span>
+            <select data-setting="linkTarget">
+              <option value="new-tab">Open in new tab</option>
+              <option value="same-tab">Open in same tab</option>
+            </select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Note panel<small>Table of contents, tags and links beside the note.</small></span>
+            <select data-setting="readPane">
+              <option value="on">Shown</option>
+              <option value="off">Hidden</option>
+            </select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Panel side</span>
+            <select data-setting="readPaneSide">
+              <option value="right">Right</option>
+              <option value="left">Left</option>
+            </select>
+          </label>
         </section>
 
         <section class="settings-section" id="set-editor">
@@ -180,10 +296,17 @@
           <label class="setting">
             <span class="setting-label">Tab key<small>In the plain-text editor.</small></span>
             <select data-setting="tabKey">
-              <option value="focus">Moves focus (default)</option>
+              <option value="focus">Moves focus</option>
               <option value="2">Inserts 2 spaces</option>
-              <option value="4">Inserts 4 spaces</option>
+              <option value="4">Inserts 4 spaces (default)</option>
               <option value="tab">Inserts a tab</option>
+            </select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Split view: editor side<small>The other side shows the note as read. Needs a screen at least 900px wide.</small></span>
+            <select data-setting="splitEditSide">
+              <option value="left">Left edits, right reads</option>
+              <option value="right">Right edits, left reads</option>
             </select>
           </label>
           <label class="setting switch">
@@ -194,6 +317,10 @@
             <span class="setting-label">Wrap long lines<small>Plain-text editor.</small></span>
             <input type="checkbox" data-setting="wrap">
           </label>
+          <div class="setting">
+            <div class="setting-label">Vim configuration (vimrc)<small id="vimrc-info">No vimrc set.</small></div>
+            <button id="edit-vimrc" class="btn">Edit vimrc…</button>
+          </div>
           <div class="setting setting-block">
             <div class="setting-label">Vim status</div>
             <div id="vim-status" class="status-display">
@@ -206,10 +333,19 @@
           </div>
         </section>
 
-        <section class="settings-section" id="set-tree">
-          <h3>Tree</h3>
+        <section class="settings-section" id="set-keybindings">
+          <h3>Keyboard shortcuts</h3>
+          <p class="help-text">Click a shortcut and press the keys you want. These apply to the whole notebook and are kept in this browser.</p>
           <div class="setting">
-            <div class="setting-label">Position<small>On phones the tree is always a slide-in panel opened with ☰.</small></div>
+            <div class="setting-label">Shortcuts<small>Browse, rebind and reset every keyboard shortcut.</small></div>
+            <button id="shortcuts-manage" class="btn primary">Open manager…</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-tree">
+          <h3>Sidebar</h3>
+          <div class="setting">
+            <div class="setting-label">Position<small>On phones the sidebar is always a slide-in panel opened with ☰.</small></div>
             <div class="radio-group">
               <label><input type="radio" name="tree-placement" value="left" checked><span>Left</span></label>
               <label><input type="radio" name="tree-placement" value="right"><span>Right</span></label>
@@ -220,6 +356,23 @@
             <span class="setting-label">Show note counts<small>The [n] beside each folder.</small></span>
             <input type="checkbox" data-setting="treeCounts">
           </label>
+        </section>
+
+        <section class="settings-section" id="set-homepage">
+          <h3>Startpage</h3>
+          <p class="help-text">Pick any note in this notebook. It opens on startup, after switching notebooks, and when you press Esc to leave a note — so its wikilinks work as a dashboard. While no startpage is set the box reads “_blank” and you get the usual “Nothing open” screen.</p>
+          <label class="setting">
+            <span class="setting-label">Note path<small>Vault-relative, e.g. Home.md or dash/start.md.</small></span>
+            <input id="homepage-path" type="text" placeholder="_blank" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="setting">
+            <div class="setting-label">Use the note that is open now</div>
+            <button id="homepage-use-current" class="btn">Set to current note</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">No startpage<small>Back to the “Nothing open” screen.</small></div>
+            <button id="homepage-clear" class="btn">Clear</button>
+          </div>
         </section>
 
         <section class="settings-section" id="set-status">
@@ -254,13 +407,13 @@
         <section class="settings-section" id="set-data">
           <h3>Data</h3>
           <div class="setting">
-            <div class="setting-label">Export<small>The whole notebook as a .tar.gz archive of Markdown files.</small></div>
+            <div class="setting-label">Export<small>The whole notebook as a .tar.gz archive: every note (Markdown) and every attachment (images, audio, video, PDFs…).</small></div>
             <button id="export-notebook" class="btn">Export notebook</button>
           </div>
           <div class="setting">
-            <div class="setting-label">Import<small>A .tar.gz export (you see what changes first) or .md files.</small></div>
+            <div class="setting-label">Import<small>A .tar.gz export (you see what changes first, attachments included) or .md files.</small></div>
             <button id="import-notes" class="btn">Import…</button>
-            <input id="import-file" type="file" accept=".gz,.tgz,.md,.markdown,application/gzip,text/markdown" multiple hidden>
+            <input id="import-file" type="file" accept=".gz,.tgz,.md,.markdown,.txt,application/gzip,text/markdown,text/plain" multiple hidden>
           </div>
           <div class="setting">
             <div class="setting-label">Server backup<small>A full snapshot (history and database), kept on the server.</small></div>
@@ -273,6 +426,15 @@
           <div class="setting">
             <div class="setting-label">Preferences<small>Restore the defaults for this browser. Folder icons and drafts are kept.</small></div>
             <button id="reset-prefs" class="btn">Reset preferences</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Export preferences<small>Theme, editor, sidebar and startpage choices as a small .json file.</small></div>
+            <button id="export-prefs" class="btn">Export preferences</button>
+          </div>
+          <div class="setting">
+            <div class="setting-label">Import preferences<small>Applies an exported .json to this browser. Drafts are never touched.</small></div>
+            <button id="import-prefs" class="btn">Import preferences…</button>
+            <input id="import-prefs-file" type="file" accept=".json,application/json" hidden>
           </div>
         </section>
 
@@ -288,23 +450,60 @@
             </select>
           </div>
           <div class="setting">
-            <div class="setting-label">Clean up now<small id="trash-count">Open a notebook to see its trash.</small></div>
-            <button id="trash-purge-now" class="btn" disabled>Apply retention now</button>
-          </div>
-          <div class="setting">
-            <div class="setting-label">Empty the trash<small>Deletes every trashed note in this notebook for good.</small></div>
-            <button id="trash-empty" class="btn danger" disabled>Empty trash…</button>
+            <div class="setting-label">Clean up trash<small id="trash-count">Open a notebook to see its trash.</small></div>
+            <button id="trash-empty" class="btn danger" disabled>Clean up…</button>
           </div>
         </section>
 
         <section class="settings-section" id="set-server">
           <h3>Server</h3>
           <dl id="server-info" class="info-list"><dt>Status</dt><dd class="muted">Open a notebook to see its storage.</dd></dl>
+          <p class="help-text">These numbers cover uploaded files (images, audio, video, PDFs) in this notebook. Note text is not counted.</p>
+          <p class="help-text"><strong>Upload limit:</strong> a server-wide cap, applied to each notebook separately. It is not set here: put
+            <code>NOTEROOT_QUOTA_BYTES=1073741824</code> (1 GiB; <code>0</code> or unset means no limit) in the server's environment — for Docker,
+            the <code>environment:</code> list in <code>deploy/compose.yaml</code> — and restart noteroot. Once a notebook is full, uploads are refused.</p>
+</section>
+
+        <section class="settings-section" id="set-attachments">
+          <h3>Attachments</h3>
+          <p class="help-text">Uploaded files stored in this notebook. Images, videos, audio and PDFs linked in notes are rendered inline.</p>
+          <div class="setting">
+            <div class="setting-label">Uploaded files<small>Browse, insert, and delete uploads in the current notebook.</small></div>
+            <button id="attachments-manage" class="btn primary">Open manager…</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-lock">
+          <h3>Lock</h3>
+          <p class="help-text">A content lock hides a notebook, folder or note behind a password and keeps it out of the app until the password is entered. It is <strong>not encryption</strong>: the note stays plaintext on disk, in git and in backups, so anyone with server access can still read it.</p>
+          <div class="setting">
+            <div class="setting-label">This notebook<small id="lock-notebook-info">Open a notebook to lock it.</small></div>
+            <div class="lock-actions">
+              <button id="lock-notebook" class="btn" disabled>Lock notebook…</button>
+              <button id="unlock-notebook" class="btn" hidden>Unlock…</button>
+              <button id="relock-notebook" class="btn" hidden>Lock again</button>
+              <button id="remove-lock-notebook" class="btn danger" hidden>Remove lock</button>
+            </div>
+          </div>
+          <p class="help-text small">Folders and notes have their own lock entries: use a folder's or note's ⋯ menu in the sidebar.</p>
+        </section>
+
+        <section class="settings-section" id="set-templates">
+          <h3>Templates</h3>
+          <p class="help-text">Create note templates with variables like <code>{{title}}</code>, <code>{{date}}</code>, <code>{{time}}</code>, <code>{{id}}</code>, <code>{{path}}</code>, <code>{{folder}}</code>. Use <strong>New note from template…</strong> in the + menu or a folder's ⋯ menu.</p>
+          <div class="setting">
+            <div class="setting-label">Templates</div>
+            <div id="templates-list" class="templates-list" role="list"></div>
+          </div>
+          <div class="setting">
+            <button id="create-template" class="btn">Create template…</button>
+          </div>
         </section>
 
         <section class="settings-section" id="set-about">
           <h3>About</h3>
-          <p class="help-text">noteroot stores notes as plain Markdown files on your server. Preferences on this page are saved in this browser only.</p>
+          <p class="help-text">noteroot stores notes as plain Markdown files on your server. Preferences on this page are saved in this browser only.
+            Build version: <code id="about-version" class="muted">—</code></p>
           <p class="help-text">
             <strong>Vim mode</strong> runs real Vim (WASM) in the page. Mobile devices always use the plain-text editor.
           </p>
@@ -315,8 +514,97 @@
   </div>
 </div>
 
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="vimrc-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content vimrc-content" role="dialog" aria-modal="true" aria-labelledby="vimrc-title">
+    <div class="modal-header">
+      <h2 id="vimrc-title">Edit vimrc</h2>
+      <button id="vimrc-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="help-text">Vim commands run each time Vim starts in the editor, after the built-in settings, for example <code>set number</code> or <code>set tabstop=4</code>. Saved in this browser. Lines starting with <code>"</code> are comments.</p>
+      <textarea id="vimrc-body" class="vimrc-body" spellcheck="false" aria-label="vimrc" placeholder='" set number'></textarea>
+    </div>
+    <div class="modal-footer">
+      <button id="vimrc-clear" class="btn ghost">Clear</button>
+      <span class="spacer"></span>
+      <button id="vimrc-cancel" class="btn">Cancel</button>
+      <button id="vimrc-save" class="btn primary">Save</button>
+    </div>
+  </div>
+</div>
 
+<div id="attachments-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content attachments-content" role="dialog" aria-modal="true" aria-labelledby="attachments-title">
+    <div class="modal-header">
+      <h2 id="attachments-title">Attachments</h2>
+      <div class="attachments-header-tools">
+        <input id="attachments-search" type="search" placeholder="Filter by name, type or SHA…" aria-label="Filter attachments" autocomplete="off">
+        <select id="attachments-filter" aria-label="Filter by type">
+          <option value="all">All types</option>
+          <option value="image">Images</option>
+          <option value="video">Video</option>
+          <option value="audio">Audio</option>
+          <option value="pdf">PDF</option>
+          <option value="archive">Archives</option>
+          <option value="text">Text</option>
+          <option value="other">Other</option>
+        </select>
+        <button id="attachments-upload" class="btn small" title="Upload a new file to this notebook">Upload…</button>
+        <input id="attachments-upload-file" type="file" multiple hidden>
+        <button id="attachments-refresh2" class="btn small ghost" title="Reload the list">Refresh</button>
+        <button id="attachments-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="modal-body attachments-body">
+      <div id="attachments-summary" class="attachments-summary" aria-live="polite"></div>
+      <div id="attachments-grid" class="attachments-grid">
+        <p class="muted small">Open a notebook to see its attachments.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="shortcuts-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content shortcuts-content" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+    <div class="modal-header">
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <div class="shortcuts-header-tools">
+        <button id="keybindings-reset" class="btn small" type="button">Reset all to defaults</button>
+        <button id="shortcuts-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="modal-body shortcuts-body">
+      <p class="help-text small">Click a shortcut and press the keys you want. <kbd>Esc</kbd> cancels, <kbd>Backspace</kbd> clears the binding.</p>
+      <div id="keybindings-list" class="keybindings-list" role="list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="history-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content history-content" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <div class="modal-header">
+      <h2 id="history-title">History — <span id="history-path"></span></h2>
+      <button id="history-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+    </div>
+    <div class="history-nav">
+      <button id="history-newer" class="btn small" title="Newer version">◀ Newer</button>
+      <span id="history-position" class="history-position"></span>
+      <button id="history-older" class="btn small" title="Older version">Older ▶</button>
+      <span class="spacer"></span>
+      <button id="history-load-more" class="btn small ghost" hidden>Load more…</button>
+    </div>
+    <div class="modal-body history-body">
+      <ul id="history-list" class="history-list" role="list"></ul>
+      <pre id="history-diff" class="history-diff" aria-live="polite"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

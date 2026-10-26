@@ -133,7 +133,8 @@ header.topbar {
   padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg);
 }
 .brand { font-weight: 650; letter-spacing: -0.02em; margin-right: 6px; }
-#notebooks { max-width: 220px; }
+.brand-version { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 5px; }
+#notebooks { max-width: 220px; min-width: 0; }
 #q { width: 260px; background: var(--subtle); }
 #q:focus { background: var(--surface); }
 .topbar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
@@ -148,7 +149,87 @@ body[data-tree="right"] #sidebar { order: 2; border-right: 0; border-left: 1px s
 body[data-tree="right"] #content { order: 1; }
 body[data-tree="hidden"] main { grid-template-columns: minmax(0, 1fr); }
 body[data-tree="hidden"] #sidebar { display: none; }
-#content { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+#content { overflow: hidden; display: flex; flex-direction: column; min-width: 0; position: relative; }
+
+/* --- split (vertical) panes ---------------------------------------------- */
+
+/* Two panes side by side. The main pane keeps the note/editor elements
+   it always had; the second pane is a separate section. */
+#content.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+#content.split > #note-bar { grid-column: 1; grid-row: 1; }
+#content.split > #note, #content.split > #editor { grid-column: 1; grid-row: 2; min-width: 0; min-height: 0; }
+#content.split > #split-pane { grid-column: 2; grid-row: 1 / span 2; }
+.note-bar { flex: none; }
+#split-pane {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-left: 1px solid var(--line); background: var(--surface);
+}
+.split-head, .split-foot {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  font-size: 12px; color: var(--muted);
+}
+.split-head { border-bottom: 1px solid var(--line); }
+.split-foot { border-top: 1px solid var(--line); }
+.split-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
+article#split-note { padding: 16px 20px 28px; }
+#split-body {
+  flex: 1; min-height: 0; min-width: 0; resize: none; box-sizing: border-box;
+  border: 0; padding: 12px 14px; background: var(--bg); color: var(--fg);
+  font-family: var(--mono); font-size: var(--fs-editor); line-height: 1.6;
+}
+#splitbtn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+
+/* --- read-mode side panel (contents, tags, links) ---------------------- */
+/* The panel takes its own column beside the note: the content pane
+   reserves the width so the reading column never sits underneath it.
+   It hides itself while the editor is open (#note hidden), because the
+   editor has no note to describe. */
+#readpanebtn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+#content.pane-on { padding-right: 264px; }
+#content.pane-on.pane-left { padding-right: 0; padding-left: 264px; }
+/* The editor has no panel: give the room back while editing. */
+#content.editing.pane-on, #content.editing.pane-on.pane-left { padding-left: 0; padding-right: 0; }
+#readpane {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 264px;
+  display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--surface); border-left: 1px solid var(--line); z-index: 50;
+}
+#content.pane-on.pane-left #readpane {
+  right: auto; left: 0; border-left: 0; border-right: 1px solid var(--line);
+}
+#readpane[hidden] { display: none; }
+#note[hidden] ~ #readpane { display: none; }
+.rp-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; background: var(--surface); flex: none;
+}
+.rp-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.rp-sec { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.rp-sec h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-weight: 600; margin: 0 0 6px;
+}
+.rp-toc { display: flex; flex-direction: column; }
+.rp-toc a {
+  font-size: 13px; line-height: 1.4; color: var(--fg); text-decoration: none;
+  padding: 3px 4px; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rp-toc a:hover { background: var(--hover); color: var(--accent); }
+.rp-tags .note-tags { margin: 0; }
+.rp-list { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.rp-list li { margin: 3px 0; }
+.rp-list li > * { max-width: 100%; }
+.rp-list .muted { color: var(--muted); font-size: 12px; }
+.rp-empty { margin: 0; padding: 12px; font-size: 13px; color: var(--muted); }
 
 /* --- sidebar & tree ---------------------------------------------------- */
 #sidebar {
@@ -157,6 +238,36 @@ body[data-tree="hidden"] #sidebar { display: none; }
 }
 #sidebar nav { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
 .tree-tools { display: flex; align-items: center; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.split-btn { display: inline-flex; }
+.split-btn .split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split-btn .split-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; padding: 2px 5px; }
+.split-btn .split-caret[aria-expanded="true"] { background: var(--hover); }
+.bookmarks-section { border-bottom: 1px solid var(--line); }
+.bookmarks-header { padding: 5px 10px 3px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.bookmarks-list { padding: 2px 6px 6px; }
+/* Each sidebar section scrolls on its own once it outgrows its share. */
+#sidebar #bookmarks-list { flex: none; max-height: 28vh; }
+.tags-section { border-top: 1px solid var(--line); flex: none; }
+.tags-header {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px 3px;
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; text-align: left;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.tags-list { max-height: 22vh; overflow-y: auto; padding: 2px 6px 6px; }
+.tag-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 6px; border: 0;
+  border-radius: var(--radius); background: transparent; color: var(--fg); cursor: pointer;
+  font-size: 13px; text-align: left;
+}
+.tag-item:hover { background: var(--accent-soft); }
+.tag-item .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.bookmark-item { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: var(--radius); }
+.bookmark-item:hover { background: var(--hover); }
+.bookmark-item.active .bookmark-link { font-weight: 600; color: var(--accent); }
+.bookmark-link { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); text-decoration: none; }
+.bookmark-link:hover { color: var(--accent); }
+.bookmark-remove { opacity: 0; padding: 0 4px; font-size: 14px; line-height: 1; color: var(--muted); }
+.bookmark-item:hover .bookmark-remove { opacity: 1; }
 .tree-status { padding: 6px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .tree-empty { padding: 10px; font-size: 13px; }
 .tree-scrim { display: none; }
@@ -191,8 +302,60 @@ body[data-tree="hidden"] #sidebar { display: none; }
 @media (hover: none) { .row-menu { opacity: 1; } }
 .node.active { color: var(--accent); font-weight: 500; }
 .row:has(> .node.active) { background: var(--accent-soft); }
+.node.multi { background: var(--hover); font-weight: 500; }
+.node.multi::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+.node.split-open .label::after {
+  content: "◫"; margin-left: 6px; font-size: 11px; color: var(--muted);
+}
+.multi-bar {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border-bottom: 1px solid var(--line); background: var(--accent-soft);
+  font-size: 12px; color: var(--fg);
+}
+.multi-bar .btn.ghost-danger { color: var(--danger); border-color: var(--danger); }
 .node.dir.selected .label { text-decoration: underline; text-underline-offset: 3px; }
 .kids { margin-left: 12px; }
+/* Content lock: a locked node stays listed (its name is not secret) but is
+   dimmed and carries a lock glyph, with its children hidden by the server. */
+.node.locked { color: var(--muted); }
+.node.locked .label { font-style: italic; }
+.node .lock-icon { font-size: 12px; opacity: 0.85; }
+.lock-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* --- templates -------------------------------------------------------- */
+.templates-list { display: flex; flex-direction: column; gap: 8px; }
+.template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--subtle);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.template-name {
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.template-name .badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.template-name .badge.default {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.template-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 
 /* --- reader ----------------------------------------------------------- */
 article {
@@ -200,6 +363,64 @@ article {
   padding: 32px max(28px, calc((100% - var(--measure)) / 2)) 48px;
   line-height: 1.7;
 }
+/* --- read-mode line-number column ---------------------------------------- */
+/* The numbers sit in a gutter column of their own, immediately left of the
+   text rather than loose in the note's margin: the article paints the strip
+   (so it stays put while the text scrolls) and each block pins its number
+   into it. Every pane keeps its own column — #note and #split-note are set
+   up identically, so a split view shows one column per side. */
+article#note, article#split-note {
+  counter-reset: readln;
+  /* rem, not em: the strip is sized from the article while the numbers are
+     sized from their own 0.75rem font, and the two must agree. */
+  --read-gutter: 3.6rem; /* column width */
+}
+/* The column hugs the text. On wide windows it fits inside the outer
+   margin, which keeps the text centred; on narrower ones the left padding
+   grows so the column always has room. */
+article#note {
+  --read-gutter-x: max(calc(28px + var(--read-gutter)), calc((100% - var(--measure)) / 2));
+  padding-left: var(--read-gutter-x);
+}
+article#split-note {
+  --read-gutter-x: calc(20px + var(--read-gutter));
+  padding-left: var(--read-gutter-x);
+}
+article#note, article#split-note {
+  background-image:
+    linear-gradient(to right,
+      transparent 0,
+      transparent calc(var(--read-gutter-x) - 1px),
+      var(--line) calc(var(--read-gutter-x) - 1px),
+      var(--line) var(--read-gutter-x),
+      transparent var(--read-gutter-x)),
+    linear-gradient(to right,
+      transparent 0,
+      transparent calc(var(--read-gutter-x) - var(--read-gutter)),
+      var(--subtle) calc(var(--read-gutter-x) - var(--read-gutter)),
+      var(--subtle) var(--read-gutter-x),
+      transparent var(--read-gutter-x));
+}
+article#note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr),
+article#split-note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr) {
+  counter-increment: readln; position: relative;
+}
+article#note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr)::before,
+article#split-note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr)::before {
+  content: counter(readln);
+  position: absolute;
+  /* Centered inside the strip, with breathing room on both sides: the
+     number sits in the column, a clear gap from the text it counts. */
+  left: calc(6px - var(--read-gutter));
+  width: calc(var(--read-gutter) - 16px);
+  text-align: center; line-height: 1.2;
+  font-size: 0.75rem; font-family: var(--mono); color: var(--muted);
+  user-select: none; pointer-events: none; top: 0.25rem; opacity: 0.8;
+}
+/* ::before is placed against the block's padding box, so a left border
+   would nudge its number off the column — take the border back. */
+article#note > pre::before, article#split-note > pre::before { margin-left: -1px; }
+article#note > blockquote::before, article#split-note > blockquote::before { margin-left: -3px; }
 article h1, article h2, article h3 { line-height: 1.25; letter-spacing: -0.015em; }
 article h1 { font-size: 1.9em; margin: 0.2em 0 0.6em; }
 article h2 { font-size: 1.4em; margin: 1.6em 0 0.5em; }
@@ -207,16 +428,34 @@ article h3 { font-size: 1.15em; margin: 1.4em 0 0.4em; }
 article a { color: var(--accent); }
 article pre {
   background: var(--subtle); border: 1px solid var(--line); padding: 12px 14px;
-  border-radius: var(--radius); overflow-x: auto; font-size: 0.88em; line-height: 1.55;
+  border-radius: var(--radius); font-size: 0.88em; line-height: 1.55;
+  /* The scroll lives on the code inside: a scroll container here would
+     clip the gutter number, which is absolutely positioned against the
+     pre's padding box and sits outside it, to the left. */
+  overflow: visible;
 }
+article pre > code { display: block; overflow-x: auto; }
+article pre:not(:has(> code)) { overflow-x: auto; }
 article code { font-family: var(--mono); background: var(--hover); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
 article pre code { background: none; padding: 0; font-size: 1em; }
 article img { max-width: 100%; border-radius: var(--radius); }
+.mermaid-diagram { margin: 1em 0; overflow-x: auto; text-align: center; }
+.mermaid-diagram svg { max-width: 100%; height: auto; }
+pre.mermaid-error { border-color: var(--danger); }
+article video { display: block; max-width: 100%; margin: 1em 0; background: #000; border-radius: var(--radius); }
+article audio { display: block; max-width: 100%; margin: 1em 0; }
+article iframe.embed-pdf { display: block; width: 100%; height: 600px; border: none; margin: 1em 0; border-radius: var(--radius); }
 article blockquote { margin: 1em 0; padding: 2px 16px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 article hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
 article table { border-collapse: collapse; margin: 1em 0; }
 article th, article td { border: 1px solid var(--line); padding: 6px 10px; }
 article th { background: var(--subtle); text-align: left; }
+/* GFM task lists: the checkbox stands in for the bullet. An input the
+   sanitizer did not pin to type=checkbox is left typeless and would render
+   as an empty text field — never show those. */
+article li:has(> input[type="checkbox"]) { list-style: none; }
+article li:has(> input[type="checkbox"]) > input { margin-right: 0.5em; vertical-align: -2px; }
+article input:not([type="checkbox"]) { display: none; }
 article a.wikilink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 article .wikilink.dead { color: var(--muted); text-decoration: underline dotted; cursor: help; }
 .links-panel { margin-top: 32px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 14px; }
@@ -258,14 +497,51 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .savestate[data-state="ok"] { color: var(--ok); }
 .savestate[data-state="error"] { color: var(--danger); }
 .savestate[data-state="dirty"] { color: var(--warn); }
+/* --- plain-text editor line-number gutter --------------------------------- */
+.editor-wrap {
+  position: relative; flex: 1; min-height: 0; display: flex;
+  border-radius: var(--radius); overflow: hidden;
+}
+.editor-wrap:has(> textarea[hidden]) { display: none; }
+.line-gutter {
+  flex-shrink: 0; overflow: hidden; user-select: none; pointer-events: none;
+  background: var(--subtle); border-right: 1px solid var(--line);
+  color: var(--muted); text-align: right; padding-right: 5px;
+  box-sizing: border-box; font-family: var(--mono); width: 3em;
+}
+.line-gutter .ln { display: block; }
+#editgutter  { padding-top: 16px; font-size: var(--fs-editor); line-height: 1.65; }
+#splitgutter { padding-top: 12px; font-size: var(--fs-editor); line-height: 1.6; }
+/* Hidden mirror: same metrics as the textarea, used to measure how many
+   visual rows each logical line occupies when soft-wrap is on. */
+.line-mirror {
+  position: absolute; visibility: hidden; pointer-events: none; z-index: -1;
+  box-sizing: border-box; white-space: pre-wrap; overflow-wrap: break-word;
+  font-family: var(--mono);
+}
+#editmirror  { font-size: var(--fs-editor); line-height: 1.65; padding: 16px 18px; }
+#splitmirror { font-size: var(--fs-editor); line-height: 1.6; padding: 12px 14px; }
+
 #editbody {
-  flex: 1; resize: none; padding: 16px 18px; border-radius: var(--radius);
+  flex: 1; resize: none; padding: 16px 18px;
   font: var(--fs-editor)/1.65 var(--mono); tab-size: 4;
 }
-#vim-container { flex: 1; min-height: 0; position: relative; border-radius: var(--radius); overflow: hidden; }
+/* Vim draws its first row at the canvas's top edge; the inset (in
+   vim.wasm's background colour) keeps it clear of the toolbar and the
+   rounded corner. `clip` means the container can never be scrolled,
+   and the keyboard sink sits inside the box: vim.wasm focuses it on
+   every click, and an off-box input made Firefox and Safari scroll the
+   canvas up under the toolbar, hiding the first lines. */
+#vim-container {
+  flex: 1; min-height: 0; position: relative; border-radius: var(--radius);
+  overflow: hidden; overflow: clip; padding: 6px 6px 4px 8px; background: #282c34;
+}
 #vim-container[hidden] { display: none; }
 #vim-canvas { width: 100%; height: 100%; display: block; }
-#vim-input { position: absolute; left: -9999px; }
+#vim-input {
+  position: absolute; top: 0; left: 0; width: 1px; height: 1px; min-height: 0;
+  padding: 0; border: 0; opacity: 0; pointer-events: none; caret-color: transparent;
+}
 .vim-loading {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   padding: 12px 20px; background: var(--surface); border: 1px solid var(--line);
@@ -311,7 +587,7 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(0.985); } }
 
-.dialog .modal-content { max-width: 440px; margin-top: 12vh; }
+.dialog .modal-content { max-width: 440px; margin-top: 12vh; /* never hang the buttons below the fold */ max-height: calc(100dvh - 12vh - 24px); }
 .dialog.dialog-wide .modal-content { max-width: 640px; }
 .dialog-form { display: flex; flex-direction: column; }
 .dialog-message { margin-top: 0; }
@@ -357,6 +633,17 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .ctx-item.danger:hover, .ctx-item.danger:focus-visible { background: var(--danger-bg); }
 .ctx-sep { height: 1px; background: var(--line); margin: 5px 4px; }
 
+/* Attach menu: note picker */
+.attach-note-list {
+  list-style: none; margin: 0 0 14px; padding: 0; max-height: 200px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column;
+}
+.attach-note-item {
+  display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg);
+  font: 13px/1.4 var(--mono); padding: 6px 10px; cursor: pointer; overflow-wrap: anywhere;
+}
+.attach-note-item:hover, .attach-note-item:focus-visible { background: var(--accent-soft); outline: none; }
+
 /* Trash */
 .trash-list { list-style: none; margin: 0; padding: 0; }
 .trash-list li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -365,7 +652,44 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .trash-list .trash-due { color: var(--warn); }
 .trash-list .btn.small.danger { background: transparent; color: var(--danger); border-color: var(--line); }
 .trash-list .btn.small.danger:hover { background: var(--danger-bg); border-color: var(--danger); }
+.trash-list li.trash-folder { font-weight: 600; border-bottom: none; padding-top: 12px; }
+.trash-list li.nested { padding-left: 18px; }
 #trash-retention-note { margin-top: -4px; color: var(--muted); }
+.attachments-list { overflow-x: auto; }
+.attachments-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.attachments-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line-strong); color: var(--muted); font-weight: 600; white-space: nowrap; }
+.attachments-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.attachments-table tr:last-child td { border-bottom: 0; }
+.attachments-table .mono { font-family: var(--mono); }
+.attachments-table a { color: var(--accent); text-decoration: none; }
+.attachments-table a:hover { text-decoration: underline; }
+
+/* --- attachments manager (dedicated window) ---------------------------- */
+.attachments-content { max-width: 1040px; }
+.attachments-header-tools { display: flex; align-items: center; gap: 8px; }
+.attachments-header-tools input[type="search"] { min-width: 220px; }
+.attachments-body { max-height: min(74vh, 720px); }
+.attachments-summary { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.attachments-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.attach-card {
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  display: flex; flex-direction: column; background: var(--bg); min-width: 0;
+}
+.attach-thumb {
+  height: 118px; background: var(--subtle); display: flex; align-items: center; justify-content: center;
+  overflow: hidden; color: var(--muted); font-size: 12px; text-align: center; padding: 6px;
+}
+.attach-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.attach-thumb .attach-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.attach-meta { padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.attach-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 9px 9px; }
+.attach-actions .btn { min-height: 24px; padding: 1px 7px; font-size: 12px; }
+.attach-refs { font-size: 11px; padding: 0 9px 8px; }
+.attach-refs a { color: var(--accent); text-decoration: none; }
+.attach-refs a:hover { text-decoration: underline; }
+.attachments-empty { grid-column: 1 / -1; }
 
 /* --- settings --------------------------------------------------------- */
 .settings-content { max-width: 840px; }
@@ -386,6 +710,7 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .setting-label { display: flex; flex-direction: column; font-size: 14px; font-weight: 500; }
 .setting-label small { font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .setting > select { min-width: 200px; }
+.setting > input[type="text"] { min-width: 200px; }
 /* Switch: a checkbox styled as a toggle */
 .setting.switch { cursor: pointer; }
 .setting.switch input[type="checkbox"] {
@@ -414,6 +739,77 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .status-value.enabled { color: var(--ok); }
 .status-value.disabled { color: var(--danger); }
 #reset-vim { align-self: flex-start; }
+
+/* --- shortcuts manager (dedicated window) ----------------------------- */
+.shortcuts-content { max-width: 640px; }
+.shortcuts-header-tools { display: flex; align-items: center; gap: 8px; }
+.shortcuts-body { max-height: min(74vh, 640px); overflow-y: auto; }
+
+/* --- history window (dedicated window) -------------------------------- */
+.history-content { max-width: 960px; display: flex; flex-direction: column; }
+.history-nav {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 18px; border-bottom: 1px solid var(--line);
+}
+.history-position { font-size: 13px; color: var(--muted); min-width: 72px; text-align: center; }
+.history-body {
+  display: grid; grid-template-columns: minmax(200px, 280px) 1fr;
+  gap: 0; min-height: 0; flex: 1; max-height: min(70vh, 640px);
+}
+.history-list {
+  list-style: none; margin: 0; padding: 8px 0; overflow-y: auto;
+  border-right: 1px solid var(--line); font-size: 13px;
+}
+.history-item {
+  display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline;
+  padding: 6px 14px; cursor: pointer; border-bottom: 1px solid var(--line);
+}
+.history-item:hover { background: var(--hover); }
+.history-item.active { background: var(--accent-soft); }
+.history-hash { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.history-date { font-size: 11px; color: var(--muted); }
+.history-message { flex: 1 1 100%; }
+.history-diff {
+  margin: 0; padding: 12px 14px; overflow: auto; font-family: var(--mono);
+  font-size: 12.5px; line-height: 1.55; background: var(--bg);
+}
+.diff-line { white-space: pre-wrap; word-break: break-all; padding: 0 4px; border-radius: 2px; }
+.diff-add { background: var(--ok-bg); color: var(--ok); }
+.diff-del { background: var(--danger-bg); color: var(--danger); }
+.diff-hunk { color: var(--accent); font-weight: 600; margin-top: 6px; }
+.diff-meta { color: var(--muted); }
+@media (max-width: 720px) {
+  .history-body { grid-template-columns: 1fr; }
+  .history-list { max-height: 160px; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* --- keybindings editor ---------------------------------------------- */
+.keybindings-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 12px; }
+.keybinding-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+.keybinding-row:last-child { border-bottom: 0; }
+.keybinding-row .keybinding-label { font-size: 14px; font-weight: 500; }
+.keybinding-row .keybinding-capture {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 132px; min-height: 32px;
+  justify-content: flex-end; padding: 3px 8px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  color: var(--fg); font: 500 13px/1.2 var(--font);
+}
+.keybinding-row .keybinding-capture:hover { background: var(--hover); border-color: var(--line-strong); }
+.keybinding-row .keybinding-capture.capturing {
+  border-color: var(--accent); background: var(--accent-soft); font-style: italic; color: var(--muted);
+}
+.keybinding-row .keybinding-capture.kb-empty { color: var(--muted); }
+.keybinding-row .keybinding-capture.kb-conflict { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.keybinding-row .kb-plus { color: var(--muted); font-size: 12px; }
+.keybinding-row .keybinding-reset {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 15px;
+  min-width: 28px; min-height: 28px; border-radius: var(--radius);
+}
+.keybinding-row .keybinding-reset:hover { background: var(--hover); color: var(--fg); }
+.keybinding-row .keybinding-reset[hidden] { display: none; }
 .info-list { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 14px; }
 .info-list dt { color: var(--muted); }
 .info-list dd { margin: 0; overflow-wrap: anywhere; }
@@ -460,7 +856,7 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 @media (max-width: 720px) {
   header.topbar { gap: 4px; padding: 8px 8px; }
   .brand, .topbar-sep { display: none; }
-  #notebooks { max-width: 90px; }
+  #notebooks { max-width: 90px; min-width: 0; }
   #q { width: auto; flex: 1; min-width: 0; }
   main, body[data-tree] main { grid-template-columns: minmax(0, 1fr); }
   #sidebar, body[data-tree] #sidebar {
@@ -478,6 +874,17 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
     display: block; position: absolute; inset: 0; z-index: 55; background: rgba(0, 0, 0, 0.4);
   }
   article { padding: 18px 16px 32px; }
+  /* no room for the read-mode line-number column on phones: drop it and
+     give the panes their narrow layout back */
+  article#note { padding-left: 16px; background-image: none; }
+  article#split-note { padding-left: 20px; background-image: none; }
+  article#note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr)::before,
+  article#split-note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr)::before { display: none; }
+  /* No room for a side column on a phone: the note panel overlays the
+     note instead of pushing it over. */
+  #content.pane-on, #content.pane-on.pane-left { padding-left: 0; padding-right: 0; }
+  #readpane { width: min(86vw, 320px); box-shadow: var(--shadow); z-index: 55; }
+  #content.pane-on.pane-left #readpane { right: auto; left: 0; }
   .sb-extra { display: none; }
   .statusbar { gap: 10px; padding: 3px 8px; }
   .modal-content, .dialog .modal-content { margin: 6vh 10px; width: calc(100% - 20px); max-height: calc(100dvh - 12vh); }
@@ -486,9 +893,44 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
   .settings-nav button { flex: none; }
   .settings-body { max-height: none; }
   .setting { flex-wrap: wrap; }
-  .setting > select { min-width: 0; width: 100%; }
+  .setting > select, .setting > input[type="text"] { min-width: 0; width: 100%; }
   .check-grid { grid-template-columns: minmax(0, 1fr); }
   .info-list { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .info-list dd { margin-bottom: 8px; }
   #editor { padding: 8px; }
+}
+
+/* --- folder icon picker ------------------------------------------------ */
+.dialog-label { font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+.icon-grid {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-bottom: 14px;
+  /* Scroll-frame: the picker is ~90 icons, so it becomes a window inside
+     the dialog rather than the whole screen. */
+  max-height: min(46vh, 360px);
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 6px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--subtle);
+}
+.icon-choice { font-size: 18px; padding: 4px 0; border: 1px solid var(--line); border-radius: var(--radius); background: transparent; cursor: pointer; }
+.icon-choice:hover { background: var(--accent-soft); }
+.icon-choice[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.color-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.color-row input[type="checkbox"] { width: auto; min-height: 0; }
+.color-row input[type="color"] { padding: 2px; height: 34px; width: 80px; }
+
+/* --- tag chips above a note ------------------------------------------- */
+.note-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.tag-chip {
+  padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); cursor: pointer; font-size: 12px;
+}
+.tag-chip:hover { border-color: var(--accent); }
+
+/* --- vimrc editor window ---------------------------------------------- */
+.vimrc-content { max-width: 640px; }
+.vimrc-body {
+  width: 100%; min-height: 260px; box-sizing: border-box; resize: vertical;
+  font-family: var(--mono); font-size: 13px; line-height: 1.5; tab-size: 4;
+  padding: 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); color: var(--fg);
 }

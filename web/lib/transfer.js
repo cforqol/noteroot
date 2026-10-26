@@ -18,10 +18,22 @@ export function exportFileName(slug, date = new Date()) {
   return `${slug}-${localDate(date)}.tar.gz`;
 }
 
-/** Counts per import status: {created, updated, skipped, error, total}. */
+/**
+ * Counts per import status: {created, updated, skipped, error, files,
+ * total}. Attachments (kind "resource") are counted apart as `files`
+ * (new ones) so the note counts stay about notes; their failures still
+ * count as errors.
+ */
 export function summarizeImport(entries = []) {
-  const s = { created: 0, updated: 0, skipped: 0, error: 0, total: entries.length };
-  for (const e of entries) if (e.status in s) s[e.status] += 1;
+  const s = { created: 0, updated: 0, skipped: 0, error: 0, files: 0, total: entries.length };
+  for (const e of entries) {
+    if (e.kind === 'resource') {
+      if (e.status === 'created') s.files += 1;
+      else if (e.status === 'error') s.error += 1;
+    } else if (e.status in s) {
+      s[e.status] += 1;
+    }
+  }
   return s;
 }
 
@@ -32,9 +44,10 @@ export function describeImport(s, { dryRun = false } = {}) {
   const parts = [];
   if (s.created) parts.push(`${plural(s.created, 'new note')}`);
   if (s.updated) parts.push(`${s.updated} ${dryRun ? 'will be overwritten' : 'overwritten'}`);
+  if (s.files) parts.push(`${plural(s.files, 'attachment')}${dryRun ? ' to add' : ' added'}`);
   if (s.skipped) parts.push(`${s.skipped} unchanged`);
   if (s.error) parts.push(`${s.error} ${dryRun ? 'cannot be imported' : 'failed'}`);
-  return parts.length ? parts.join(', ') : 'No notes in this archive';
+  return parts.length ? parts.join(', ') : 'Nothing to import in this archive';
 }
 
 /**

@@ -42,6 +42,10 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
 		return
 	}
+	slug := r.PathValue("slug")
+	if !s.lockGuard(w, r, slug, req.From) || !s.lockGuard(w, r, slug, req.To) {
+		return
+	}
 
 	v := vault.Open(nb.Layout.Vault())
 	if err := v.Rename(req.From, req.To); err != nil {

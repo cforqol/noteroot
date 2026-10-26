@@ -5,6 +5,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        VERSION: ${NOTEROOT_VERSION:-dev}
     image: noteroot:0.1.0
     restart: unless-stopped
     ports:

@@ -217,15 +217,7 @@ func (t *Trash) List() ([]TrashEntry, error) {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
 			continue
 		}
-		e := TrashEntry{Name: f.Name()}
-		if b, err := os.ReadFile(filepath.Join(t.dir, f.Name()+".json")); err == nil {
-			_ = json.Unmarshal(b, &e)
-			e.Name = f.Name()
-		} else if fi, err := f.Info(); err == nil {
-			e.Size = fi.Size()
-			e.DeletedAt = fi.ModTime()
-		}
-		out = append(out, e)
+		out = append(out, t.entry(f.Name()))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].DeletedAt.Equal(out[j].DeletedAt) {
@@ -234,6 +226,101 @@ func (t *Trash) List() ([]TrashEntry, error) {
 		return out[i].DeletedAt.After(out[j].DeletedAt)
 	})
 	return out, nil
+}
+
+// entry reads one trashed note's record. A note without a readable
+// sidecar is described from the file itself, with an empty OrigPath.
+func (t *Trash) entry(name string) TrashEntry {
+	e := TrashEntry{Name: name}
+	if b, err := os.ReadFile(filepath.Join(t.dir, name+".json")); err == nil {
+		_ = json.Unmarshal(b, &e)
+		e.Name = name
+	} else if fi, err := os.Stat(filepath.Join(t.dir, name)); err == nil {
+		e.Size = fi.Size()
+		e.DeletedAt = fi.ModTime()
+	}
+	return e
+}
+
+// validName reports whether name can only refer to a note this trash
+// directory owns: a bare file name, as List reports them.
+func validName(name string) bool {
+	return name != "" && name == path.Base(name) && strings.HasSuffix(name, ".md")
+}
+
+// Read returns a trashed note's record and contents, for previewing it
+// without restoring it.
+func (t *Trash) Read(name string) (TrashEntry, []byte, error) {
+	if !validName(name) {
+		return TrashEntry{}, nil, errors.New("invalid trash name")
+	}
+	b, err := os.ReadFile(filepath.Join(t.dir, name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TrashEntry{}, nil, ErrNotFound
+		}
+		return TrashEntry{}, nil, err
+	}
+	return t.entry(name), b, nil
+}
+
+// RestoreSkip is a note a bulk restore left in the trash, and why.
+type RestoreSkip struct {
+	Name     string
+	OrigPath string
+	Err      error
+}
+
+// within reports whether rel is folder or lies inside it; the empty
+// folder is the whole notebook.
+func within(rel, folder string) bool {
+	return folder == "" || rel == folder || strings.HasPrefix(rel, folder+"/")
+}
+
+// RestoreUnder restores every trashed note that came from folder (the
+// empty folder restores the whole trash), recreating folders on the
+// way. Newest first: when one path was trashed twice, the latest
+// version comes back and the older one stays, reported as occupied, as
+// does any note whose path has been taken since. err is set only when
+// the trash cannot be read at all.
+func (t *Trash) RestoreUnder(folder string) (restored []string, skipped []RestoreSkip, err error) {
+	if folder, err = cleanFolder(folder); err != nil {
+		return nil, nil, err
+	}
+	entries, err := t.List()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range entries {
+		if e.OrigPath == "" || !within(e.OrigPath, folder) {
+			continue
+		}
+		rel, err := t.Restore(e.Name)
+		if err != nil {
+			skipped = append(skipped, RestoreSkip{Name: e.Name, OrigPath: e.OrigPath, Err: err})
+			continue
+		}
+		restored = append(restored, rel)
+	}
+	return restored, skipped, nil
+}
+
+// DeleteUnder removes every trashed note that came from folder for good.
+func (t *Trash) DeleteUnder(folder string) (int, error) {
+	folder, err := cleanFolder(folder)
+	if err != nil {
+		return 0, err
+	}
+	return t.removeWhere(func(e TrashEntry) bool {
+		return e.OrigPath != "" && within(e.OrigPath, folder)
+	})
+}
+
+func cleanFolder(folder string) (string, error) {
+	if folder == "" {
+		return "", nil
+	}
+	return Rel(folder)
 }
 
 // Restore moves a trashed note back to its original path.
@@ -306,7 +393,7 @@ func (t *Trash) Empty() (int, error) {
 // is matched against the listing rules, so it can only ever name a file
 // this trash directory owns.
 func (t *Trash) Delete(name string) error {
-	if name == "" || name != path.Base(name) || !strings.HasSuffix(name, ".md") {
+	if !validName(name) {
 		return errors.New("invalid trash name")
 	}
 	if err := os.Remove(filepath.Join(t.dir, name)); err != nil {

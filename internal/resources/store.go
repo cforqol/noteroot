@@ -28,9 +28,14 @@ type Store interface {
 	Size(sha string) (int64, error)
 	// Delete removes the blob. Missing blobs are not an error.
 	Delete(sha string) error
-	// GC removes blobs whose last-access time is older than grace. It
-	// returns the number of blobs removed.
-	GC(grace time.Duration) (int, error)
+	// GC removes blobs that are NOT in keep and whose last-access time
+	// is older than grace, returning the number removed. keep is the
+	// reachability set from the upload journal (Journal.LiveSHAs): a
+	// blob in keep is referenced by a committed upload and is never
+	// removed, however old it is. Passing nil or an empty map means
+	// "nothing is reachable" — callers must only do that after
+	// confirming the journal really holds no committed blobs.
+	GC(grace time.Duration, keep map[string]bool) (int, error)
 	// Touch updates the last-access time (called on every Get).
 	Touch(sha string)
 }
@@ -219,10 +224,11 @@ func (s *LocalStore) Touch(sha string) {
 	_ = os.Chtimes(p, now, now)
 }
 
-// GC walks the store and removes blobs whose mtime is older than grace.
-// It also removes orphan temp files (".upload-*") older than one hour.
-// Returns the number of blobs removed.
-func (s *LocalStore) GC(grace time.Duration) (int, error) {
+// GC walks the store and removes blobs that are not in keep and whose
+// mtime is older than grace — reachable blobs (keep) are never touched
+// regardless of age. It also removes orphan temp files (".upload-*")
+// older than one hour. Returns the number of blobs removed.
+func (s *LocalStore) GC(grace time.Duration, keep map[string]bool) (int, error) {
 	cutoff := time.Now().Add(-grace)
 	removed := 0
 
@@ -248,6 +254,10 @@ func (s *LocalStore) GC(grace time.Duration) (int, error) {
 		}
 		for _, b := range blobs {
 			if b.IsDir() {
+				continue
+			}
+			// Referenced by a committed upload: keep it, however old.
+			if keep[b.Name()] {
 				continue
 			}
 			bp := filepath.Join(sub, b.Name())

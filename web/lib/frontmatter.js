@@ -221,6 +221,13 @@ export function normalizeNote(src, o = {}) {
   lines.pop();
   const keys = topLevel(lines);
   const added = [];
+  // New keys go after the last non-blank line, so a header that ends in
+  // blank lines (older servers wrote one) does not get them split off.
+  const tail = () => {
+    let i = lines.length;
+    while (i > 0 && lines[i - 1].trim() === '') i -= 1;
+    return i;
+  };
   const set = (key, value, { first = false } = {}) => {
     const k = keys.get(key);
     if (k) {
@@ -228,7 +235,7 @@ export function normalizeNote(src, o = {}) {
     } else if (first) {
       lines.unshift(`${key}: ${value}${cr}`);
     } else {
-      lines.push(`${key}: ${value}${cr}`);
+      lines.splice(tail(), 0, `${key}: ${value}${cr}`);
     }
     added.push(key);
   };

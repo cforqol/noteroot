@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"noteroot/internal/config"
 	"noteroot/internal/git"
+	"noteroot/internal/index"
 	"noteroot/internal/integrations"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/platform"
 	"noteroot/internal/plugins"
 	"noteroot/internal/vault"
+	"noteroot/internal/version"
 	"noteroot/web"
 )
 
@@ -64,12 +67,19 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 		return Chain(h, Auth(cfg.AuthMode), CSRF(cfg.PublicOrigin))
 	}
 	mux.Handle("GET /api/v1/notebooks", auth(s.listNotebooks))
+	mux.Handle("POST /api/v1/notebooks", mutating(s.createNotebook))
+	mux.Handle("PATCH /api/v1/notebooks/{slug}", mutating(s.renameNotebook))
+	mux.Handle("DELETE /api/v1/notebooks/{slug}", mutating(s.deleteNotebook))
 	mux.Handle("GET /n/{slug}/", auth(s.notebookRoot))
 	mux.Handle("GET /n/{slug}/tree", auth(s.tree))
 	mux.Handle("GET /n/{slug}/note", auth(s.note))
 	mux.Handle("GET /n/{slug}/raw", auth(s.raw))
+	mux.Handle("GET /n/{slug}/note/history", auth(s.noteHistory))
+	mux.Handle("GET /n/{slug}/note/diff", auth(s.noteDiff))
+	mux.Handle("GET /n/{slug}/tags", auth(s.listTags))
 	mux.Handle("GET /n/{slug}/search", auth(s.search))
 	mux.Handle("GET /n/{slug}/trash", auth(s.listTrash))
+	mux.Handle("GET /n/{slug}/trash/note", auth(s.trashedNote))
 	mux.Handle("PUT /n/{slug}/note", mutating(s.putNote))
 	mux.Handle("PATCH /n/{slug}/note", mutating(s.moveNote))
 	mux.Handle("DELETE /n/{slug}/note", mutating(s.deleteNote))
@@ -77,11 +87,21 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("PATCH /n/{slug}/folder", mutating(s.moveFolder))
 	mux.Handle("DELETE /n/{slug}/folder", mutating(s.deleteFolder))
 	mux.Handle("POST /n/{slug}/trash/restore", mutating(s.restoreTrash))
+	mux.Handle("POST /n/{slug}/trash/restore-folder", mutating(s.restoreTrashFolder))
 	mux.Handle("DELETE /n/{slug}/trash", mutating(s.deleteTrashEntry))
+	mux.Handle("DELETE /n/{slug}/trash/folder", mutating(s.deleteTrashFolder))
 	mux.Handle("PUT /n/{slug}/trash/settings", mutating(s.putTrashSettings))
 	mux.Handle("POST /n/{slug}/trash/purge", mutating(s.purgeTrashNow))
 	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))
 	mux.Handle("DELETE /n/{slug}/lock", mutating(s.deleteLock))
+
+	// Content locks (advisory UI password gate; distinct from the edit
+	// locks above). Status and unlock are reads/mutations on state only.
+	mux.Handle("GET /n/{slug}/contentlock", auth(s.contentLockStatus))
+	mux.Handle("PUT /n/{slug}/contentlock", mutating(s.setContentLock))
+	mux.Handle("DELETE /n/{slug}/contentlock", mutating(s.deleteContentLock))
+	mux.Handle("POST /n/{slug}/contentlock/unlock", mutating(s.unlockContentLock))
+	mux.Handle("POST /n/{slug}/contentlock/lock", mutating(s.relockContentLock))
 
 	// Resources (stage 5) — uploads allow multipart via CSRFAllowMultipart.
 	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
@@ -92,6 +112,8 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	// Stage 8: backup, import/export.
 	mux.Handle("POST /n/{slug}/backup", mutating(s.createBackup))
 	mux.Handle("GET /n/{slug}/export", auth(s.exportNotebook))
+	mux.Handle("GET /n/{slug}/note/export", auth(s.exportNoteHTML))
+	mux.Handle("GET /n/{slug}/export/html", auth(s.exportNotebookHTML))
 	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
@@ -99,6 +121,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/resources/{sha}/thumb", auth(s.thumbResource))
 	mux.Handle("GET /n/{slug}/resources/{sha}/poster", auth(s.posterResource))
 	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", auth(s.presignRead))
+	mux.Handle("GET /n/{slug}/resources/{sha}/refs", auth(s.listResourceRefs))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
 
 	// Stage 9 phase 2: scoped API tokens (human-managed under the
@@ -139,22 +162,30 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /api/v1/n/{slug}/search", s.bearer("search", "read", qnone, s.search))
 	mux.Handle("GET /api/v1/n/{slug}/tree", s.bearer("tree", "read", qnone, s.tree))
 	mux.Handle("GET /api/v1/n/{slug}/trash", s.bearer("trash", "read", qnone, s.listTrash))
+	mux.Handle("GET /api/v1/n/{slug}/trash/note", s.bearer("trash", "read", qname, s.trashedNote))
 	mux.Handle("POST /api/v1/n/{slug}/trash/restore", s.bearer("trash", "write", qname, s.restoreTrash))
 	mux.Handle("GET /api/v1/n/{slug}/resources", s.bearer("resources", "read", qnone, s.listResources))
 	mux.Handle("GET /api/v1/n/{slug}/resources/stats", s.bearer("resources", "read", qnone, s.resourceStats))
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "read", qsha, s.getResource))
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/thumb", s.bearer("resources", "read", qsha, s.thumbResource))
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/poster", s.bearer("resources", "read", qsha, s.posterResource))
+	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/refs", s.bearer("resources", "read", qsha, s.listResourceRefs))
 	mux.Handle("DELETE /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "write", qsha, s.deleteResource))
 	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
 	mux.Handle("POST /api/v1/n/{slug}/backup", s.bearer("backup", "write", qnone, s.createBackup))
 
+	readTimeout, _ := time.ParseDuration(cfg.ReadTimeout)
+	writeTimeout, _ := time.ParseDuration(cfg.WriteTimeout)
+	idleTimeout, _ := time.ParseDuration(cfg.IdleTimeout)
+
 	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)
 	s.http = &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           h,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		Addr:           cfg.ListenAddr,
+		Handler:        h,
+		ReadTimeout:    readTimeout,
+		WriteTimeout:   writeTimeout,
+		IdleTimeout:    idleTimeout,
+		MaxHeaderBytes: cfg.MaxHeaderBytes,
 	}
 	s.git = map[string]*git.Flusher{}
 	s.purgeTrash()
@@ -248,13 +279,36 @@ func (s *Server) flushGit() {
 	}
 }
 
+// resolveWikilink finds the vault-relative path for a wikilink target.
+// Returns (path, true) if found, ("", false) otherwise.
+func (s *Server) resolveWikilink(nb *notebooks.Notebook, target string) (string, bool) {
+	ctx := context.Background()
+	idx, _, err := index.Open(ctx, nb.Layout.IndexDB(), nb.Layout.StateDB())
+	if err != nil {
+		return "", false
+	}
+	defer idx.Close()
+	// Search the identity map for the target
+	links, err := idx.Outgoing(ctx, "")
+	if err != nil {
+		return "", false
+	}
+	for _, link := range links {
+		if strings.EqualFold(link.Target, target) && link.Path != "" {
+			return link.Path, true
+		}
+	}
+	return "", false
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.V})
 }
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "ready",
+		"version":   version.V,
 		"notebooks": len(s.reg.List()),
 	})
 }
@@ -286,7 +340,7 @@ func (s *Server) notebookRoot(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "private")
+	w.Header().Set("Cache-Control", mutableCacheControl)
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }

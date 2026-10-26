@@ -143,6 +143,19 @@ func (m *Manager) Reload(slug string, layout notebooks.Layout, bus *platform.Bus
 	return m.Ensure(slug, layout, bus)
 }
 
+// Remove tears a notebook's runtime down and forgets it, for notebooks
+// being renamed or deleted. Ensure rebuilds it later if the notebook
+// comes back.
+func (m *Manager) Remove(slug string) {
+	m.mu.Lock()
+	rt := m.nbs[slug]
+	delete(m.nbs, slug)
+	m.mu.Unlock()
+	if rt != nil {
+		rt.close()
+	}
+}
+
 // List returns every discovered plugin — valid, invalid, disabled —
 // with its live state. Ensure first.
 func (m *Manager) List(slug string) ([]Info, error) {

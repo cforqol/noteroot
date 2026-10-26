@@ -220,7 +220,7 @@ func TestGC_removesOldBlobs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, err := s.GC(24 * time.Hour)
+	removed, err := s.GC(24*time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +235,46 @@ func TestGC_removesOldBlobs(t *testing.T) {
 	}
 }
 
+// A blob the journal still references must survive GC no matter how old
+// its file is: reachability, not age, decides what is swept.
+func TestGC_keepsReferencedBlobs(t *testing.T) {
+	s := newTestStore(t)
+	oldSha, _, _, _ := s.Put(bytes.NewReader([]byte("referenced and old")))
+	otherSha, _, _, _ := s.Put(bytes.NewReader([]byte("orphan and old")))
+
+	ago := time.Now().Add(-72 * time.Hour)
+	for _, sha := range []string{oldSha, otherSha} {
+		p := filepath.Join(s.Root(), sha[:2], sha)
+		if err := os.Chtimes(p, ago, ago); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := s.GC(24*time.Hour, map[string]bool{oldSha: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (only the orphan)", removed)
+	}
+	if !s.Has(oldSha) {
+		t.Error("referenced blob was reclaimed — GC ignored the reachability set")
+	}
+	if s.Has(otherSha) {
+		t.Error("orphan blob still present after GC")
+	}
+
+	// Dropping it from the set makes it collectable on the next pass.
+	removed, err = s.GC(24*time.Hour, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || s.Has(oldSha) {
+		t.Errorf("after unreference: removed = %d (want 1), has = %v (want false)",
+			removed, s.Has(oldSha))
+	}
+}
+
 func TestGC_orphanTempFiles(t *testing.T) {
 	s := newTestStore(t)
 	tmp := filepath.Join(s.Root(), ".upload-stale")
@@ -246,7 +286,7 @@ func TestGC_orphanTempFiles(t *testing.T) {
 	if err := os.Chtimes(tmp, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GC(0); err != nil {
+	if _, err := s.GC(0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {

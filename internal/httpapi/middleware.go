@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -54,14 +55,57 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Take first IP in chain
+		for i := 0; i < len(xff); i++ {
+			if xff[i] == ',' {
+				ip := strings.TrimSpace(xff[:i])
+				if ip != "" {
+					return ip
+				}
+				break
+			}
+		}
+		ip := strings.TrimSpace(xff)
+		if ip != "" {
+			return ip
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		ip := strings.TrimSpace(xrip)
+		if ip != "" {
+			return ip
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func Log(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
 			next.ServeHTTP(sw, r)
-			log.Info("req", "method", r.Method, "path", r.URL.Path,
-				"status", sw.code, "dur_ms", time.Since(start).Milliseconds())
+			user, _ := r.Context().Value(keyUser).(string)
+			ip := clientIP(r)
+			attrs := []any{"method", r.Method, "path", r.URL.Path,
+				"status", sw.code, "dur_ms", time.Since(start).Milliseconds(),
+				"ip", ip}
+			if user != "" {
+				attrs = append(attrs, "user", user)
+			} else if r.Header.Get("X-Auth-User") != "" {
+				attrs = append(attrs, "user", r.Header.Get("X-Auth-User"))
+			}
+			// Try to resolve hostname (best effort, short timeout not critical)
+			if host, err := net.LookupAddr(ip); err == nil && len(host) > 0 {
+				attrs = append(attrs, "hostname", strings.TrimSuffix(host[0], "."))
+			}
+			log.Info("req", attrs...)
 		})
 	}
 }
