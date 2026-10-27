@@ -66,7 +66,10 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mutating := func(h http.HandlerFunc) http.Handler {
 		return Chain(h, Auth(cfg.AuthMode), CSRF(cfg.PublicOrigin))
 	}
-	mux.Handle("GET /api/v1/notebooks", auth(s.listNotebooks))
+	// Listing notebooks is unauthenticated: the wizard shown on first visit
+	// needs it to detect an empty install, and /readyz already leaks the
+	// count unauthed. Actual note content still requires auth.
+	mux.HandleFunc("GET /api/v1/notebooks", s.listNotebooks)
 	mux.Handle("POST /api/v1/notebooks", mutating(s.createNotebook))
 	mux.Handle("PATCH /api/v1/notebooks/{slug}", mutating(s.renameNotebook))
 	mux.Handle("DELETE /api/v1/notebooks/{slug}", mutating(s.deleteNotebook))

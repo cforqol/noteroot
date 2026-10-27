@@ -11,30 +11,37 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X noteroot/internal/versio
 
 FROM alpine:3.22
 
-# git      — vault autocommits and backup bundles shell out to it.
-# ffmpeg   — ffprobe/ffmpeg for image, video and audio transforms.
-# ca-cert  — S3 over TLS.
-# tzdata   — daily notes and log timestamps.
+# git        - vault autocommits and backup bundles shell out to it.
+# ffmpeg     - ffprobe/ffmpeg for image, video and audio transforms.
+# ca-certs   - S3 over TLS.
+# tzdata     - daily notes and log timestamps.
+# shadow     - usermod/groupmod used by the entrypoint to remap uid/gid.
+# su-exec    - lightweight privilege-drop (replaces gosu, no setuid shell).
 # Versions stay unpinned on purpose: alpine only keeps current releases,
-# so `=rX` pins would rot into a broken build.
+# so =rX pins would rot into a broken build.
 # hadolint ignore=DL3018
-RUN apk add --no-cache git ca-certificates tzdata ffmpeg \
+RUN apk add --no-cache git ca-certificates tzdata ffmpeg shadow su-exec \
     && adduser -D -u 1000 noteroot \
     && mkdir -p /data \
     && chown noteroot:noteroot /data
 
 COPY --from=build /out/noteroot /usr/local/bin/noteroot
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Numeric uid, same as the `noteroot` user created above.
-# hadolint ignore=DL3066
-USER noteroot
+# The entrypoint runs as root so it can remap uid/gid when PUID/PGID are
+# set, then drops to the noteroot user before exec-ing the server.
+# hadolint ignore=DL3002
+USER root
 
 # Every variable noteroot reads, with its documented default (README,
 # "Configuration"). Override any of them at run time; empty means
 # "use the built-in default / disabled". Secrets (S3 keys) stay unset
 # here and are injected by the orchestrator.
 # hadolint ignore=DL3064
-ENV NOTEROOT_DATA_DIR=/data \
+ENV PUID=1000 \
+    PGID=1000 \
+    NOTEROOT_DATA_DIR=/data \
     NOTEROOT_LISTEN=:8080 \
     NOTEROOT_LOG_LEVEL=info \
     NOTEROOT_AUTH_MODE=forward \
@@ -70,4 +77,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD p="${NOTEROOT_LISTEN##*:}"; wget -q -O /dev/null "http://127.0.0.1:${p:-8080}/healthz" || exit 1
 
-ENTRYPOINT ["/usr/local/bin/noteroot"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh", "/usr/local/bin/noteroot"]

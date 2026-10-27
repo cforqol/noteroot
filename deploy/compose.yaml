@@ -9,22 +9,54 @@ services:
         VERSION: ${NOTEROOT_VERSION:-dev}
     image: noteroot:0.1.0
     restart: unless-stopped
+    # Bind to localhost only. To expose through a reverse proxy,
+    # remove the port mapping and let the proxy reach the container
+    # over the shared Docker network instead.
     ports:
       - "127.0.0.1:8080:8080"
     environment:
+      # Match the uid:gid of the host user that owns ./data so the
+      # container can write to the bind-mount without permission errors.
+      # Run `id` on the host to find your values; defaults are 1000:1000.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # Where notebooks are stored inside the container.
       NOTEROOT_DATA_DIR: /data
+
+      # Authentication mode.
+      # "forward" (default, production) — a reverse proxy authenticates
+      #   the user and sets X-Auth-User; noteroot trusts that header.
+      # "none" — no authentication; use only for local/LAN access.
       NOTEROOT_AUTH_MODE: ${NOTEROOT_AUTH_MODE:-forward}
+
+      # The exact public URL (scheme://host[:port]) that the browser uses
+      # to reach noteroot, e.g. https://notes.example.com.
+      # Required when a reverse proxy changes the Host header.
+      # Leave empty to use the incoming Host header (fine for direct access).
       NOTEROOT_PUBLIC_ORIGIN: ${NOTEROOT_PUBLIC_ORIGIN:-}
+
       NOTEROOT_LOG_LEVEL: ${NOTEROOT_LOG_LEVEL:-info}
+
+      # Per-notebook upload quota in bytes. 0 = unlimited.
+      # Example: 1073741824 = 1 GiB.
       NOTEROOT_QUOTA_BYTES: ${NOTEROOT_QUOTA_BYTES:-0}
+
+      # How often the background storage GC runs (Go duration, e.g. "24h").
       NOTEROOT_GC_INTERVAL: ${NOTEROOT_GC_INTERVAL:-24h}
+
+      # S3-compatible object storage (optional). All five values must be
+      # set together or not at all; leaving them empty uses local disk.
       NOTEROOT_S3_ENDPOINT: ${NOTEROOT_S3_ENDPOINT:-}
       NOTEROOT_S3_BUCKET: ${NOTEROOT_S3_BUCKET:-}
       NOTEROOT_S3_REGION: ${NOTEROOT_S3_REGION:-}
       NOTEROOT_S3_ACCESS_KEY: ${NOTEROOT_S3_ACCESS_KEY:-}
       NOTEROOT_S3_SECRET_KEY: ${NOTEROOT_S3_SECRET_KEY:-}
+      # true = path-style URLs (MinIO/self-hosted), false = virtual-hosted (AWS S3).
       NOTEROOT_S3_PATH_STYLE: ${NOTEROOT_S3_PATH_STYLE:-false}
+      # How long presigned upload/read URLs are valid (Go duration). Default: 15m.
       NOTEROOT_S3_PRESIGN_TTL: ${NOTEROOT_S3_PRESIGN_TTL:-}
     volumes:
+      # Create the data directory before first start so Docker doesn't
+      # create it root-owned: mkdir -p data
       - ../data:/data
     stop_grace_period: 20s

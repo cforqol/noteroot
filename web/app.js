@@ -586,8 +586,9 @@ function actionButton(label, onClick) {
 function showNoNotebooks() {
   $("note").replaceChildren(emptyState({
     icon: "📓",
-    title: "No notebooks yet",
-    body: "Pick “＋ New notebook…” in the selector above, or run ./scripts/new-notebook.sh <slug> and reload.",
+    title: "Welcome to noteroot",
+    body: "Create your first notebook to get started.",
+    action: actionButton("Create notebook\u2026", () => actionNewNotebook()),
   }));
   setView("empty");
 }

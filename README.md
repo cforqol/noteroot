@@ -257,16 +257,17 @@ go build -o bin/noteroot ./cmd/noteroot
 
 ```bash
 export NOTEROOT_DATA_DIR="$HOME/.local/share/noteroot"
-./scripts/new-notebook.sh work
 NOTEROOT_AUTH_MODE=none ./bin/noteroot
+# Open http://localhost:8080 — click "Create notebook…" on the welcome screen.
+# Or pre-create a notebook from the command line: ./scripts/new-notebook.sh work
 ```
 
 **Development run** — uses throwaway data in the project:
 
 ```bash
 export NOTEROOT_DATA_DIR="$PWD/.devdata"
-./scripts/new-notebook.sh work
 NOTEROOT_AUTH_MODE=none ./bin/noteroot
+# Open http://localhost:8080 — click "Create notebook…" on the welcome screen.
 ```
 
 Then:
@@ -280,13 +281,54 @@ curl localhost:8080/api/v1/notebooks
 
 ```bash
 mkdir -p data
-NOTEROOT_DATA_DIR="$PWD/data" ./scripts/new-notebook.sh work   # create a notebook (host-side)
-docker compose -f deploy/compose.yaml up -d --build
+NOTEROOT_AUTH_MODE=none PUID=$(id -u) PGID=$(id -g) \
+  docker compose -f deploy/compose.yaml up -d --build
 ```
+
+Open `http://localhost:8080` in a browser. On the first visit with no data, a **"Create notebook"** button appears — click it, give the notebook a slug (e.g. `work`), and you are ready to write.
+
+`PUID`/`PGID` match the container's process uid/gid to your host user so the bind-mounted `data/` directory is writable without manual `chown`.
 
 The image is Alpine with `git` (vault autocommits and backup bundles shell out to it) and `ffmpeg`/`ffprobe` (image, video and audio transforms), runs as non-root uid 1000, and publishes `127.0.0.1:8080` only. `data/` is bind-mounted to `/data` — create it with `mkdir -p data` before the first start so Docker doesn't create it root-owned. Every variable in [Configuration](#configuration) is declared as an `ENV` with its documented default, so `docker inspect` shows the whole surface; the health check follows `NOTEROOT_LISTEN` rather than a hardcoded port.
 
-Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, `NOTEROOT_AUTH_MODE=none docker compose -f deploy/compose.yaml up`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job.
+Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, set `NOTEROOT_AUTH_MODE=none`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job.
+
+#### Docker Compose examples
+
+**Minimal local install (no authentication, localhost only):**
+```yaml
+# deploy/compose.yaml or your own compose file
+services:
+  noteroot:
+    image: noteroot:0.1.0    # or ghcr.io/cforqol/noteroot:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NOTEROOT_DATA_DIR: /data
+      NOTEROOT_AUTH_MODE: none   # no login required — only use behind a firewall
+    volumes:
+      - ./data:/data
+```
+
+**With Traefik forward-auth (production):**
+```yaml
+services:
+  noteroot:
+    image: ghcr.io/cforqol/noteroot:latest
+    restart: unless-stopped
+    # Do NOT publish the port directly; let Traefik reach it over the internal network.
+    environment:
+      NOTEROOT_DATA_DIR: /data
+      NOTEROOT_AUTH_MODE: forward          # Traefik sets X-Auth-User after auth succeeds
+      NOTEROOT_PUBLIC_ORIGIN: https://notes.example.com  # must match the external URL
+    volumes:
+      - ./data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.noteroot.rule=Host(`notes.example.com`)"
+      - "traefik.http.routers.noteroot.middlewares=my-forward-auth@file"
+```
 
 CI (`.github/workflows/ci.yml`) runs the Go and web suites, lints the Dockerfile, smoke-tests the image — anonymous calls must 401 under `forward`, `/healthz`, `/api/v1/notebooks` and the shell must answer under `none` — then publishes to `ghcr.io/cforqol/noteroot`, tagged by branch, semver and sha.
 
@@ -311,8 +353,8 @@ All configuration is environment variables.
 | `NOTEROOT_DATA_DIR` | `$XDG_DATA_HOME/noteroot` | Absolute path. Holds all notebooks. |
 | `NOTEROOT_LISTEN` | `:8080` | Listen address. |
 | `NOTEROOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
-| `NOTEROOT_AUTH_MODE` | `forward` | `forward` trusts `X-Auth-User`. `none` is dev only. |
-| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | Exact `scheme://host` mutations must come from. Empty means the request's own host. |
+| `NOTEROOT_AUTH_MODE` | `forward` | Authentication mode. `forward` — a reverse proxy (e.g. Traefik) authenticates the user and sets the `X-Auth-User` request header; noteroot trusts that header. `none` — no authentication at all, anyone who can reach the port is in; use only on localhost or behind a firewall you control. |
+| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | The exact `scheme://host[:port]` that the browser uses to reach noteroot, e.g. `https://notes.example.com`. Required when noteroot sits behind a reverse proxy that changes the `Host` header. It is used to validate the `Origin`/`Referer` header on every mutating request (CSRF protection). Leave empty when accessing directly — noteroot will use the incoming `Host` header. |
 | `NOTEROOT_S3_ENDPOINT` | `` (disabled) | S3-compatible endpoint URL. S3 config is all-or-nothing: all five `NOTEROOT_S3_*` required together. |
 | `NOTEROOT_S3_BUCKET` | `` | Bucket name. |
 | `NOTEROOT_S3_REGION` | `` | Region (part of the SigV4 scope; any value works for MinIO). |
@@ -322,8 +364,10 @@ All configuration is environment variables.
 | `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 | `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
 | `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
+| `PUID` | `1000` | *(Docker only)* uid the server process runs as inside the container. Set to your host user's uid (`id -u`) so the container can write to a bind-mounted data directory. |
+| `PGID` | `1000` | *(Docker only)* gid the server process runs as inside the container. Set to your host user's gid (`id -g`). |
 
-**Authentication.** noteroot does not implement a login page. Traefik performs forward-auth against your identity provider and sets `X-Auth-User` on success, stripping any client-supplied value. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
+**Authentication.** noteroot does not implement a login page or manage user passwords. It relies on an external reverse proxy (e.g. Traefik, Caddy, nginx) to perform authentication and set the `X-Auth-User` request header on success; noteroot trusts that header and strips any client-supplied value. Set `NOTEROOT_AUTH_MODE=none` for local development or trusted-LAN deployments where no proxy is involved. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
 
 ## Extensibility
 

@@ -30,9 +30,9 @@ var endpointCases = []endpointCase{
 	{name: "readyz/forward/no-header", method: http.MethodGet, path: "/readyz", authMode: config.AuthForward, sendHeader: false, wantStatus: http.StatusOK},
 	{name: "readyz/forward/with-header", method: http.MethodGet, path: "/readyz", authMode: config.AuthForward, sendHeader: true, wantStatus: http.StatusOK},
 
-	// /api/v1/notebooks — protected
+	// /api/v1/notebooks — intentionally unauthenticated (first-run wizard detection)
 	{name: "notebooks/none", method: http.MethodGet, path: "/api/v1/notebooks", authMode: config.AuthNone, sendHeader: false, wantStatus: http.StatusOK},
-	{name: "notebooks/forward/no-header", method: http.MethodGet, path: "/api/v1/notebooks", authMode: config.AuthForward, sendHeader: false, wantStatus: http.StatusUnauthorized},
+	{name: "notebooks/forward/no-header", method: http.MethodGet, path: "/api/v1/notebooks", authMode: config.AuthForward, sendHeader: false, wantStatus: http.StatusOK},
 	{name: "notebooks/forward/with-header", method: http.MethodGet, path: "/api/v1/notebooks", authMode: config.AuthForward, sendHeader: true, wantStatus: http.StatusOK},
 
 	// /n/{slug}/ — protected, known slug
@@ -156,10 +156,15 @@ func TestNotebookRoot_body(t *testing.T) {
 }
 
 func TestUnauthorized_body(t *testing.T) {
-	srv := newTestServer(t, config.AuthForward, nil)
+	// Use a still-protected endpoint to verify the 401 error body shape.
+	// (GET /api/v1/notebooks is intentionally unauthenticated for first-run.)
+	srv := newTestServer(t, config.AuthForward, notesFixture(t, map[string]string{"a.md": "hi"}))
 	rec := httptest.NewRecorder()
-	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/notebooks", nil))
+	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/n/work/tree", nil))
 
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
 	var body map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
