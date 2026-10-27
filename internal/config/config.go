@@ -33,6 +33,24 @@ type Config struct {
 	// S3PresignTTL is how long presigned upload/read URLs live.
 	// 0 = default (15 minutes).
 	S3PresignTTL string
+	// S3SSE is the server-side encryption mode: "" (none), "AES256", or "aws:kms".
+	S3SSE string
+	// S3SSEKeyID is the KMS key ID used when S3SSE is "aws:kms". Empty = AWS-managed key.
+	S3SSEKeyID string
+
+	// Karakeep integration. When KarakeepURL and KarakeepKey are both set,
+	// the proxy endpoint is active and the editor archives pasted URLs automatically.
+	KarakeepURL string
+	KarakeepKey string
+
+	// Slink integration. When SlinkURL and SlinkKey are both set, image pastes
+	// and drops are uploaded to Slink instead of the local/S3 resource store.
+	SlinkURL string
+	SlinkKey string
+
+	// BackupSchedule is the interval between automatic backups (e.g. "24h").
+	// Empty or "0" disables scheduled backups.
+	BackupSchedule string
 
 	// Stage 8: housekeeping and limits.
 
@@ -75,6 +93,16 @@ func Load() (Config, error) {
 		S3SecretKey:  env("NOTEROOT_S3_SECRET_KEY", ""),
 		S3PathStyle:  envBool("NOTEROOT_S3_PATH_STYLE", false),
 		S3PresignTTL: env("NOTEROOT_S3_PRESIGN_TTL", ""),
+		S3SSE:        env("NOTEROOT_S3_SSE", ""),
+		S3SSEKeyID:   env("NOTEROOT_S3_SSE_KEY_ID", ""),
+
+		KarakeepURL: env("NOTEROOT_KARAKEEP_URL", ""),
+		KarakeepKey: env("NOTEROOT_KARAKEEP_KEY", ""),
+
+		SlinkURL: env("NOTEROOT_SLINK_URL", ""),
+		SlinkKey: env("NOTEROOT_SLINK_KEY", ""),
+
+		BackupSchedule: env("NOTEROOT_BACKUP_SCHEDULE", ""),
 
 		QuotaBytes: envInt64("NOTEROOT_QUOTA_BYTES", 0),
 		GCInterval: env("NOTEROOT_GC_INTERVAL", "24h"),
@@ -108,6 +136,22 @@ func Load() (Config, error) {
 		if d <= 0 {
 			return c, fmt.Errorf("NOTEROOT_S3_PRESIGN_TTL must be positive, got %q", c.S3PresignTTL)
 		}
+	}
+	switch c.S3SSE {
+	case "", "AES256", "aws:kms":
+	default:
+		return c, fmt.Errorf("NOTEROOT_S3_SSE must be AES256 or aws:kms, got %q", c.S3SSE)
+	}
+	if c.BackupSchedule != "" && c.BackupSchedule != "0" {
+		if _, err := time.ParseDuration(c.BackupSchedule); err != nil {
+			return c, fmt.Errorf("bad NOTEROOT_BACKUP_SCHEDULE %q: %w", c.BackupSchedule, err)
+		}
+	}
+	if (c.KarakeepURL == "") != (c.KarakeepKey == "") {
+		return c, fmt.Errorf("NOTEROOT_KARAKEEP_URL and NOTEROOT_KARAKEEP_KEY must be set together")
+	}
+	if (c.SlinkURL == "") != (c.SlinkKey == "") {
+		return c, fmt.Errorf("NOTEROOT_SLINK_URL and NOTEROOT_SLINK_KEY must be set together")
 	}
 	// S3 config must be all-or-nothing.
 	s3Fields := map[string]string{

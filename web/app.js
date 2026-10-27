@@ -37,6 +37,7 @@ import {
   collectNotePaths, resolveNotePath, filterNotePaths, bodyInsert, adjacentNote,
 } from '/lib/attach.js';
 import * as notesApi from '/lib/notes-api.js';
+import { fetchIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
 import {
   isArchive, isMarkdown, exportFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
 } from '/lib/transfer.js';
@@ -2565,6 +2566,15 @@ async function handleFileUpload(file) {
   if (!editing) return;
   setSaveState(`Uploading ${file.name}…`, "dirty");
   try {
+    const integ = await fetchIntegrationStatus();
+    if (integ.slink && file.type.startsWith('image/')) {
+      const hostedUrl = await slinkUpload(file);
+      const label = file.name.replace(/([\\[\]()])/g, '\\$1');
+      await insertIntoEditor(`![${label}](${hostedUrl})`);
+      markDirty();
+      setSaveState(`Uploaded ${file.name} via Slink`, "dirty");
+      return;
+    }
     const res = await uploadResource(file);
     if (!res || !/^[a-f0-9]{64}$/.test(res.sha || "")) {
       throw new Error("upload returned no content hash");
@@ -2617,7 +2627,7 @@ function clipboardImages(e) {
   return out;
 }
 
-/** Handle paste events: images + rich text (HTML → Markdown). */
+/** Handle paste events: images + rich text (HTML → Markdown) + URL archiving. */
 async function handlePaste(e, editorEl) {
   if (!editing) return;
   const files = clipboardImages(e);
@@ -2627,13 +2637,25 @@ async function handlePaste(e, editorEl) {
     return;
   }
   // Handle rich text (HTML from Word, Google Docs, web)
-  const { htmlToMarkdown, looksLikeRichText, getHtml } = await import('/lib/paste.js');
+  const { htmlToMarkdown, looksLikeRichText, getHtml, getPlainText } = await import('/lib/paste.js');
   const html = getHtml(e);
   if (html && looksLikeRichText(html)) {
     e.preventDefault();
     const md = htmlToMarkdown(html);
     if (md) {
       await insertIntoEditor(md);
+    }
+    return;
+  }
+  // Karakeep: archive plain-text HTTP URLs in the background.
+  const plain = getPlainText(e.clipboardData);
+  if (isHttpUrl(plain)) {
+    const integ = await fetchIntegrationStatus();
+    if (integ.karakeep) {
+      karakeepArchive(plain).then(async (archiveUrl) => {
+        await insertIntoEditor(` ([archived](${archiveUrl}))`);
+        markDirty();
+      }).catch(() => { /* archive failure is non-fatal */ });
     }
   }
 }
@@ -2679,13 +2701,24 @@ function setupSplitPasteZone() {
       return;
     }
     // Handle rich text (HTML from Word, Google Docs, web)
-    const { htmlToMarkdown, looksLikeRichText, getHtml } = await import('/lib/paste.js');
+    const { htmlToMarkdown, looksLikeRichText, getHtml, getPlainText } = await import('/lib/paste.js');
     const html = getHtml(e);
     if (html && looksLikeRichText(html)) {
       e.preventDefault();
       const md = htmlToMarkdown(html);
       if (md) {
         await insertIntoSplitEditor(md);
+      }
+      return;
+    }
+    // Karakeep: archive plain-text HTTP URLs in the background.
+    const plain = getPlainText(e.clipboardData);
+    if (isHttpUrl(plain)) {
+      const integ = await fetchIntegrationStatus();
+      if (integ.karakeep) {
+        karakeepArchive(plain).then(async (archiveUrl) => {
+          await insertIntoSplitEditor(` ([archived](${archiveUrl}))`);
+        }).catch(() => { /* archive failure is non-fatal */ });
       }
     }
   });
@@ -5270,4 +5303,7 @@ function initAttachmentsEvents() {
 
 // Module loads after DOM in both the browser (type=module defer) and jsdom tests.
 initAttachmentsEvents();
+
+// Warm the integration status cache so paste handlers don't add latency.
+fetchIntegrationStatus().catch(() => {});
 

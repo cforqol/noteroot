@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,6 +29,10 @@ type S3Config struct {
 	PathStyle bool
 	// SessionToken is optional (for temporary credentials).
 	SessionToken string
+	// SSE is the server-side encryption algorithm: "AES256", "aws:kms", or "" (none).
+	SSE string
+	// SSEKeyID is the KMS key ARN/ID used when SSE is "aws:kms". Empty = AWS-managed key.
+	SSEKeyID string
 }
 
 // Enabled reports whether S3 is configured (all required fields present).
@@ -105,18 +111,140 @@ func (s *S3Store) PutBuffered(r io.Reader) (string, int64, bool, error) {
 	return s.Put(r)
 }
 
+// sseHeaders returns the SSE request headers for this store, or nil if SSE is not configured.
+func (s *S3Store) sseHeaders() map[string]string {
+	if s.cfg.SSE == "" {
+		return nil
+	}
+	m := map[string]string{"x-amz-server-side-encryption": s.cfg.SSE}
+	if s.cfg.SSEKeyID != "" && s.cfg.SSE == "aws:kms" {
+		m["x-amz-server-side-encryption-aws-kms-key-id"] = s.cfg.SSEKeyID
+	}
+	return m
+}
+
 // putBytes performs a presigned PUT with the given body.
+// When SSE is configured, the SSE headers are included in the presign so
+// S3 enforces them even without a bucket-level encryption policy.
 func (s *S3Store) putBytes(key string, body []byte) error {
-	presigned, err := s.Presign(http.MethodPut, key, 15*time.Minute)
+	extraHdrs := s.sseHeaders()
+	presigned, err := s.presignWithExtras(http.MethodPut, key, 15*time.Minute, extraHdrs)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPut, presigned, strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPut, presigned, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Type", "application/octet-stream")
+	for k, v := range extraHdrs {
+		req.Header.Set(http.CanonicalHeaderKey(k), v)
+	}
+
+	resp, err := s.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("s3: put: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("s3: put status %d: %s", resp.StatusCode, b)
+	}
+	return nil
+}
+
+// PutObject uploads an arbitrary object to S3 at the given key.
+// Used by the backup exporter; size must be the exact byte count of r.
+// Uses a direct SigV4-signed PUT (not presigned) to support streaming
+// and to include SSE headers when configured.
+func (s *S3Store) PutObject(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	return s.putDirect(ctx, key, r, size, contentType)
+}
+
+// putDirect issues a SigV4-authenticated PUT request (not presigned).
+// UNSIGNED-PAYLOAD allows streaming without pre-computing the body hash.
+func (s *S3Store) putDirect(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	objURL, err := s.objectURL(key)
+	if err != nil {
+		return err
+	}
+	parsed, err := url.Parse(objURL)
+	if err != nil {
+		return err
+	}
+
+	now := s.now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	const payloadHash = "UNSIGNED-PAYLOAD"
+
+	// Collect headers that will be signed (must be sorted lexicographically).
+	hdrMap := map[string]string{
+		"content-type":            contentType,
+		"host":                    parsed.Host,
+		"x-amz-content-sha256":   payloadHash,
+		"x-amz-date":             amzDate,
+	}
+	if s.cfg.SessionToken != "" {
+		hdrMap["x-amz-security-token"] = s.cfg.SessionToken
+	}
+	if s.cfg.SSE != "" {
+		hdrMap["x-amz-server-side-encryption"] = s.cfg.SSE
+		if s.cfg.SSEKeyID != "" && s.cfg.SSE == "aws:kms" {
+			hdrMap["x-amz-server-side-encryption-aws-kms-key-id"] = s.cfg.SSEKeyID
+		}
+	}
+
+	names := make([]string, 0, len(hdrMap))
+	for k := range hdrMap {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	var canonBuf, signBuf strings.Builder
+	for i, k := range names {
+		canonBuf.WriteString(k + ":" + hdrMap[k] + "\n")
+		if i > 0 {
+			signBuf.WriteByte(';')
+		}
+		signBuf.WriteString(k)
+	}
+	signedHdrs := signBuf.String()
+
+	credScope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStamp, s.cfg.Region)
+	canonReq := strings.Join([]string{
+		"PUT",
+		parsed.EscapedPath(),
+		"", // no query string
+		canonBuf.String(),
+		signedHdrs,
+		payloadHash,
+	}, "\n")
+
+	reqHash := sha256.Sum256([]byte(canonReq))
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credScope,
+		hex.EncodeToString(reqHash[:]),
+	}, "\n")
+
+	sig := hmacSHA256(s.signingKey(dateStamp), stringToSign)
+	authHdr := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		s.cfg.AccessKey, credScope, signedHdrs, hex.EncodeToString(sig),
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, objURL, r)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	for k, v := range hdrMap {
+		req.Header.Set(http.CanonicalHeaderKey(k), v)
+	}
+	req.Header.Set("Authorization", authHdr)
 
 	resp, err := s.hc.Do(req)
 	if err != nil {
@@ -246,7 +374,15 @@ func (s *S3Store) Root() string { return "s3://" + s.cfg.Bucket }
 // This is the core of stage 7: clients upload directly to S3 with a
 // presigned PUT (never touching the app server with the bytes), and read
 // with a presigned GET.
+// Presign generates a presigned URL for client-side access (no SSE headers added).
+// For server-side uploads with SSE, use putBytes which calls presignWithExtras.
 func (s *S3Store) Presign(method, key string, expiry time.Duration) (string, error) {
+	return s.presignWithExtras(method, key, expiry, nil)
+}
+
+// presignWithExtras is like Presign but includes extra signed headers in the URL.
+// extraHeaders (e.g. SSE headers) must also be sent with the actual request.
+func (s *S3Store) presignWithExtras(method, key string, expiry time.Duration, extraHeaders map[string]string) (string, error) {
 	if expiry <= 0 {
 		expiry = 15 * time.Minute
 	}
@@ -273,17 +409,33 @@ func (s *S3Store) Presign(method, key string, expiry time.Duration) (string, err
 	query.Set("X-Amz-Credential", s.cfg.AccessKey+"/"+credentialScope)
 	query.Set("X-Amz-Date", amzDate)
 	query.Set("X-Amz-Expires", fmt.Sprintf("%d", int(expiry.Seconds())))
-	query.Set("X-Amz-SignedHeaders", "host")
 	if s.cfg.SessionToken != "" {
 		query.Set("X-Amz-Security-Token", s.cfg.SessionToken)
 	}
 
+	// Build sorted extra signed headers (e.g. SSE headers).
+	extraNames := make([]string, 0, len(extraHeaders))
+	for k := range extraHeaders {
+		extraNames = append(extraNames, strings.ToLower(k))
+	}
+	sort.Strings(extraNames)
+
+	// Signed headers: "host" first, then any extras (already sorted).
+	allSignedHdrs := append([]string{"host"}, extraNames...)
+	signedHeadersVal := strings.Join(allSignedHdrs, ";")
+	query.Set("X-Amz-SignedHeaders", signedHeadersVal)
+
 	// Canonical query string: sorted by key, URI-encoded.
 	canonicalQuery := canonicalQueryString(query)
 
-	// Canonical headers: only host is signed for presigned URLs.
-	canonicalHeaders := "host:" + parsed.Host + "\n"
-	signedHeaders := "host"
+	// Canonical headers: host + extras, sorted lexicographically.
+	var canonBuf strings.Builder
+	canonBuf.WriteString("host:" + parsed.Host + "\n")
+	for _, k := range extraNames {
+		canonBuf.WriteString(k + ":" + extraHeaders[k] + "\n")
+	}
+	canonicalHeaders := canonBuf.String()
+	signedHeaders := signedHeadersVal
 
 	// Payload hash: UNSIGNED-PAYLOAD for presigned.
 	payloadHash := "UNSIGNED-PAYLOAD"

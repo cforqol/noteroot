@@ -38,7 +38,8 @@ type Server struct {
 	// for those two DB operations — never across blob I/O.
 	uploadMu sync.Mutex
 
-	stopGC func()
+	stopGC     func()
+	stopBackup func()
 }
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
@@ -174,6 +175,12 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
 	mux.Handle("POST /api/v1/n/{slug}/backup", s.bearer("backup", "write", qnone, s.createBackup))
 
+	// External integration proxies — no per-notebook scope, auth only.
+	mux.Handle("GET /api/v1/integrations/status", auth(s.integrationStatus))
+	mux.Handle("POST /api/v1/integrations/karakeep/archive", mutating(s.archiveWithKarakeep))
+	mux.Handle("POST /api/v1/integrations/slink/upload",
+		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+
 	readTimeout, _ := time.ParseDuration(cfg.ReadTimeout)
 	writeTimeout, _ := time.ParseDuration(cfg.WriteTimeout)
 	idleTimeout, _ := time.ParseDuration(cfg.IdleTimeout)
@@ -190,6 +197,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s.git = map[string]*git.Flusher{}
 	s.purgeTrash()
 	s.stopGC = s.startGC()
+	s.stopBackup = s.startBackupScheduler()
 	// Load every notebook's extensions at boot so hooks and
 	// integrations are live before the first mutation reaches them.
 	// Failures log and continue: extensions degrade, notebooks do not.
@@ -238,6 +246,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.flushGit()
 	if s.stopGC != nil {
 		s.stopGC()
+	}
+	if s.stopBackup != nil {
+		s.stopBackup()
 	}
 	// Extensions first: their hooks and deliveries may still be
 	// draining into the bus.
