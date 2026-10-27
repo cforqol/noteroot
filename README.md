@@ -274,9 +274,11 @@ NOTEROOT_DATA_DIR="$PWD/data" ./scripts/new-notebook.sh work   # create a notebo
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
-The image is Alpine with `git` (vault autocommits and backup bundles shell out to it), runs as non-root uid 1000, and publishes `127.0.0.1:8080` only. `data/` is bind-mounted to `/data` — create it with `mkdir -p data` before the first start so Docker doesn't create it root-owned.
+The image is Alpine with `git` (vault autocommits and backup bundles shell out to it) and `ffmpeg`/`ffprobe` (image, video and audio transforms), runs as non-root uid 1000, and publishes `127.0.0.1:8080` only. `data/` is bind-mounted to `/data` — create it with `mkdir -p data` before the first start so Docker doesn't create it root-owned. Every variable in [Configuration](#configuration) is declared as an `ENV` with its documented default, so `docker inspect` shows the whole surface; the health check follows `NOTEROOT_LISTEN` rather than a hardcoded port.
 
-Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, `NOTEROOT_AUTH_MODE=none docker compose -f deploy/compose.yaml up`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job. Image transforms need `ffmpeg` — add it to the Dockerfile if you use uploads.
+Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, `NOTEROOT_AUTH_MODE=none docker compose -f deploy/compose.yaml up`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job.
+
+CI (`.github/workflows/ci.yml`) runs the Go and web suites, lints the Dockerfile, smoke-tests the image — anonymous calls must 401 under `forward`, `/healthz`, `/api/v1/notebooks` and the shell must answer under `none` — then publishes to `ghcr.io/cforqol/noteroot`, tagged by branch, semver and sha.
 
 ## Development
 

@@ -1,15 +1,30 @@
+# VCS and local state
 .git
 .direnv/
 .devdata/
 .envrc.local
 .serena/
-bin/
+
+# Build output (including a stray `noteroot` binary dropped at the repo root)
+/bin/
+noteroot
 data/
+tmp/
+*.corrupt
+
+# Node: only the embedded web/ tree is needed, never the package tree
 node_modules/
 web/node_modules/
 web/coverage/
 web/test-results/
 web/playwright-report/
 web/e2e/
+
+# Not part of the image: tests, docs, deploy manifests, CI config
+test-results/
+docs/
+scripts/
+deploy/
+.github/
 IMPLEMENTATION_SUMMARY.md
 REVIEW_SUMMARY.md

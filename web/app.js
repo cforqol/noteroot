@@ -2297,6 +2297,7 @@ function conflictBanner(mine) {
       clearPad(ed.path);
       setBanner("");
       setSaveState("Saved.", "ok");
+      scheduleTags();
     } catch (e) {
       setSaveState(`Force save failed: ${e.message}`, "error");
     }

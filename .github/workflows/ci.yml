@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: ["0.1.0", "master"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["0.1.0", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Node tests
+        run: npm test
+
+      - name: Jest unit and integration tests
+        run: node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --runInBand
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: [go, web]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build once with `load` so the smoke test runs against the exact
+      # image that gets pushed; the push step reuses the same layer cache.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: noteroot:ci
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          set -eu
+
+          # 1. Every documented knob is baked into the image config.
+          for v in NOTEROOT_DATA_DIR NOTEROOT_LISTEN NOTEROOT_AUTH_MODE \
+                   NOTEROOT_LOG_LEVEL NOTEROOT_GC_INTERVAL NOTEROOT_QUOTA_BYTES \
+                   NOTEROOT_S3_BUCKET NOTEROOT_S3_SECRET_KEY NOTEROOT_READ_TIMEOUT; do
+            docker inspect -f "{{range .Config.Env}}{{println .}}{{end}}" noteroot:ci | grep -q "^${v}="
+          done
+
+          # 2. Default (forward) auth: the machine API rejects anonymous calls.
+          docker run -d --name auth -p 18081:8080 noteroot:ci
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/healthz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/api/v1/notebooks)" = "401"
+
+          # 3. NOTEROOT_AUTH_MODE=none: the app actually serves.
+          docker run -d --name app -e NOTEROOT_AUTH_MODE=none -p 18080:8080 noteroot:ci
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          curl -fsS http://127.0.0.1:18080/api/v1/notebooks
+          curl -fsS http://127.0.0.1:18080/ | grep -qi noteroot
+
+          # 4. The HEALTHCHECK as written in the Dockerfile, run verbatim.
+          docker exec app sh -c 'p="${NOTEROOT_LISTEN##*:}"; wget -q -O /dev/null "http://127.0.0.1:${p:-8080}/healthz"'
+          docker inspect -f '{{.Config.Healthcheck.Test}}' noteroot:ci | grep -q wget
+
+          # 5. Version stamp made it into the binary.
+          docker run --rm noteroot:ci --version | grep -F "${{ steps.meta.outputs.version }}"
+
+          docker logs app
+          docker rm -f app auth
+
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
