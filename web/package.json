@@ -6,11 +6,11 @@
   "type": "module",
   "scripts": {
     "test": "node --test app.test.cjs",
-    "test:unit": "node --experimental-vm-modules ../node_modules/.bin/jest --config jest.config.js --testPathPatterns=unit",
-    "test:integration": "node --experimental-vm-modules ../node_modules/.bin/jest --config jest.config.js --testPathPatterns=integration",
+    "test:unit": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --testPathPattern=unit",
+    "test:integration": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --testPathPattern=integration",
     "test:e2e": "playwright test",
     "test:all": "npm run test && npm run test:unit && npm run test:integration && npm run test:e2e",
-    "test:coverage": "node --experimental-vm-modules ../node_modules/.bin/jest --config jest.config.js --coverage"
+    "test:coverage": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --coverage"
   },
   "devDependencies": {
     "@babel/core": "^8.0.7",

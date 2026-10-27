@@ -1007,16 +1007,77 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .pomo-header { display: flex; align-items: center; margin-bottom: 8px; }
 .pomo-title { flex: 1; font-size: 13px; font-weight: 600; }
 .pomo-close { padding: 2px 6px; font-size: 14px; }
-.pomo-phases { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }
-.pomo-phase-btn { padding: 2px 8px; font-size: 11px; }
+.pomo-gear { padding: 2px 6px; font-size: 13px; margin-right: 4px; }
+.pomo-settings { border-top: 1px solid var(--line); padding-top: 8px; margin-bottom: 8px; }
+.pomo-settings[hidden] { display: none; }
+.pomo-setting-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.pomo-setting-label { flex: 1; font-size: 12px; }
+.pomo-minutes {
+  width: 54px; padding: 2px 4px; font-size: 12px; text-align: right;
+  font-family: var(--mono); border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); color: var(--fg);
+}
+.pomo-setting-unit { font-size: 11px; color: var(--fg-muted); }
+.pomo-settings-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); margin: 8px 0 4px; }
+.pomo-settings-title:first-child { margin-top: 0; }
+.pomo-check-label { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+.pomo-check { width: auto; min-height: 0; margin: 0; }
+
+/* Row 1: phase buttons, one per column */
+.pomo-phases { display: flex; gap: 4px; margin-bottom: 10px; }
+.pomo-phase-btn { flex: 1 1 0; min-width: 0; padding: 4px 2px; font-size: 11px; text-align: center; }
 .pomo-phase-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.pomo-display { position: relative; width: 120px; margin: 0 auto 10px; }
-.pomo-ring { width: 120px; height: 120px; transform: rotate(-90deg); }
+
+/* Row 2: countdown; a fixed box so the time can never spill onto the row below */
+.pomo-display { position: relative; width: 120px; height: 120px; margin: 0 auto 10px; overflow: hidden; }
+.pomo-ring { display: block; width: 120px; height: 120px; transform: rotate(-90deg); }
 .pomo-ring-bg { fill: none; stroke: var(--line); stroke-width: 8; }
 .pomo-ring-fg { fill: none; stroke: var(--accent); stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset .5s linear; }
 .phase-short .pomo-ring-fg { stroke: #10b981; }
 .phase-long  .pomo-ring-fg { stroke: #6366f1; }
 .pomo-time { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; font-family: var(--mono); }
-.pomo-controls { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; flex-wrap: wrap; }
+
+/* Row 3: start / reset */
+.pomo-controls { display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }
 .pomo-start { min-width: 70px; }
 .pomo-count { text-align: center; font-size: 12px; color: var(--fg-muted); min-height: 16px; }
+
+/* Flashing: the widget window only, for a few seconds at end of phase */
+.pomo-widget.pomo-flash { animation: pomo-flash .6s ease-in-out 5; }
+@keyframes pomo-flash {
+  0%, 100% { background: var(--bg); border-color: var(--line); }
+  50%      { background: var(--accent); border-color: var(--accent); color: #fff; }
+}
+
+/* Top-bar button marks a countdown that is still running while hidden */
+#pomo-toggle { position: relative; }
+#pomo-toggle.running { color: var(--accent); border-color: var(--accent); }
+#pomo-toggle.running::after {
+  content: ""; position: absolute; top: 1px; right: 1px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pomo-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pomo-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .3; transform: scale(.7); }
+}
+
+/* "Time is up" dialog: shown instead of the flash while the widget is hidden */
+.pomo-dialog-overlay {
+  position: fixed; inset: 0; z-index: 1300;
+  background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center;
+}
+.pomo-dialog {
+  width: 240px; padding: 16px; text-align: center;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0,0,0,.3);
+}
+.pomo-dialog-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.pomo-dialog-msg { font-size: 13px; margin: 0 0 12px; color: var(--fg-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pomo-widget.pomo-flash { animation: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); }
+  #pomo-toggle.running::after { animation: none; }
+}

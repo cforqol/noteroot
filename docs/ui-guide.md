@@ -110,7 +110,7 @@ Toggled per notebook (state is browser-local). Takes effect immediately.
 |---|---|
 | **HTML renderer** | Replaces ` ```html ` fenced blocks in read mode with sandboxed `<iframe>` previews. A "Show source / Show rendered" toggle appears below each frame. The iframe uses `sandbox="allow-scripts"` — no parent-page access. |
 | **Calendar widget** | Adds a 📅 button to the top bar that opens a floating draggable monthly calendar. Navigate months with ‹/›; *Today* jumps back. Drag by the title bar. |
-| **Pomodoro timer** | Adds a 🍅 button to the top bar that opens a floating timer. Three phases: Work (25 min), Short break (5 min), Long break (15 min). SVG ring shows progress; Start/Pause/Resume/Reset controls; optional audio cue (🔔/🔕); counts completed pomodoros for the session. Drag by the title bar. |
+| **Pomodoro timer** | Adds a 🍅 button to the top bar that opens a floating timer in three rows: the phase buttons *Work / Short / Long* across the top, the countdown (SVG ring) in the middle, *Start / Reset* underneath (Start toggles Pause/Resume). Phases default to 25 / 5 / 15 min and completed pomodoros are counted for the session. Drag by the title bar. The ⚙ button opens the settings panel with the phase lengths (whole minutes, 1–180 per phase) and the notifications: **Sound** (off by default) and **Flash widget** (on by default — blinks the widget window for ~3 s when a phase ends). Everything is saved to your plugin preferences the moment you change it (see below). Changing the length of the phase on screen re-arms the countdown if it has not started, or re-scales it (never longer than the new length) if it is already running. Hiding the widget never stops the countdown: the 🍅 button then carries a running indicator (pulsing accent dot, hover text *running*). If a phase ends while the widget is hidden and flashing is enabled, a small **⏰ Time is up** dialog appears instead (OK, or Esc, dismisses it); with flashing off you only get the beep. |
 
 ### Lua plugins
 
@@ -157,6 +157,7 @@ per notebook in the browser (`nr.homepage`).
 | `nr.homepage` | `{notebook: note path}` — the start page, if any |
 | `nr.editorPref`, `nr.vimMode` | editor preference and the Vim circuit breaker |
 | `noteroot_uiplugins_<slug>` | per-notebook built-in UI plugin enabled state (`{html-renderer: true, …}`) |
+| `noteroot_uipluginprefs` | per-user built-in UI plugin preferences, e.g. `{"pomodoro":{"work":50,"short":10,"long":15,"sound":true,"flash":false}}` — not tied to a notebook, so a duration or notification you set applies everywhere and survives a restart |
 | `nr.trashRetention` | **server-side**: notebook‑level auto‑delete after N days (default 30) or never; stored in `notebook.toml`, not in localStorage |
 
 Settings → *Data* can **Export preferences** (a dated `.json` snapshot of the
@@ -216,4 +217,4 @@ Notebook CRUD also lives in the notebook selector as pseudo-options (**＋ New n
 - **Modified note re-edit**: When a note is modified and the user navigates to another note and back, the note cannot be edited again until the page is refreshed. This is a state management issue that needs fixing.
 - **Folder icon decorations server-side**: Icon/color decorations are currently browser-local (`localStorage`). Future work would sync them through the server so the same decoration appears across browsers.
 - **Calendar reminders**: The calendar widget is display-only. Integration with a reminder or alarm system (e.g. a Lua hook that fires before an event) is deferred.
-- **Pomodoro persistence**: The session completed count resets on page reload. A server-side or localStorage-backed counter would preserve it across sessions.
+- **Pomodoro session count**: Phase lengths are saved in your plugin preferences and survive a restart; the session completed count still resets on page reload. A server-side or localStorage-backed counter would preserve it across sessions.

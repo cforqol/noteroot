@@ -144,7 +144,7 @@ is held to 100 % Jest coverage:
 | `lib/ui-plugins.js` | built-in UI plugin registry: per-notebook localStorage enable state, `syncUiPlugins` / `destroyAllUiPlugins` lifecycle |
 | `lib/plugins/html-renderer.js` | HTML renderer plugin: replaces ` ```html ` fenced blocks with sandboxed iframes on each `noteread` event |
 | `lib/plugins/calendar.js` | Calendar widget plugin: floating draggable monthly calendar toggled from the top bar |
-| `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating 25/5/15-minute timer with SVG ring, phase tabs, audio cue |
+| `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating three-row timer (phase buttons / SVG ring countdown / Start-Reset), configurable sound + widget-flash notifications, background running indicator on the top-bar button; lengths and notification flags read from / written to the plugin preference store |
 
 Preferences are per browser (`localStorage`), never server state. Layout is
 CSS-only: `body[data-tree=left|right|hidden]` selects the grid, and below
@@ -165,11 +165,17 @@ audit, bus) with their own attribution.
 
 **Built-in UI plugins** — a lightweight client-side plugin system parallel to the Lua layer.
 Each plugin is a plain ES-module object `{id, name, description, init(slug), destroy()}`.
-`lib/ui-plugins.js` stores enabled state in `localStorage` per notebook
-(`noteroot_uiplugins_<slug>`), and `syncUiPlugins` / `destroyAllUiPlugins`
-are called from `loadTree` on notebook open/switch. Three first-party plugins ship:
-HTML renderer (sandboxed iframe for ` ```html ` blocks), Calendar widget (floating
-monthly calendar), and Pomodoro timer (25/5/15-minute timer with SVG ring).
+`lib/ui-plugins.js` keeps two kinds of `localStorage` state: enabled state per
+notebook (`noteroot_uiplugins_<slug>`) and plugin preferences per user
+(`noteroot_uipluginprefs`, one object keyed by plugin id), and `syncUiPlugins` /
+`destroyAllUiPlugins` are called from `loadTree` on notebook open/switch. Three
+first-party plugins ship: HTML renderer (sandboxed iframe for ` ```html ` blocks),
+Calendar widget (floating monthly calendar), and Pomodoro timer (SVG ring timer
+whose phase lengths and sound/flash notifications are editable in-widget and
+persist across restarts via `getUiPluginPrefs`/`setUiPluginPrefs`). The timer
+keeps ticking while its widget is hidden — the top-bar button marks that with a
+`running` class, and a phase ending in that state opens a `body`-level
+"Time is up" dialog instead of flashing the hidden widget.
 Settings → Plugins shows both UI plugins (with per-notebook toggles) and Lua
 plugins (fetched from `GET /n/{slug}/plugins`) with a *Reload* button.
 

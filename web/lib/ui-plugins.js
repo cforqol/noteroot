@@ -4,12 +4,18 @@
  * Each plugin is a plain object:
  *   { id, name, description, init(slug), destroy() }
  *
- * Enabled state is stored per-notebook in localStorage.
+ * Two kinds of browser-local state:
+ *   - enabled state, per notebook (`noteroot_uiplugins_<slug>`)
+ *   - plugin preferences, per user (`noteroot_uipluginprefs`), so a
+ *     preference such as the Pomodoro phase lengths follows you across
+ *     notebooks and survives a restart
+ *
  * Plugins are initialised/destroyed by the host (app.js) when a
  * notebook opens or settings change.
  */
 
 const STORAGE_PREFIX = "noteroot_uiplugins_";
+const PREFS_KEY = "noteroot_uipluginprefs";
 
 export function getUiPluginEnabled(slug, id) {
   try {
@@ -25,6 +31,28 @@ export function setUiPluginEnabled(slug, id, enabled) {
     const state = JSON.parse(localStorage.getItem(key) || "{}");
     state[id] = Boolean(enabled);
     localStorage.setItem(key, JSON.stringify(state));
+  } catch { /* storage unavailable */ }
+}
+
+/**
+ * Preferences for one plugin, as a plain object. Missing or corrupt
+ * storage yields {} so callers can spread defaults over the result.
+ */
+export function getUiPluginPrefs(id) {
+  try {
+    const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")[id];
+    return prefs && typeof prefs === "object" && !Array.isArray(prefs) ? prefs : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Replace the stored preferences of one plugin (other plugins untouched). */
+export function setUiPluginPrefs(id, prefs) {
+  try {
+    const all = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+    all[id] = prefs && typeof prefs === "object" && !Array.isArray(prefs) ? prefs : {};
+    localStorage.setItem(PREFS_KEY, JSON.stringify(all));
   } catch { /* storage unavailable */ }
 }
 

@@ -1,25 +1,57 @@
 /**
  * Pomodoro timer plugin.
  *
- * Floating draggable timer widget.  Supports 25/5/15 minute cycles
- * (work, short break, long break), an optional audio cue (Web Audio
- * beep), and counts completed pomodoros in the current session.
+ * Three-row floating widget: the phase buttons (Work / Short / Long) on
+ * top, the countdown in the middle, Start / Reset underneath.  Phase
+ * lengths and the completion notifications (sound, widget flash) are
+ * edited in the ⚙ panel and saved to the plugin preference store
+ * (localStorage, user-level), so they survive a reload.
+ *
+ * Hiding the widget (top-bar 🍅) never stops a running countdown — the
+ * button then carries a running indicator.  If a phase ends while the
+ * widget is hidden and flashing is enabled, a small "Time is up"
+ * dialog is shown instead of the flash.  Completed pomodoros in the
+ * current session are counted.
  */
+import { getUiPluginPrefs, setUiPluginPrefs } from "../ui-plugins.js";
+
 export const pomodoroPlugin = {
   id: "pomodoro",
   name: "Pomodoro timer",
-  description: "A floating 25/5/15-minute Pomodoro productivity timer.",
+  description: "A floating Pomodoro timer; phase lengths and sound/flash notifications are configurable (⚙) and remembered.",
 
   init(_slug) {
     return mountPomodoro();
   },
 };
 
-const PHASES = [
-  { label: "Work",        minutes: 25, cls: "phase-work"  },
-  { label: "Short break", minutes: 5,  cls: "phase-short" },
-  { label: "Long break",  minutes: 15, cls: "phase-long"  },
+const PREF_ID = "pomodoro";
+const MIN_MINUTES = 1;
+const MAX_MINUTES = 180;
+const DEFAULT_SOUND = false;
+const DEFAULT_FLASH = true;
+const FLASH_MS = 3000;
+
+const DEFAULT_PHASES = [
+  { key: "work",  label: "Work",        short: "Work",  minutes: 25, cls: "phase-work"  },
+  { key: "short", label: "Short break", short: "Short", minutes: 5,  cls: "phase-short" },
+  { key: "long",  label: "Long break",  short: "Long",  minutes: 15, cls: "phase-long"  },
 ];
+
+/** Whole minutes within 1..180. */
+function clampMinutes(n) {
+  return Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Math.round(n)));
+}
+
+/** Stored value → minutes; anything that is not a finite number falls back. */
+function loadMinutes(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) ? clampMinutes(value) : fallback;
+}
+
+/** Stored value → boolean; only a real boolean is accepted. */
+function loadBool(value, fallback) {
+  return typeof value === "boolean" ? value : fallback;
+}
 
 function beep(ctx) {
   if (!ctx) return;
@@ -34,13 +66,21 @@ function beep(ctx) {
 }
 
 function mountPomodoro() {
+  const prefs = getUiPluginPrefs(PREF_ID);
+  const phases = DEFAULT_PHASES.map((p) => ({ ...p, minutes: loadMinutes(prefs[p.key], p.minutes) }));
+  let soundEnabled = loadBool(prefs.sound, DEFAULT_SOUND);
+  let flashEnabled = loadBool(prefs.flash, DEFAULT_FLASH);
+
   let phaseIdx = 0;
-  let totalSecs = PHASES[0].minutes * 60;
+  let totalSecs = phases[0].minutes * 60;
   let remaining = totalSecs;
+  let started = false;   // has this phase counted down at all?
   let running = false;
   let timer = null;
+  let flashTimer = null;
   let completed = 0;
   let audioCtx = null;
+  let closeTimeUpDialog = null;
 
   const widget = document.createElement("div");
   widget.id = "pomo-widget";
@@ -55,23 +95,120 @@ function mountPomodoro() {
   titleEl.className = "pomo-title";
   titleEl.textContent = "🍅 Pomodoro";
 
+  const settingsBtn = document.createElement("button");
+  settingsBtn.type = "button"; settingsBtn.className = "pomo-gear btn ghost"; settingsBtn.textContent = "⚙";
+  settingsBtn.title = "Timer settings";
+  settingsBtn.setAttribute("aria-label", "Timer settings");
+  settingsBtn.setAttribute("aria-expanded", "false");
+
   const close = document.createElement("button");
   close.type = "button"; close.className = "pomo-close btn ghost"; close.textContent = "×";
   close.setAttribute("aria-label", "Close timer");
-  header.append(titleEl, close);
+  header.append(titleEl, settingsBtn, close);
 
-  // Phase tabs
+  // --- settings: phase lengths + notifications -------------------------
+  const settings = document.createElement("div");
+  settings.className = "pomo-settings";
+  settings.hidden = true;
+
+  const durationsTitle = document.createElement("div");
+  durationsTitle.className = "pomo-settings-title";
+  durationsTitle.textContent = "Phase lengths";
+  settings.append(durationsTitle);
+
+  const inputs = phases.map((p, i) => {
+    const row = document.createElement("div");
+    row.className = "pomo-setting-row";
+
+    const label = document.createElement("label");
+    label.className = "pomo-setting-label";
+    label.textContent = p.label;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "pomo-minutes";
+    input.min = String(MIN_MINUTES);
+    input.max = String(MAX_MINUTES);
+    input.step = "1";
+    input.dataset.phase = p.key;
+    input.value = String(p.minutes);
+    input.setAttribute("aria-label", `${p.label} minutes`);
+
+    const unit = document.createElement("span");
+    unit.className = "pomo-setting-unit";
+    unit.textContent = "min";
+
+    input.addEventListener("change", () => {
+      const raw = input.value;
+      const n = Number(raw);
+      const next = raw !== "" && Number.isFinite(n) ? clampMinutes(n) : phases[i].minutes;
+      input.value = String(next);
+      if (next !== phases[i].minutes) applyMinutes(i, next);
+    });
+
+    row.append(label, input, unit);
+    settings.append(row);
+    return input;
+  });
+
+  const notifTitle = document.createElement("div");
+  notifTitle.className = "pomo-settings-title";
+  notifTitle.textContent = "Notifications";
+  settings.append(notifTitle);
+
+  const soundInput = document.createElement("input");
+  soundInput.type = "checkbox";
+  soundInput.className = "pomo-check";
+  soundInput.dataset.setting = "sound";
+  soundInput.checked = soundEnabled;
+  const soundLabel = document.createElement("label");
+  soundLabel.className = "pomo-check-label";
+  soundLabel.append(soundInput, document.createTextNode("Sound"));
+  soundInput.addEventListener("change", () => {
+    soundEnabled = soundInput.checked;
+    if (soundEnabled && !audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { audioCtx = null; }
+    }
+    savePrefs();
+  });
+
+  const flashInput = document.createElement("input");
+  flashInput.type = "checkbox";
+  flashInput.className = "pomo-check";
+  flashInput.dataset.setting = "flash";
+  flashInput.checked = flashEnabled;
+  const flashLabel = document.createElement("label");
+  flashLabel.className = "pomo-check-label";
+  flashLabel.append(flashInput, document.createTextNode("Flash widget"));
+  flashInput.addEventListener("change", () => {
+    flashEnabled = flashInput.checked;
+    savePrefs();
+  });
+
+  settings.append(soundLabel, flashLabel);
+
+  settingsBtn.addEventListener("click", () => {
+    settings.hidden = !settings.hidden;
+    settingsBtn.setAttribute("aria-expanded", String(!settings.hidden));
+  });
+
+  // --- row 1: phase buttons (one row) ----------------------------------
   const phaseTabs = document.createElement("div");
   phaseTabs.className = "pomo-phases";
-  const tabBtns = PHASES.map((p, i) => {
+  const tabBtns = phases.map((p, i) => {
     const b = document.createElement("button");
-    b.type = "button"; b.className = "pomo-phase-btn btn ghost"; b.textContent = p.label;
+    b.type = "button"; b.className = "pomo-phase-btn btn ghost";
     b.addEventListener("click", () => selectPhase(i));
     phaseTabs.append(b);
     return b;
   });
 
-  // Timer display
+  function refreshPhaseLabels() {
+    tabBtns.forEach((b, i) => { b.textContent = phases[i].short; });
+    inputs.forEach((el, i) => { el.value = String(phases[i].minutes); });
+  }
+
+  // --- row 2: countdown -------------------------------------------------
   const display = document.createElement("div");
   display.className = "pomo-display";
 
@@ -92,7 +229,7 @@ function mountPomodoro() {
   timeEl.className = "pomo-time";
   display.append(ring, timeEl);
 
-  // Controls
+  // --- row 3: start / reset --------------------------------------------
   const controls = document.createElement("div");
   controls.className = "pomo-controls";
 
@@ -102,35 +239,23 @@ function mountPomodoro() {
   const resetBtn = document.createElement("button");
   resetBtn.type = "button"; resetBtn.className = "pomo-reset btn ghost"; resetBtn.textContent = "Reset";
 
-  const soundBtn = document.createElement("button");
-  soundBtn.type = "button"; soundBtn.className = "pomo-sound btn ghost"; soundBtn.textContent = "🔔";
-  soundBtn.title = "Enable audio cue";
-  let soundEnabled = false;
-  soundBtn.addEventListener("click", () => {
-    soundEnabled = !soundEnabled;
-    soundBtn.textContent = soundEnabled ? "🔔" : "🔕";
-    soundBtn.title = soundEnabled ? "Audio cue on" : "Audio cue off";
-    if (soundEnabled && !audioCtx) {
-      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { audioCtx = null; }
-    }
-  });
-
-  controls.append(startBtn, resetBtn, soundBtn);
+  controls.append(startBtn, resetBtn);
 
   // Completed count
   const countEl = document.createElement("div");
   countEl.className = "pomo-count";
 
-  widget.append(header, phaseTabs, display, controls, countEl);
+  widget.append(header, settings, phaseTabs, display, controls, countEl);
   document.body.append(widget);
 
-  // Toggle button
+  // Top-bar toggle: the running marker stays visible while the widget is hidden
   const toggleBtn = document.createElement("button");
   toggleBtn.id = "pomo-toggle";
   toggleBtn.type = "button";
   toggleBtn.className = "btn small ghost";
   toggleBtn.textContent = "🍅";
   toggleBtn.title = "Pomodoro timer";
+  toggleBtn.setAttribute("aria-label", "Pomodoro timer");
   const toolbar = document.querySelector("#topbar") || document.querySelector("header") || document.body;
   toolbar.append(toggleBtn);
 
@@ -144,41 +269,136 @@ function mountPomodoro() {
     timeEl.textContent = fmt(remaining);
     const frac = remaining / totalSecs;
     fgCircle.setAttribute("stroke-dashoffset", String(CIRCUM * (1 - frac)));
-    document.title = running ? `${fmt(remaining)} — ${PHASES[phaseIdx].label}` : document.title;
+    document.title = running ? `${fmt(remaining)} — ${phases[phaseIdx].label}` : document.title;
+  }
+
+  function savePrefs() {
+    setUiPluginPrefs(PREF_ID, {
+      ...Object.fromEntries(phases.map((p) => [p.key, p.minutes])),
+      sound: soundEnabled,
+      flash: flashEnabled,
+    });
+  }
+
+  /** Running state, mirrored on the top-bar button as an indicator. */
+  function setRunning(next) {
+    running = next;
+    toggleBtn.classList.toggle("running", next);
+    toggleBtn.title = next ? "Pomodoro timer (running)" : "Pomodoro timer";
+  }
+
+  /** Apply a new phase length: re-arm or re-scale the live countdown. */
+  function applyMinutes(i, minutes) {
+    phases[i].minutes = minutes;
+    if (i === phaseIdx) {
+      totalSecs = minutes * 60;
+      remaining = started ? Math.min(remaining, totalSecs) : totalSecs;
+      updateDisplay();
+    }
+    refreshPhaseLabels();
+    savePrefs();
   }
 
   function selectPhase(i) {
-    clearInterval(timer); timer = null; running = false;
+    clearInterval(timer); timer = null; setRunning(false);
     phaseIdx = i;
-    totalSecs = PHASES[i].minutes * 60;
+    totalSecs = phases[i].minutes * 60;
     remaining = totalSecs;
-    widget.className = `pomo-widget ${PHASES[i].cls}`;
+    started = false;
+    phases.forEach((p) => widget.classList.remove(p.cls));
+    widget.classList.add(phases[i].cls);
     tabBtns.forEach((b, j) => b.classList.toggle("active", j === i));
     updateDisplay();
     startBtn.textContent = "Start";
+  }
+
+  /**
+   * End-of-phase notification.  Sound is independent of visibility;
+   * the flash needs the widget on screen — otherwise (flash enabled,
+   * widget hidden) a small dialog says the time is up.
+   */
+  function notifyPhaseDone(finishedLabel) {
+    if (soundEnabled) beep(audioCtx);
+    if (!flashEnabled) return;
+    if (widget.hidden) {
+      showTimeUpDialog(finishedLabel);
+      return;
+    }
+    widget.classList.remove("pomo-flash");
+    void widget.offsetWidth; // restart the animation
+    widget.classList.add("pomo-flash");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      widget.classList.remove("pomo-flash");
+      flashTimer = null;
+    }, FLASH_MS);
+  }
+
+  function showTimeUpDialog(finishedLabel) {
+    closeTimeUpDialog?.();
+
+    const overlay = document.createElement("div");
+    overlay.className = "pomo-dialog-overlay";
+
+    const box = document.createElement("div");
+    box.className = "pomo-dialog";
+    box.setAttribute("role", "alertdialog");
+    box.setAttribute("aria-modal", "true");
+    box.setAttribute("aria-label", "Time is up");
+
+    const heading = document.createElement("div");
+    heading.className = "pomo-dialog-title";
+    heading.textContent = "⏰ Time is up";
+
+    const message = document.createElement("p");
+    message.className = "pomo-dialog-msg";
+    message.textContent = `${finishedLabel} finished.`;
+
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.className = "btn primary"; ok.textContent = "OK";
+    ok.setAttribute("aria-label", "Dismiss");
+
+    const onKey = (e) => { if (e.key === "Escape") dismiss(); };
+    function dismiss() {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey);
+      if (closeTimeUpDialog === dismiss) closeTimeUpDialog = null;
+    }
+    ok.addEventListener("click", dismiss);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) dismiss(); });
+    document.addEventListener("keydown", onKey);
+
+    box.append(heading, message, ok);
+    overlay.append(box);
+    document.body.append(overlay);
+    closeTimeUpDialog = dismiss;
+    ok.focus();
   }
 
   function tick() {
     remaining--;
     updateDisplay();
     if (remaining <= 0) {
-      clearInterval(timer); timer = null; running = false;
+      clearInterval(timer); timer = null; setRunning(false);
       startBtn.textContent = "Start";
       if (phaseIdx === 0) { completed++; countEl.textContent = `🍅 × ${completed} today`; }
-      if (soundEnabled) beep(audioCtx);
-      // Auto-advance to next phase
-      selectPhase((phaseIdx + 1) % PHASES.length);
+      const finishedLabel = phases[phaseIdx].label;
+      // Auto-advance first: selectPhase rewrites widget.className and
+      // would drop the flash class.
+      selectPhase((phaseIdx + 1) % phases.length);
+      notifyPhaseDone(finishedLabel);
     }
   }
 
   startBtn.addEventListener("click", () => {
     if (running) {
-      clearInterval(timer); timer = null; running = false;
+      clearInterval(timer); timer = null; setRunning(false);
       startBtn.textContent = "Resume";
     } else {
       if (remaining === 0) { remaining = totalSecs; }
       timer = setInterval(tick, 1000);
-      running = true;
+      setRunning(true);
+      started = true;
       startBtn.textContent = "Pause";
     }
     updateDisplay();
@@ -206,11 +426,14 @@ function mountPomodoro() {
     document.addEventListener("mouseup", up);
   });
 
+  refreshPhaseLabels();
   selectPhase(0);
 
   return {
     destroy() {
       clearInterval(timer);
+      clearTimeout(flashTimer);
+      closeTimeUpDialog?.();
       widget.remove();
       toggleBtn.remove();
     },

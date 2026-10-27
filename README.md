@@ -105,7 +105,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - **Built-in UI plugin system**: enable/disable per notebook from Settings → Plugins; three first-party plugins:
   - **HTML renderer** — `\`\`\`html` fenced blocks render as sandboxed `<iframe>` previews with a source/rendered toggle
   - **Calendar widget** — floating draggable monthly calendar, toggled from the top bar (📅)
-  - **Pomodoro timer** — floating 25/5/15-minute timer with SVG ring, phase tabs, pause/resume/reset, optional audio cue, and a session completed count (🍅)
+  - **Pomodoro timer** — floating three-row timer (Work/Short/Long buttons, SVG ring, Start/Reset) with a session count (🍅); phase lengths (1–180 min each) and the sound / widget-flash notifications are configurable (⚙ in the widget) and saved to your plugin preferences, so they survive a restart. The countdown keeps running when the widget is hidden — the 🍅 button shows a running indicator and pops a "Time is up" dialog if a phase ends unseen
 - Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
 - Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
 - Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
