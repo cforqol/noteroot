@@ -137,10 +137,14 @@ is held to 100 % Jest coverage:
 |---|---|
 | `lib/stats.js` | word/char/paragraph/reading-time counts, row:col, human sizes, `describeStatus` |
 | `lib/tree.js` | counts per folder, tree status text, path validation (`cleanRelPath`, `resolveChild`) |
-| `lib/tree-view.js` | collapsible tree renderer: icons, colors, `[n]` badges, row actions |
+| `lib/tree-view.js` | collapsible tree renderer: icons, colors, `[n]` badges, row actions, drag-and-drop note → folder |
 | `lib/prefs.js` | browser-local theme, tree placement, folder icon/color, collapsed state |
 | `lib/notes-api.js` | note/folder/trash HTTP client (CSRF-safe JSON types) |
 | `lib/dialog.js` | promise-based form/confirm dialogs and context menu (no `window.prompt`) |
+| `lib/ui-plugins.js` | built-in UI plugin registry: per-notebook localStorage enable state, `syncUiPlugins` / `destroyAllUiPlugins` lifecycle |
+| `lib/plugins/html-renderer.js` | HTML renderer plugin: replaces ` ```html ` fenced blocks with sandboxed iframes on each `noteread` event |
+| `lib/plugins/calendar.js` | Calendar widget plugin: floating draggable monthly calendar toggled from the top bar |
+| `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating 25/5/15-minute timer with SVG ring, phase tabs, audio cue |
 
 Preferences are per browser (`localStorage`), never server state. Layout is
 CSS-only: `body[data-tree=left|right|hidden]` selects the grid, and below
@@ -159,7 +163,17 @@ depth 5. Mutations publish through `emitAs(ctx, actor, origin, depth)`;
 plugin and hook writes reuse the real write path (identity, index, git,
 audit, bus) with their own attribution.
 
-**Plugins** — `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`.
+**Built-in UI plugins** — a lightweight client-side plugin system parallel to the Lua layer.
+Each plugin is a plain ES-module object `{id, name, description, init(slug), destroy()}`.
+`lib/ui-plugins.js` stores enabled state in `localStorage` per notebook
+(`noteroot_uiplugins_<slug>`), and `syncUiPlugins` / `destroyAllUiPlugins`
+are called from `loadTree` on notebook open/switch. Three first-party plugins ship:
+HTML renderer (sandboxed iframe for ` ```html ` blocks), Calendar widget (floating
+monthly calendar), and Pomodoro timer (25/5/15-minute timer with SVG ring).
+Settings → Plugins shows both UI plugins (with per-notebook toggles) and Lua
+plugins (fetched from `GET /n/{slug}/plugins`) with a *Reload* button.
+
+**Lua plugins** — `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`.
 Manifest validation is strict (name must match the directory, entry
 cannot escape, permissions via the shared grant grammar); a bad or
 disabled plugin is listed with its problem and never fails boot. One

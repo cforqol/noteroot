@@ -27,6 +27,7 @@ export function renderTree(container, root, ctx = {}, doc = document) {
     current = null, splitPath = null, multi = new Set(), selected = null,
     collapsed = new Set(), decorations = {},
     onOpen = () => {}, onToggle = () => {}, onMenu = () => {},
+    onDropNote = null,
   } = ctx;
   const totals = annotateCounts(root);
 
@@ -85,6 +86,23 @@ export function renderTree(container, root, ctx = {}, doc = document) {
         count.textContent = node.locked ? '' : `[${node.noteCount}]`;
         main.append(caret, icon, label, count);
         main.addEventListener('click', () => onToggle(node.path, !isCollapsed));
+        if (onDropNote && !node.locked) {
+          row.addEventListener('dragover', (e) => {
+            if (!e.dataTransfer.types.includes('text/x-noteroot-path')) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            row.classList.add('drop-target');
+          });
+          row.addEventListener('dragleave', (e) => {
+            if (!row.contains(e.relatedTarget)) row.classList.remove('drop-target');
+          });
+          row.addEventListener('drop', (e) => {
+            e.preventDefault();
+            row.classList.remove('drop-target');
+            const notePath = e.dataTransfer.getData('text/x-noteroot-path');
+            if (notePath) onDropNote(notePath, node.path);
+          });
+        }
         row.append(main, menuButton(node));
         frag.append(row);
         if (!isCollapsed && !node.locked) frag.append(build(node, depth + 1));
@@ -107,6 +125,15 @@ export function renderTree(container, root, ctx = {}, doc = document) {
           main.append(caret, label);
         }
         main.addEventListener('click', (e) => onOpen(node.path, main, e));
+        if (onDropNote && !node.locked) {
+          main.draggable = true;
+          main.addEventListener('dragstart', (e) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/x-noteroot-path', node.path);
+            main.classList.add('dragging');
+          });
+          main.addEventListener('dragend', () => main.classList.remove('dragging'));
+        }
         row.append(main, menuButton(node));
         frag.append(row);
       }

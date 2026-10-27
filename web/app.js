@@ -9,6 +9,12 @@ import {
   setEditorPreference,
 } from '/lib/vim-mode.js';
 import { fetchPanels, renderPanelChips } from '/lib/panels.js';
+import { getUiPluginEnabled, setUiPluginEnabled, syncUiPlugins, destroyAllUiPlugins } from '/lib/ui-plugins.js';
+import { htmlRendererPlugin } from '/lib/plugins/html-renderer.js';
+import { calendarPlugin } from '/lib/plugins/calendar.js';
+import { pomodoroPlugin } from '/lib/plugins/pomodoro.js';
+
+const UI_PLUGIN_REGISTRY = [htmlRendererPlugin, calendarPlugin, pomodoroPlugin];
 import { describeStatus, humanSize } from '/lib/stats.js';
 function shouldUseVim() {
   return shouldUseVimCore({ checkCompatibility: () => checkBrowserCompatibility() });
@@ -504,6 +510,17 @@ function drawTree() {
       drawTree();
     },
     onMenu: showNodeMenu,
+    onDropNote: async (notePath, folderPath) => {
+      await guarded(async () => {
+        const dest = cleanRelPath(joinPath(folderPath, baseName(notePath)));
+        if (dest === notePath) return;
+        await notesApi.moveNote(slug, notePath, dest);
+        followMove(notePath, dest, false);
+        ensureExpanded(folderPath);
+        await refreshTree();
+        toast(`Moved to ${folderPath || "/"}`);
+      });
+    },
   });
   $("tree-status").textContent = formatTreeStatus(totals);
   updateMultiBar();
@@ -789,10 +806,61 @@ function renderRead(n) {
   $("note").innerHTML = parts.join("");
   applyExternalLinkTargets($("note"));
   renderMermaid($("note"));
+  activateTaskCheckboxes($("note"), n);
   // The note body stays the note: contents, tags and links live in the
   // panel beside it.
   renderReadPane(n);
   $("note").scrollTop = 0;
+  document.dispatchEvent(new CustomEvent("noteread", { detail: { note: n } }));
+}
+
+/**
+ * Make goldmark's disabled task checkboxes interactive: toggling one
+ * fetches the raw markdown, flips the nth `[ ]`/`[x]` occurrence that
+ * matches this checkbox's position, and saves back.
+ */
+function activateTaskCheckboxes(container, n) {
+  const boxes = container.querySelectorAll('input[type="checkbox"]');
+  if (!boxes.length) return;
+  boxes.forEach((cb, idx) => {
+    cb.removeAttribute("disabled");
+    cb.addEventListener("change", async () => {
+      const checked = cb.checked;
+      try {
+        const { text, sha } = await notesApi.getSource(slug, n.path);
+        const updated = toggleNthCheckbox(text, idx, checked);
+        if (updated === text) return;
+        await notesApi.saveNote(slug, n.path, updated, { baseSha: sha });
+        // Refresh the read pane silently (don't re-render scrolling position)
+        const fresh = await notesApi.getNote(slug, n.path);
+        if (fresh) {
+          Object.assign(n, fresh);
+          const newBoxes = container.querySelectorAll('input[type="checkbox"]');
+          if (newBoxes[idx]) {
+            // Swap the inner HTML rather than re-calling renderRead to
+            // avoid losing scroll position; the state is already correct.
+            newBoxes[idx].checked = checked;
+          }
+        }
+      } catch {
+        cb.checked = !checked; // revert on error
+        toast("Could not save checkbox change.", true);
+      }
+    });
+  });
+}
+
+/**
+ * Toggle the `idx`-th markdown task-list checkbox pattern in `src`.
+ * Handles `- [ ]`, `* [ ]`, `1. [ ]` and their checked variants.
+ */
+function toggleNthCheckbox(src, idx, checked) {
+  const pattern = /^([ \t]*(?:[-*]|\d+\.)\s+)\[([ xX])\]/gm;
+  let count = 0;
+  return src.replace(pattern, (match, prefix, mark) => {
+    if (count++ === idx) return `${prefix}[${checked ? "x" : " "}]`;
+    return match;
+  });
 }
 
 // --- read-mode side panel: contents, tags, links -----------------------
@@ -1486,13 +1554,15 @@ $("history-older")?.addEventListener("click", () => {
 });
 $("history-load-more")?.addEventListener("click", loadHistoryCommits);
 
-$("note").addEventListener("click", (e) => {
-  const a = e.target.closest?.("a.wikilink[data-path]");
-  if (!a) return;
-  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  e.preventDefault();
-  openNote(a.dataset.path, null);
-});
+for (const elId of ["note", "readpane", "split-note"]) {
+  $(elId)?.addEventListener("click", (e) => {
+    const a = e.target.closest?.("a.wikilink[data-path]");
+    if (!a) return;
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    openNote(a.dataset.path, null);
+  });
+}
 
 async function fetchVersion() {
   try {
@@ -1596,6 +1666,7 @@ async function switchNotebook(s) {
 
 async function loadTree(s) {
   if (slug) await flushEditor();
+  destroyAllUiPlugins();
   // The second pane belongs to the old notebook: save it, then let it go.
   if (splitSession) await flushSplit();
   closeSplitEditor();
@@ -1624,6 +1695,7 @@ async function loadTree(s) {
   if (isPhone()) setDrawer(true);
   await openHomepage();
   refreshPluginPanels(s);
+  syncUiPlugins(s, UI_PLUGIN_REGISTRY);
   refreshTrashState();
   refreshTags();
 }
@@ -1999,10 +2071,13 @@ function syncModeSwitch() {
     return;
   }
   const toVim = editing.mode !== "vim";
-  b.hidden = toVim && !vimAvailable();
-  b.disabled = false;
+  const canVim = vimAvailable();
+  b.hidden = false;
+  b.disabled = toVim && !canVim;
   b.textContent = toVim ? "Use Vim" : "Use plain text";
-  b.title = `Continue this note in ${toVim ? "Vim" : "the plain-text editor"}. Settings → Editor sets the default.`;
+  b.title = toVim && !canVim
+    ? "Enable Vim mode in Settings → Editor to use this."
+    : `Continue this note in ${toVim ? "Vim" : "the plain-text editor"}.`;
 }
 
 let switchingEditor = false;
@@ -3236,53 +3311,95 @@ async function actionDownloadNote(node) {
 
 const DEFAULT_FOLDER_COLOR = "#2563eb";
 
-const FOLDER_ICONS = [
-  // core / files
-  "📁", "📂", "🗂", "📋", "📌", "⭐", "❤️", "🔥", "💡", "🎯", "🚀", "🐛",
-  // work / project
-  "📚", "🧪", "🧰", "💼", "🏠", "🎵", "🎬", "📷", "🛒", "✈️", "🔒", "🌱",
-  "📝", "📖", "📓", "📔", "📕", "📗", "📘", "📙", "📄", "📃", "📑", "🔖",
-  "🗒", "🗓", "📅", "📆", "⏰", "⏳", "⌛", "🕰", "📊", "📈", "📉", "🧾",
-  "💰", "💳", "🏦", "🧮", "🛠", "🔧", "🔨", "⚙️", "🧱", "🔗", "📎", "🖇",
-  // tech / dev
-  "💻", "🖥", "⌨️", "🖱", "🖨", "💾", "💿", "📀", "🧑‍💻", "🐍", "🦀", "☕",
-  "🐳", "☁️", "🌐", "🔌", "🧩", "🪲", "✅", "❌", "⚠️", "🚧", "🔍", "🔎",
-  // ideas / people / life
-  "🧠", "🗣", "💬", "❓", "❗", "📢", "🔔", "🎓", "✏️", "🖊", "🖋", "🖌",
-  "🎨", "🖼", "🎭", "🎼", "🎤", "🎧", "📻", "🎮", "🕹", "🎲", "🧸", "🏆",
-  "🥇", "🎖", "🎁", "🎉", "🎂", "☕", "🍕", "🍔", "🍎", "🍵", "🥂", "🍫",
-  "⚽", "🏀", "🎾", "🏈", "🚴", "🏃", "🧘", "💪", "🏋", "⛰", "🏕", "🏖",
-  "🌍", "🌎", "🌏", "🗺", "🧭", "🏙", "🏢", "🏫", "🏥", "🏨", "🚗", "🚌",
-  "🚂", "🚇", "🚁", "⛵", "🚢", "🛰", "🌙", "☀️", "🌈", "⚡", "❄️", "🌊",
-  // nature / misc
-  "🌲", "🌳", "🌴", "🌵", "🌸", "🌺", "🌻", "🍀", "🍁", "🐾", "🐱", "🐶",
-  "🦊", "🐻", "🐼", "🦁", "🐯", "🦉", "🦄", "🐝", "🦋", "🐢", "🐟", "🐙",
-  "🔮", "🧿", "🪄", "✨", "🌟", "💫", "🎈", "📦", "📫", "📬", "📭", "🏷",
-];
+const FOLDER_ICON_CATEGORIES = {
+  "Files":   ["📁","📂","🗂","📋","📌","📍","🗃","🗄","📦","📫","📬","📭","🏷","🔖","📎","🖇","🔗","🗑"],
+  "Docs":    ["📝","📖","📓","📔","📕","📗","📘","📙","📄","📃","📑","🗒","🗓","📅","📆","📊","📈","📉","🧾","📜","✏️","🖊","🖋","🖌"],
+  "Work":    ["💼","🧰","🛠","🔧","🔨","⚙️","🧱","🔩","🪛","🪚","📐","📏","🗝","🔑","🔒","🔓","🏦","💰","💳","🧮","💡","🎯","🚀","🏆","🥇","🎖","🎓","📢","🔔","📣"],
+  "Tech":    ["💻","🖥","⌨️","🖱","🖨","💾","💿","📀","🧑‍💻","🐍","🦀","☕","🐳","☁️","🌐","🔌","🧩","🪲","🐛","✅","❌","⚠️","🚧","🔍","🔎","🛰","📡","⚡","🤖","🦾"],
+  "Creative":["🎨","🖼","🎭","🎬","🎵","🎼","🎤","🎧","📷","📸","📹","🎮","🕹","🎲","🧸","🎁","🎉","🎈","🎂","🎊","🪩","🎪","🪆","🎠","🎡","🎢"],
+  "Life":    ["🏠","🏡","🏢","🏫","🏥","🏨","🛒","🛁","🪴","🧹","🪑","🛋","🧺","🍳","☕","🍕","🍔","🍎","🍵","🥂","🍫","🍱","🧃","🍶","🫖"],
+  "Fitness": ["⚽","🏀","🎾","🏈","🚴","🏃","🧘","💪","🏋","🥊","🏊","⛷","🧗","🤸","🎿","🏂","🏄","🤽","🧜","⛷"],
+  "Travel":  ["✈️","🚗","🚌","🚂","🚇","🚁","⛵","🚢","🏕","🏖","⛰","🌋","🗺","🧭","🌍","🌎","🌏","🏙","🗽","🗼","🏯","🎑","🏞"],
+  "Nature":  ["🌱","🌲","🌳","🌴","🌵","🌸","🌺","🌻","🌹","🌷","🍀","🍁","🍄","🌿","🌾","🐾","🐱","🐶","🦊","🐻","🐼","🦁","🐯","🦉","🦄","🐝","🦋","🐢","🐟","🐙","🐬","🦈","🌙","☀️","🌈","❄️","🌊","🌤","⛅","🌦"],
+  "Symbols": ["⭐","❤️","🔥","🧠","🗣","💬","❓","❗","✨","🌟","💫","🔮","🧿","🪄","💎","🪙","🎯","♾","🆕","🔝","🔜","🔛","🔚","⚜","🏅","🎗","🚩","🏴","🏳","♻️","☮","✝","☯","🕉","☪","🔱"],
+};
+const FOLDER_ICONS = Object.values(FOLDER_ICON_CATEGORIES).flat();
 
 async function actionDecorate(node) {
   const cur = decorations[node.path] || {};
   let icon = cur.emoji || "";
+  let activeCategory = "All";
 
-  const grid = document.createElement("div");
-  grid.className = "icon-grid";
-  grid.setAttribute("role", "listbox");
-  grid.setAttribute("aria-label", "Icon");
-  const mark = () => {
-    for (const b of grid.querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.icon === icon));
+  const buildGrid = (pool) => {
+    const g = document.createElement("div");
+    g.className = "icon-grid";
+    g.setAttribute("role", "listbox");
+    g.setAttribute("aria-label", "Icon");
+    for (const ic of pool) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "icon-choice";
+      b.dataset.icon = ic;
+      b.textContent = ic;
+      b.setAttribute("role", "option");
+      b.setAttribute("aria-selected", String(ic === icon));
+      b.addEventListener("click", () => {
+        icon = ic;
+        for (const x of grid.querySelectorAll("button")) x.setAttribute("aria-selected", String(x.dataset.icon === icon));
+      });
+      g.append(b);
+    }
+    return g;
   };
-  const choices = FOLDER_ICONS.includes(icon) || !icon ? FOLDER_ICONS : [icon, ...FOLDER_ICONS];
-  for (const ic of choices) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "icon-choice";
-    b.dataset.icon = ic;
-    b.textContent = ic;
-    b.setAttribute("role", "option");
-    b.addEventListener("click", () => { icon = ic; mark(); });
-    grid.append(b);
+
+  // Category tabs
+  const tabs = document.createElement("div");
+  tabs.className = "icon-tabs";
+  const categoryNames = ["All", ...Object.keys(FOLDER_ICON_CATEGORIES)];
+  let grid = buildGrid(icon && !FOLDER_ICONS.includes(icon) ? [icon, ...FOLDER_ICONS] : FOLDER_ICONS);
+  const gridWrap = document.createElement("div");
+  gridWrap.className = "icon-grid-wrap";
+  gridWrap.append(grid);
+
+  const activateTab = (name) => {
+    activeCategory = name;
+    const pool = name === "All"
+      ? (icon && !FOLDER_ICONS.includes(icon) ? [icon, ...FOLDER_ICONS] : FOLDER_ICONS)
+      : (FOLDER_ICON_CATEGORIES[name] || FOLDER_ICONS);
+    grid = buildGrid(pool);
+    gridWrap.replaceChildren(grid);
+    for (const t of tabs.querySelectorAll("button")) t.setAttribute("aria-pressed", String(t.dataset.cat === name));
+  };
+
+  for (const name of categoryNames) {
+    const t = document.createElement("button");
+    t.type = "button";
+    t.className = "icon-tab";
+    t.dataset.cat = name;
+    t.textContent = name;
+    t.setAttribute("aria-pressed", String(name === activeCategory));
+    t.addEventListener("click", () => activateTab(name));
+    tabs.append(t);
   }
-  mark();
+
+  // Search filter
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "icon-search-wrap";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Filter icons…";
+  search.className = "icon-search";
+  search.setAttribute("aria-label", "Filter icons");
+  search.addEventListener("input", () => {
+    const q = search.value.trim();
+    if (!q) { activateTab(activeCategory); return; }
+    // Show any icon that starts or contains the codepoint hex for q or use the raw emoji match
+    const pool = FOLDER_ICONS.filter((ic) => ic === q || [...ic].some((ch) => ch.includes(q)));
+    grid = buildGrid(pool.length ? pool : FOLDER_ICONS);
+    gridWrap.replaceChildren(grid);
+    for (const t of tabs.querySelectorAll("button")) t.setAttribute("aria-pressed", "false");
+  });
+  searchWrap.append(search);
 
   const iconLabel = document.createElement("div");
   iconLabel.className = "dialog-label";
@@ -3300,16 +3417,12 @@ async function actionDecorate(node) {
   color.name = "color";
   color.value = cur.color || DEFAULT_FOLDER_COLOR;
   color.setAttribute("aria-label", "Name color");
-  // Picking a color is an explicit choice: tick the box for the user.
   color.addEventListener("input", () => { useColor.checked = true; });
   row.append(useColor, color);
 
   const extra = document.createElement("div");
-  extra.append(iconLabel, grid, row);
+  extra.append(iconLabel, searchWrap, tabs, gridWrap, row);
 
-  // formDialog() mounts synchronously, so the grid is in the document by
-  // the time we scroll it: the frame scrolls, so make sure the folder's
-  // current icon is inside the visible window rather than below the fold.
   const pending = formDialog({
     title: `Icon & color — ${baseName(node.path)}`,
     message: "Shown in this browser only.",
@@ -3317,7 +3430,7 @@ async function actionDecorate(node) {
     okLabel: "Save",
     actions: [{ label: "Reset", name: "reset" }],
   });
-  grid.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  gridWrap.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   const r = await pending;
   if (!r) return;
   const deco = r.__action === "reset" ? {} : { emoji: icon, color: useColor.checked ? color.value : "" };
@@ -4284,6 +4397,7 @@ function syncSettingsForm() {
   refreshNotebookLock();
   syncTemplatesSettings();
   renderKeybindings();
+  renderPluginsSection();
 }
 
 function updateVimStatus() {
@@ -4383,6 +4497,19 @@ function focusSettingsSection(id) {
 $("settingsbtn")?.addEventListener("click", () => openSettingsModal());
 $("settings-close")?.addEventListener("click", closeSettingsModal);
 $("settings-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeSettingsModal);
+
+$("reload-lua-plugins")?.addEventListener("click", async () => {
+  if (!slug) return;
+  await guarded(async () => {
+    await fetch(`/n/${encodeURIComponent(slug)}/plugins/reload`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": "1" },
+    });
+    renderPluginsSection();
+    refreshPluginPanels(slug);
+    toast("Lua plugins reloaded.");
+  });
+});
 
 // Setting controls: any [data-setting] change persists and applies.
 document.addEventListener("change", (e) => {
@@ -4603,6 +4730,83 @@ function findConflict(bindings, action, spec) {
     ) return other;
   }
   return null;
+}
+
+function renderPluginsSection() {
+  const uiList = $("ui-plugins-list");
+  const luaList = $("lua-plugins-list");
+  if (!uiList) return;
+
+  // Built-in UI plugins
+  uiList.replaceChildren();
+  for (const plugin of UI_PLUGIN_REGISTRY) {
+    const row = document.createElement("div");
+    row.className = "plugin-row";
+
+    const label = document.createElement("label");
+    label.className = "plugin-toggle-label";
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = slug ? getUiPluginEnabled(slug, plugin.id) : false;
+    toggle.disabled = !slug;
+    toggle.addEventListener("change", () => {
+      if (!slug) return;
+      setUiPluginEnabled(slug, plugin.id, toggle.checked);
+      syncUiPlugins(slug, UI_PLUGIN_REGISTRY);
+    });
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "plugin-name";
+    nameSpan.textContent = plugin.name;
+
+    const descSpan = document.createElement("span");
+    descSpan.className = "plugin-desc";
+    descSpan.textContent = plugin.description;
+
+    label.append(toggle, nameSpan);
+    row.append(label, descSpan);
+    uiList.append(row);
+  }
+
+  // Lua plugins (async refresh)
+  if (!luaList) return;
+  luaList.replaceChildren();
+  if (!slug) {
+    const p = document.createElement("p");
+    p.className = "help-text muted";
+    p.textContent = "Open a notebook to view its Lua plugins.";
+    luaList.append(p);
+    return;
+  }
+  fetch(`/n/${encodeURIComponent(slug)}/plugins`, { headers: { Accept: "application/json" } })
+    .then((r) => r.ok ? r.json() : [])
+    .then((infos) => {
+      luaList.replaceChildren();
+      if (!infos.length) {
+        const p = document.createElement("p");
+        p.className = "help-text muted";
+        p.textContent = "No Lua plugins found.";
+        luaList.append(p);
+        return;
+      }
+      for (const info of infos) {
+        const row = document.createElement("div");
+        row.className = "plugin-row";
+        const badge = document.createElement("span");
+        badge.className = `plugin-badge ${info.loaded ? "badge-ok" : (info.error ? "badge-err" : "badge-off")}`;
+        badge.textContent = info.loaded ? "loaded" : (info.error ? "error" : "disabled");
+        const name = document.createElement("span");
+        name.className = "plugin-name";
+        name.textContent = info.name || info.dir || "?";
+        const desc = document.createElement("span");
+        desc.className = "plugin-desc";
+        desc.textContent = info.description || (info.error ? `Error: ${info.error}` : "");
+        row.append(badge, name, desc);
+        luaList.append(row);
+      }
+    })
+    .catch(() => {});
 }
 
 function renderKeybindings() {

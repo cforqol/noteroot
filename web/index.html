@@ -221,6 +221,7 @@
         <button type="button" data-target="set-attachments">Attachments</button>
         <button type="button" data-target="set-lock">Lock</button>
         <button type="button" data-target="set-templates">Templates</button>
+        <button type="button" data-target="set-plugins">Plugins</button>
         <button type="button" data-target="set-about">About</button>
       </nav>
       <div id="settings-body" class="modal-body settings-body">
@@ -497,6 +498,20 @@
           </div>
           <div class="setting">
             <button id="create-template" class="btn">Create template…</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="set-plugins">
+          <h3>Plugins</h3>
+          <h4 class="settings-subheading">Built-in plugins</h4>
+          <p class="help-text">Toggle these per notebook. Changes take effect immediately.</p>
+          <div id="ui-plugins-list" class="plugin-list"></div>
+          <h4 class="settings-subheading" style="margin-top:1.5rem">Lua plugins</h4>
+          <p class="help-text">Lua plugins live in <code>.notebook/plugins/</code> inside the notebook folder.
+            Install by placing a directory there with a <code>plugin.toml</code> manifest and a <code>plugin.lua</code> script.</p>
+          <div id="lua-plugins-list" class="plugin-list"></div>
+          <div class="setting" style="margin-top:0.75rem">
+            <button id="reload-lua-plugins" class="btn">Reload Lua plugins</button>
           </div>
         </section>
 

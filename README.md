@@ -4,7 +4,7 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 9 complete — plugins and integrations on a Lua sandbox (scoped tokens, signed webhooks, depth-limited bus, three proof plugins). Stages 0–8 before it: vault, search, write path, vim mode, resources, transforms, S3, dedup/quota/backups/import-export.
+> **Status:** stage 9 complete — plugins and integrations on a Lua sandbox (scoped tokens, signed webhooks, depth-limited bus, three proof plugins). Built-in UI plugin system ships three first-party widgets (HTML renderer, calendar, Pomodoro timer). Stages 0–8 before it: vault, search, write path, vim mode, resources, transforms, S3, dedup/quota/backups/import-export.
 
 ---
 
@@ -71,6 +71,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 | 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
 | 9 | Plugins and integrations | ✓ done |
 | UI | Workspace UI: note/folder CRUD, collapsible sidebar, status bar, themes, responsive layout | ✓ done |
+| UI+ | Interactive checkboxes, drag-drop to folder, icon categories, editor switch, UI plugin system (HTML/calendar/pomodoro) | ✓ done |
 
 ## Features
 
@@ -96,7 +97,16 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
 - Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
 - Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
-- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels
+- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels; clicking backlinks in the side panel navigates correctly (not to a raw JSON endpoint)
+- **Interactive task-list checkboxes** in read mode: toggling a checkbox immediately patches the underlying markdown source and saves, no editor required
+- **Drag-and-drop notes to folders** in the sidebar: grab any note row and drop it onto a folder to move it
+- **Folder icon picker** with 10 named categories (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel, Nature, Symbols — ~300 icons) and a filter input above the grid
+- **Editor mode switch** visible whenever a note is open for editing; switches between Vim and the plain textarea; disabled with an explanatory tooltip when Vim is not yet enabled in Settings
+- **Built-in UI plugin system**: enable/disable per notebook from Settings → Plugins; three first-party plugins:
+  - **HTML renderer** — `\`\`\`html` fenced blocks render as sandboxed `<iframe>` previews with a source/rendered toggle
+  - **Calendar widget** — floating draggable monthly calendar, toggled from the top bar (📅)
+  - **Pomodoro timer** — floating 25/5/15-minute timer with SVG ring, phase tabs, pause/resume/reset, optional audio cue, and a session completed count (🍅)
+- Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
 - Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
 - Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
 - Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)

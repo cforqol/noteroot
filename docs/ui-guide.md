@@ -13,7 +13,10 @@ in `localStorage` and are never sent to the server.
 - **Icon and name color** are assigned by you: ⋯ (or right-click) →
   *Icon & color…*. Unset folders show 📁 / 📂 by state. *Reset* clears both.
   Decorations follow a folder when you rename or move it and are forgotten
-  when you delete it.
+  when you delete it.  The picker shows ~300 icons split across 10 named
+  category tabs (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel,
+  Nature, Symbols) plus an *All* tab. A filter input above the tabs narrows
+  the grid as you type.
 - The folder you last clicked is underlined and is where **+ Note** and
   **+ Folder** create things; otherwise they use the open note's folder, then
   the notebook root.
@@ -28,6 +31,8 @@ in `localStorage` and are never sent to the server.
 | Delete | ⋯ → *Delete…* | Notes go to the trash. A folder's notes are trashed individually and the folder is removed. |
 | Restore | 🗑 (trash panel) → *Restore* | Puts the note back at its original path, recreating folders as needed. The panel groups entries by their original folder, so a deleted folder shows one header with **Restore folder** / **Delete folder** plus its notes beneath. |
 | Retention | ⋯ → *Retention…* | Opens a Settings panel where you can choose how long trashed notes are kept: **Never** (retain forever), a fixed number of **days** (default 30), or **After 3650 days** (~10 years). Trashed notes matching their expiry are automatically removed. The trash panel shows each entry's expiry date and offers **Restore** and **Delete** (permanently) buttons. |
+
+**Drag-and-drop a note to a folder**: grab any note row in the sidebar and drop it onto any folder row to move it there. The note keeps its filename; if a file with the same name already exists in the target folder the server returns an error and the tree is unchanged.
 
 A note that is open in the editor cannot be renamed or deleted until you close
 the editor. Names may not start with a dot, contain `..`, or (for folders) end
@@ -74,6 +79,45 @@ at 640×360 and shrinks with the reading column. Seeking works: resource
 serving honours HTTP byte ranges (`Range` → `206`). Images already render as
 resized thumbnails; links to other file types stay download links.
 
+## Task-list checkboxes
+
+Task-list items in a note (`- [ ] …` / `- [x] …`) render as real interactive
+checkboxes in read mode. Clicking one immediately:
+
+1. Fetches the note's raw markdown.
+2. Toggles the nth `[ ]` / `[x]` pattern (positional — first checkbox is index 0).
+3. Saves the result back with a conflict-safe `If-Match` header.
+
+No editor required. The change appears in git history with your user identity.
+If the save fails the checkbox reverts and a toast appears.
+
+## Editor mode switch
+
+A **Use Vim** / **Use plain text** button appears in the reading toolbar whenever
+a note is open for editing. It swaps the live buffer between Vim (vim.wasm) and
+the plain textarea without saving or losing content. If Vim is not yet enabled
+in Settings → Editor, the button is disabled with a tooltip pointing there.
+
+## Plugins
+
+Settings → **Plugins** has two sections:
+
+### Built-in UI plugins
+
+Toggled per notebook (state is browser-local). Takes effect immediately.
+
+| Plugin | What it does |
+|---|---|
+| **HTML renderer** | Replaces ` ```html ` fenced blocks in read mode with sandboxed `<iframe>` previews. A "Show source / Show rendered" toggle appears below each frame. The iframe uses `sandbox="allow-scripts"` — no parent-page access. |
+| **Calendar widget** | Adds a 📅 button to the top bar that opens a floating draggable monthly calendar. Navigate months with ‹/›; *Today* jumps back. Drag by the title bar. |
+| **Pomodoro timer** | Adds a 🍅 button to the top bar that opens a floating timer. Three phases: Work (25 min), Short break (5 min), Long break (15 min). SVG ring shows progress; Start/Pause/Resume/Reset controls; optional audio cue (🔔/🔕); counts completed pomodoros for the session. Drag by the title bar. |
+
+### Lua plugins
+
+Lists every Lua plugin found in `.notebook/plugins/` for the current notebook,
+with a loaded / error / disabled badge. **Reload Lua plugins** rescans the
+directory on-the-fly — no server restart needed after editing a plugin.
+
 ## Startpage
 
 Settings → *Startpage* names any note in the current notebook to act as its
@@ -112,6 +156,7 @@ per notebook in the browser (`nr.homepage`).
 | `nr.treeCollapsed` | `{notebook: [collapsed folders]}` |
 | `nr.homepage` | `{notebook: note path}` — the start page, if any |
 | `nr.editorPref`, `nr.vimMode` | editor preference and the Vim circuit breaker |
+| `noteroot_uiplugins_<slug>` | per-notebook built-in UI plugin enabled state (`{html-renderer: true, …}`) |
 | `nr.trashRetention` | **server-side**: notebook‑level auto‑delete after N days (default 30) or never; stored in `notebook.toml`, not in localStorage |
 
 Settings → *Data* can **Export preferences** (a dated `.json` snapshot of the
@@ -169,3 +214,6 @@ Notebook CRUD also lives in the notebook selector as pseudo-options (**＋ New n
 - **Delete confirmation dialog**: The delete operation lacks a warning/confirm dialog showing the number of folders and notes that will be affected. This would improve safety for bulk operations.
 - **Vim viewport offset**: The Vim edit window may need a slight bottom offset so the top few lines are not cut off on certain viewports. This requires CSS adjustments to `#vim-container` or the Vim drawing logic.
 - **Modified note re-edit**: When a note is modified and the user navigates to another note and back, the note cannot be edited again until the page is refreshed. This is a state management issue that needs fixing.
+- **Folder icon decorations server-side**: Icon/color decorations are currently browser-local (`localStorage`). Future work would sync them through the server so the same decoration appears across browsers.
+- **Calendar reminders**: The calendar widget is display-only. Integration with a reminder or alarm system (e.g. a Lua hook that fires before an event) is deferred.
+- **Pomodoro persistence**: The session completed count resets on page reload. A server-side or localStorage-backed counter would preserve it across sessions.
