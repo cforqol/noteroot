@@ -84,10 +84,17 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=branch
+            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+
+      # `meta.version` is empty when no tag rule matches (workflow_dispatch
+      # from an odd ref); fall back to the commit sha so the ldflags stamp —
+      # and the smoke test that greps for it — always have a real value.
+      - name: Build version
+        run: echo "BUILD_VERSION=${{ steps.meta.outputs.version || github.sha }}" >> "$GITHUB_ENV"
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -106,7 +113,7 @@ jobs:
           load: true
           tags: noteroot:ci
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ env.BUILD_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -146,7 +153,7 @@ jobs:
           docker inspect -f '{{.Config.Healthcheck.Test}}' noteroot:ci | grep -q wget
 
           # 5. Version stamp made it into the binary.
-          docker run --rm noteroot:ci --version | grep -F "${{ steps.meta.outputs.version }}"
+          docker run --rm noteroot:ci --version | grep -F "$BUILD_VERSION"
 
           docker logs app
           docker rm -f app auth
@@ -160,6 +167,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ env.BUILD_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -123,6 +123,17 @@ func (s *Server) thumbResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A type we never transform (PDF, zip, unknown) is rejected before
+	// anything about this host is considered: 415 answers "this is not
+	// transformable", not "this box has no ffmpeg". Checked ahead of the
+	// availability gate below so the answer is the same on every host.
+	if kind != "image" && kind != "video" {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{
+			"error": fmt.Sprintf("no transform for mime %q", mime),
+		})
+		return
+	}
+
 	// A thumbnail is only an optimisation for images: without a working
 	// transformer (ffmpeg missing, as in the stock container image) or
 	// when it fails, serve the original so the picture still shows.
