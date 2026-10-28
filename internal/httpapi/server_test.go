@@ -160,14 +160,15 @@ func TestListNotebooks_withNotebook(t *testing.T) {
 	}
 }
 
-func TestListNotebooks_requiresAuth_in_forward_mode(t *testing.T) {
+func TestListNotebooks_unauthenticated_in_forward_mode(t *testing.T) {
+	// GET /api/v1/notebooks is intentionally unauthenticated so the first-run
+	// wizard can detect an empty install without a proxy in place.
 	srv := newTestServer(t, config.AuthForward, nil)
 	rec := httptest.NewRecorder()
-	// No X-Auth-User header
 	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/notebooks", nil))
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
 	}
 }
 

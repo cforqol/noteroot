@@ -122,20 +122,24 @@ jobs:
           set -eu
 
           # 1. Every documented knob is baked into the image config.
-          for v in NOTEROOT_DATA_DIR NOTEROOT_LISTEN NOTEROOT_AUTH_MODE \
+          for v in PUID PGID \
+                   NOTEROOT_DATA_DIR NOTEROOT_LISTEN NOTEROOT_AUTH_MODE \
                    NOTEROOT_LOG_LEVEL NOTEROOT_GC_INTERVAL NOTEROOT_QUOTA_BYTES \
                    NOTEROOT_S3_BUCKET NOTEROOT_S3_SECRET_KEY NOTEROOT_READ_TIMEOUT; do
             docker inspect -f "{{range .Config.Env}}{{println .}}{{end}}" noteroot:ci | grep -q "^${v}="
           done
 
-          # 2. Default (forward) auth: the machine API rejects anonymous calls.
+          # 2. Default (forward) auth: protected endpoints reject anonymous calls.
+          # GET /api/v1/notebooks is intentionally unauthenticated (first-run wizard),
+          # so use a notebook-content endpoint to verify auth is still enforced.
           docker run -d --name auth -p 18081:8080 noteroot:ci
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/healthz || true)
             [ "$code" = "200" ] && break
             sleep 1
           done
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/api/v1/notebooks)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/api/v1/notebooks)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/n/any/tree)" = "401"
 
           # 3. NOTEROOT_AUTH_MODE=none: the app actually serves.
           docker run -d --name app -e NOTEROOT_AUTH_MODE=none -p 18080:8080 noteroot:ci
