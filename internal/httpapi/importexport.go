@@ -3,22 +3,25 @@ package httpapi
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"html"
+	"regexp"
 	"strings"
 
 	"noteroot/internal/git"
 	"noteroot/internal/markdown"
+	"noteroot/internal/notebooks"
 	"noteroot/internal/resources"
 	"noteroot/internal/vault"
 )
@@ -29,7 +32,11 @@ import (
 const (
 	resourceManifestName = "resources.json"
 	resourceDirPrefix    = "resources/"
+	historyBundleName    = "history.bundle"
 )
+
+// shaPattern matches 64-character lowercase hex strings (SHA-256 digests).
+var shaPattern = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
 
 type resourceMeta struct {
 	SHA      string `json:"sha"`
@@ -100,6 +107,340 @@ func (s *Server) exportResources(r *http.Request, slug string, tw *tar.Writer) {
 	}
 }
 
+// noteResourceSHAs returns the set of resource SHAs referenced in content
+// that are present as committed blobs in the store. The scan is a simple
+// substring search: any 64-char hex run that is a known blob is included.
+func noteResourceSHAs(content []byte, store resources.Store, journal *resources.Journal) []resourceMeta {
+	matches := shaPattern.FindAll(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	var shas []string
+	seen := map[string]bool{}
+	for _, m := range matches {
+		s := string(m)
+		if !seen[s] && store.Has(s) {
+			seen[s] = true
+			shas = append(shas, s)
+		}
+	}
+	if len(shas) == 0 {
+		return nil
+	}
+	mimeMap, err := journal.MIMEBySHA(shas...)
+	if err != nil {
+		mimeMap = map[string]string{}
+	}
+	entries, err := journal.List(resources.StateCommitted, 1<<20)
+	if err != nil {
+		entries = nil
+	}
+	// Build filename lookup from journal entries (newest filename wins).
+	type meta struct{ filename, mime string }
+	filenameBySHA := map[string]meta{}
+	for _, e := range entries {
+		if _, ok := seen[e.SHA]; ok {
+			if _, already := filenameBySHA[e.SHA]; !already {
+				filenameBySHA[e.SHA] = meta{filename: e.Filename, mime: e.MIME}
+			}
+		}
+	}
+	var out []resourceMeta
+	for _, sha := range shas {
+		size, serr := store.Size(sha)
+		if serr != nil {
+			continue
+		}
+		m := filenameBySHA[sha]
+		mime := m.mime
+		if mime == "" {
+			mime = mimeMap[sha]
+		}
+		filename := m.filename
+		if filename == "" {
+			filename = sha
+		}
+		out = append(out, resourceMeta{SHA: sha, Filename: filename, MIME: mime, Size: size})
+	}
+	return out
+}
+
+// exportNoteArchive handles GET /n/{slug}/note/export/archive?path=... —
+// streams a .tar.gz containing the note's markdown plus any attachment blobs
+// it references (same layout as the notebook-level export).
+func (s *Server) exportNoteArchive(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	nb, ok := s.reg.Get(slug)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
+		return
+	}
+	if !s.lockGuard(w, r, slug, path) {
+		return
+	}
+
+	v := vault.Open(nb.Layout.Vault())
+	content, err := v.Read(path)
+	if err != nil {
+		writeJSON(w, statusFor(err), map[string]string{"error": publicError(err)})
+		return
+	}
+
+	baseName := strings.TrimSuffix(filepath.Base(path), ".md")
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(baseName)+`.tar.gz"`)
+	w.WriteHeader(http.StatusOK)
+
+	gz := gzip.NewWriter(w)
+	tw := tar.NewWriter(gz)
+
+	// Write the note itself.
+	_ = tw.WriteHeader(&tar.Header{Name: path, Mode: 0o644, Size: int64(len(content))})
+	_, _ = tw.Write(content)
+
+	// Write referenced attachments (best-effort: failures are logged and skipped).
+	store, journal, cleanup, resErr := s.openResources(r.Context(), nb)
+	if resErr == nil {
+		defer cleanup()
+		metas := noteResourceSHAs(content, store, journal)
+		if len(metas) > 0 {
+			mf, _ := json.Marshal(metas)
+			if tw.WriteHeader(&tar.Header{Name: resourceManifestName, Mode: 0o644, Size: int64(len(mf))}) == nil {
+				_, _ = tw.Write(mf)
+			}
+			for _, m := range metas {
+				rc, gerr := store.Get(m.SHA)
+				if gerr != nil {
+					s.log.Warn("note export: blob unreadable", "sha", m.SHA, "err", gerr)
+					continue
+				}
+				herr := tw.WriteHeader(&tar.Header{Name: resourceDirPrefix + m.SHA, Mode: 0o644, Size: m.Size})
+				if herr == nil {
+					_, herr = io.CopyN(tw, rc, m.Size)
+				}
+				_ = rc.Close()
+				if herr != nil {
+					s.log.Warn("note export: blob copy failed", "sha", m.SHA, "err", herr)
+				}
+			}
+		}
+	}
+
+	_ = tw.Close()
+	_ = gz.Close()
+}
+
+// importNoteArchive handles POST /n/{slug}/note/import — accepts a .tar.gz
+// produced by exportNoteArchive and writes the note and its attachments.
+// Supports dry_run=true. Returns the same importEntry slice as importNotebook.
+func (s *Server) importNoteArchive(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	var archiveReader io.Reader
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad multipart"})
+			return
+		}
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file field"})
+			return
+		}
+		defer func() { _ = f.Close() }()
+		archiveReader = f
+	} else {
+		archiveReader = r.Body
+	}
+
+	gz, err := gzip.NewReader(archiveReader)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a gzip archive: " + err.Error()})
+		return
+	}
+	defer func() { _ = gz.Close() }()
+	tr := tar.NewReader(gz)
+
+	const maxEntrySize = 8 << 20
+
+	type staged struct {
+		path    string
+		content []byte
+		sha     string
+	}
+	var validNote *staged
+	var results []importEntry
+
+	var (
+		resStore   resources.Store
+		resJournal *resources.Journal
+		resOpenErr error
+		resCleanup func()
+		manifest   = map[string]resourceMeta{}
+	)
+	defer func() {
+		if resCleanup != nil {
+			resCleanup()
+		}
+	}()
+	openRes := func() bool {
+		if resStore != nil {
+			return true
+		}
+		if resOpenErr != nil {
+			return false
+		}
+		resStore, resJournal, resCleanup, resOpenErr = s.openResources(r.Context(), nb)
+		if resOpenErr != nil {
+			resStore = nil
+			return false
+		}
+		return true
+	}
+
+	for {
+		hdr, nextErr := tr.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corrupt archive: " + nextErr.Error()})
+			return
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != 0 {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Clean(hdr.Name))
+		if rel == resourceManifestName {
+			var metas []resourceMeta
+			if json.NewDecoder(io.LimitReader(tr, 8<<20)).Decode(&metas) == nil {
+				for _, m := range metas {
+					manifest[m.SHA] = m
+				}
+			}
+			_, _ = io.Copy(io.Discard, tr)
+			continue
+		}
+		if strings.HasPrefix(rel, resourceDirPrefix) {
+			results = append(results, s.importResource(r, tr, hdr, rel, dryRun, manifest, openRes, &resStore, &resJournal))
+			continue
+		}
+
+		entry := importEntry{Path: rel, Size: hdr.Size}
+		cleanRel, pathErr := vault.Rel(rel)
+		if pathErr != nil || !vault.IsNote(cleanRel) {
+			if pathErr != nil {
+				entry.Message = fmt.Sprintf("invalid path: %v", pathErr)
+			} else {
+				entry.Message = "not a note (.md) file"
+			}
+			entry.Status = "error"
+			results = append(results, entry)
+			_, _ = io.Copy(io.Discard, tr)
+			continue
+		}
+		if hdr.Size > maxEntrySize {
+			entry.Status = "error"
+			entry.Message = "file too large"
+			results = append(results, entry)
+			_, _ = io.Copy(io.Discard, tr)
+			continue
+		}
+		content, readErr := io.ReadAll(io.LimitReader(tr, maxEntrySize+1))
+		if readErr != nil {
+			entry.Status = "error"
+			entry.Message = "read error: " + readErr.Error()
+			results = append(results, entry)
+			continue
+		}
+		sum := sha256.Sum256(content)
+		entry.SHA = hex.EncodeToString(sum[:])
+		entry.Size = int64(len(content))
+		validNote = &staged{path: cleanRel, content: content, sha: entry.SHA}
+		results = append(results, entry)
+	}
+
+	if validNote == nil {
+		// No note found; errors from resource entries (if any) are reported.
+		if len(results) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no note file in archive"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"dryRun": dryRun, "entries": results})
+		return
+	}
+
+	v := vault.Open(nb.Layout.Vault())
+	noteIdx := -1
+	for i := range results {
+		if results[i].Kind == "" && results[i].SHA == validNote.sha {
+			noteIdx = i
+			break
+		}
+	}
+
+	if dryRun {
+		for i := range results {
+			if results[i].Status != "" {
+				continue
+			}
+			if i == noteIdx {
+				existing, readErr := v.Read(validNote.path)
+				switch {
+				case readErr == nil && sha256Hex(existing) == validNote.sha:
+					results[i].Status = "skipped"
+					results[i].Message = "identical content"
+				case readErr == nil:
+					results[i].Status = "updated"
+				case errors.Is(readErr, vault.ErrNotFound):
+					results[i].Status = "created"
+				default:
+					results[i].Status = "error"
+					results[i].Message = readErr.Error()
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"dryRun": true, "entries": results})
+		return
+	}
+
+	// Apply the note.
+	if noteIdx >= 0 {
+		existing, readErr := v.Read(validNote.path)
+		if readErr == nil && sha256Hex(existing) == validNote.sha {
+			results[noteIdx].Status = "skipped"
+			results[noteIdx].Message = "identical content"
+		} else {
+			_, writeErr := v.Write(validNote.path, validNote.content, vault.WriteOpts{})
+			switch {
+			case writeErr != nil:
+				results[noteIdx].Status = "error"
+				results[noteIdx].Message = "write failed: " + writeErr.Error()
+			case errors.Is(readErr, vault.ErrNotFound):
+				results[noteIdx].Status = "created"
+			default:
+				results[noteIdx].Status = "updated"
+			}
+		}
+	}
+
+	s.reindex(r.Context(), nb, v)
+	s.markGitDirty(nb, git.Op{Action: "import", Actor: actorFrom(r)})
+	s.emit(r, nb, "notebook.import", validNote.path, map[string]any{"entries": len(results)})
+
+	writeJSON(w, http.StatusOK, map[string]any{"dryRun": false, "entries": results})
+}
+
 // exportNotebook handles GET /n/{slug}/export — streams a .tar.gz of all
 // markdown notes in the vault plus notebook.toml.
 func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +457,7 @@ func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition",
-		`attachment; filename="`+nb.Manifest.Slug+`.tar.gz"`)
+		`attachment; filename="`+safeFilename(nb.Manifest.Slug)+`.tar.gz"`)
 	w.WriteHeader(http.StatusOK)
 
 	gz := gzip.NewWriter(w)
@@ -157,8 +498,30 @@ func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Include git history unless explicitly disabled.
+	if r.URL.Query().Get("include_history") != "false" {
+		s.exportHistoryBundle(nb.Layout.Vault(), tw)
+	}
+
 	_ = tw.Close()
 	_ = gz.Close()
+}
+
+// exportHistoryBundle writes the git history as a bundle entry into tw.
+// Errors are logged and skipped so a missing/empty history never aborts export.
+func (s *Server) exportHistoryBundle(vaultDir string, tw *tar.Writer) {
+	var buf bytes.Buffer
+	if err := git.Bundle(vaultDir, &buf); err != nil {
+		if err != git.ErrNoHistory {
+			s.log.Warn("export: git bundle failed", "err", err)
+		}
+		return
+	}
+	data := buf.Bytes()
+	hdr := &tar.Header{Name: historyBundleName, Mode: 0o644, Size: int64(len(data))}
+	if tw.WriteHeader(hdr) == nil {
+		_, _ = tw.Write(data)
+	}
 }
 
 // importEntry describes the result of processing one archive member.
@@ -224,6 +587,8 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 	var validEntries []staged
 	var results []importEntry
 	var totalSize int64
+	var historyBundle []byte
+	const maxHistoryBundleSize = 128 << 20
 
 	// Attachments are streamed straight into the store (never held in
 	// RAM); the store is opened on the first one.
@@ -269,6 +634,17 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 		rel := filepath.ToSlash(filepath.Clean(hdr.Name))
 		if rel == "notebook.toml" {
 			_, _ = io.Copy(io.Discard, tr)
+			continue
+		}
+		if rel == historyBundleName {
+			if hdr.Size > maxHistoryBundleSize {
+				_, _ = io.Copy(io.Discard, tr)
+				s.log.Warn("import: history bundle too large", "size", hdr.Size)
+				continue
+			}
+			if b, err := io.ReadAll(io.LimitReader(tr, maxHistoryBundleSize)); err == nil {
+				historyBundle = b
+			}
 			continue
 		}
 
@@ -388,11 +764,45 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Apply the bundled git history after the notes are written so the
+	// working tree matches what the bundle's commits expect. A failure here
+	// is non-fatal: the note writes are truth, history is recovery.
+	if len(historyBundle) > 0 {
+		if err := s.applyHistoryBundle(nb, historyBundle); err != nil {
+			s.log.Warn("import: history bundle apply failed", "notebook", nb.Manifest.Slug, "err", err)
+		}
+	}
+
 	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "import", Actor: actorFrom(r)})
 	s.emit(r, nb, "notebook.import", "", map[string]any{"entries": len(results)})
 
 	writeJSON(w, http.StatusOK, map[string]any{"dryRun": false, "entries": results})
+}
+
+// applyHistoryBundle writes a git bundle to a temp file and unbundles it
+// into the notebook's vault git repo, grafting the imported history onto it.
+// The repo is (re)initialised first so unbundle works on a notebook whose
+// git repo was never created.
+func (s *Server) applyHistoryBundle(nb *notebooks.Notebook, bundle []byte) error {
+	vaultDir := nb.Layout.Vault()
+	if err := git.Init(vaultDir); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp("", "noteroot-history-*.bundle")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(bundle); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return git.Unbundle(vaultDir, tmpPath)
 }
 
 func sha256Hex(b []byte) string {
@@ -579,7 +989,7 @@ hr { border: 0; border-top: 1px solid #ddd; margin: 2rem 0; }
 </html>`, html.EscapeString(title), renderedHTML)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.html"`, strings.TrimSuffix(filepath.Base(path), ".md")))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.html"`, safeFilename(strings.TrimSuffix(filepath.Base(path), ".md"))))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(page))
 }
@@ -597,7 +1007,7 @@ func (s *Server) exportNotebookHTML(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-html.zip"`, nb.Manifest.Slug))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-html.zip"`, safeFilename(nb.Manifest.Slug)))
 	w.WriteHeader(http.StatusOK)
 
 	zw := zip.NewWriter(w)
@@ -674,4 +1084,13 @@ hr { border: 0; border-top: 1px solid #ddd; margin: 2rem 0; }
 	if err != nil {
 		s.log.Warn("export HTML zip failed", "notebook", slug, "err", err)
 	}
+}
+
+// safeFilename removes characters that are invalid in a quoted
+// Content-Disposition filename parameter. A double-quote inside
+// filename="…" terminates the value prematurely; stripping them
+// prevents header corruption without changing anything meaningful
+// because " is not a valid POSIX filename character anyway.
+func safeFilename(name string) string {
+	return strings.ReplaceAll(name, `"`, "")
 }

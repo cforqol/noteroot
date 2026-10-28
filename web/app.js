@@ -556,7 +556,7 @@ function fileDate(path) {
 
 // --- reader ---
 
-function emptyState({ icon, title, body, action }) {
+function emptyState({ icon, title, body, action, actions }) {
   const card = document.createElement("div");
   card.className = "empty-state";
   const ic = document.createElement("div");
@@ -567,10 +567,11 @@ function emptyState({ icon, title, body, action }) {
   const p = document.createElement("p");
   p.textContent = body;
   card.append(ic, h, p);
-  if (action) {
+  const btns = actions || (action ? [action] : []);
+  if (btns.length) {
     const row = document.createElement("div");
     row.className = "actions";
-    row.append(action);
+    for (const b of btns) row.append(b);
     card.append(row);
   }
   return card;
@@ -588,8 +589,11 @@ function showNoNotebooks() {
   $("note").replaceChildren(emptyState({
     icon: "📓",
     title: "Welcome to noteroot",
-    body: "Create your first notebook to get started.",
-    action: actionButton("Create notebook\u2026", () => actionNewNotebook()),
+    body: "Create your first notebook, or import an existing one, to get started.",
+    actions: [
+      actionButton("Create notebook\u2026", () => actionNewNotebook()),
+      actionButton("Import notebook\u2026", () => actionImportNotebook()),
+    ],
   }));
   setView("empty");
 }
@@ -1419,8 +1423,8 @@ async function loadHistoryCommits() {
       li.dataset.index = String(index);
       const date = new Date(c.date * 1000).toLocaleString();
       li.innerHTML = `
-        <span class="history-hash" title="${c.hash}">${c.shortHash}</span>
-        <span class="history-date">${date}</span>
+        <span class="history-hash" title="${esc(c.hash)}">${esc(c.shortHash)}</span>
+        <span class="history-date">${esc(date)}</span>
         <span class="history-message">${esc(c.message)}</span>
         ${c.isMerge ? '<span class="badge merge">merge</span>' : ''}
       `;
@@ -2204,6 +2208,66 @@ async function actionNewNotebook() {
     await notesApi.createNotebook(id);
     await refreshNotebookList(id);
     toast(`Created notebook “${id}”.`);
+  });
+}
+
+/** Create a notebook from a .tar.gz export on a fresh instance. */
+async function actionImportNotebook() {
+  const file = await pickArchiveFile();
+  if (!file) return;
+  const r = await formDialog({
+    title: "Import notebook",
+    message: `Create a new notebook from “${file.name}”.`,
+    okLabel: "Import",
+    fields: [{ name: "slug", label: "Slug", placeholder: "my-notebook" }],
+    validate: (v) => (slugOk(v.slug) ? null : "Use lowercase letters, digits and dashes (a-z, 0-9, -)."),
+  });
+  if (!r) return;
+  const id = r.slug.trim().toLowerCase();
+  await guarded(async () => {
+    await notesApi.createNotebook(id);
+    const dry = await notesApi.importNotebook(id, file, { dryRun: true });
+    const entries = dry.entries || [];
+    entries.__dryRun = true;
+    const confirm = await formDialog({
+      title: `Import ${file.name}`,
+      message: "Nothing has changed yet. Review and confirm.",
+      extra: planNode(entries),
+      okLabel: "Import",
+      wide: true,
+    });
+    if (!confirm) {
+      // Notebook created but import cancelled: leave the empty notebook.
+      await refreshNotebookList(id);
+      return;
+    }
+    const res = await notesApi.importNotebook(id, file, {});
+    await refreshNotebookList(id);
+    await infoDialog({
+      title: "Import complete",
+      message: describeImport(summarizeImport(res.entries || []), {}),
+      extra: planNode(res.entries || []),
+      wide: true,
+    });
+    toast(`Imported notebook “${id}”.`);
+  });
+}
+
+/** Open a file picker for a .tar.gz archive; resolves to null on cancel. */
+function pickArchiveFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".tar.gz,application/gzip";
+    input.onchange = () => resolve(input.files?.[0] || null);
+    // Cancelling the dialog fires no event in some browsers: resolve on
+    // window focus if nothing was picked.
+    const onFocus = () => {
+      window.removeEventListener("focus", onFocus);
+      setTimeout(() => resolve(input.files?.[0] || null), 300);
+    };
+    window.addEventListener("focus", onFocus);
+    input.click();
   });
 }
 
@@ -3039,6 +3103,7 @@ async function guarded(fn) {
 }
 
 async function actionNewNote(dir = contextDir()) {
+  if (!slug) { toast("Create or import a notebook first.", true); return; }
   const r = await formDialog({
     title: "New note",
     message: dir ? `In folder “${dir}”.` : "At the notebook root.",
@@ -3109,6 +3174,7 @@ async function actionNewNoteFromTemplate(dir = contextDir()) {
 }
 
 async function actionNewFolder(dir = contextDir()) {
+  if (!slug) { toast("Create or import a notebook first.", true); return; }
   const r = await formDialog({
     title: "New folder",
     message: dir ? `Inside “${dir}”.` : "At the notebook root.",

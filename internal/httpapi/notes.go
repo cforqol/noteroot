@@ -315,6 +315,10 @@ func (s *Server) noteHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	before := r.URL.Query().Get("before")
+	if before != "" && !isGitHash(before) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid before hash"})
+		return
+	}
 
 	commits, hasMore, err := git.LogFile(nb.Layout.Vault(), path, limit, before)
 	if err != nil {
@@ -356,6 +360,10 @@ func (s *Server) noteDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing from or to hash"})
 		return
 	}
+	if !isGitHash(from) || !isGitHash(to) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid hash"})
+		return
+	}
 	if !s.lockGuard(w, r, slug, path) {
 		return
 	}
@@ -367,14 +375,37 @@ func (s *Server) noteDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get commit info for from/to
-	fromCommit, _ := git.GetCommit(nb.Layout.Vault(), from)
-	toCommit, _ := git.GetCommit(nb.Layout.Vault(), to)
+	fromInfo := map[string]any{"hash": from}
+	toInfo := map[string]any{"hash": to}
+	if c, cerr := git.GetCommit(nb.Layout.Vault(), from); cerr == nil && c != nil {
+		fromInfo["date"] = c.Date.Unix()
+		fromInfo["message"] = c.Message
+	}
+	if c, cerr := git.GetCommit(nb.Layout.Vault(), to); cerr == nil && c != nil {
+		toInfo["date"] = c.Date.Unix()
+		toInfo["message"] = c.Message
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"diff": diff,
-		"from": map[string]any{"hash": from, "date": fromCommit.Date.Unix(), "message": fromCommit.Message},
-		"to":   map[string]any{"hash": to, "date": toCommit.Date.Unix(), "message": toCommit.Message},
+		"from": fromInfo,
+		"to":   toInfo,
 	})
+}
+
+// isGitHash reports whether s is a valid full-length git commit hash
+// (40 lowercase hex chars for SHA-1, 64 for SHA-256). Accepting only
+// full hashes prevents flag injection when the value is passed directly
+// as a git argument before the end-of-options separator.
+func isGitHash(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 

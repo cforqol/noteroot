@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -517,4 +518,197 @@ func keys(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// makeCommit ensures dir is a git repo and creates a commit so history
+// exists for export tests.
+func makeCommit(t *testing.T, dir, msg string) {
+	t.Helper()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir,
+			"-c", "user.name=noteroot", "-c", "user.email=noteroot@local"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("add", "-A")
+	run("commit", "-q", "-m", msg)
+}
+
+func TestExportNoteArchive_includesNoteAndAttachments(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "# A"}))
+	png := []byte("\x89PNG\r\n\x1a\nfake-image-bytes")
+	up := postResource(t, srv, "work", "pic.png", "image/png", png)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("upload = %d %s", up.Code, up.Body.String())
+	}
+	var sha string
+	decodeJSON(t, up, &struct {
+		SHA *string `json:"sha"`
+	}{&sha})
+
+	noteBody := "# A\n\n![pic](/n/work/resources/" + sha + ")\n"
+	req := httptest.NewRequest(http.MethodPut, "/n/work/note?path=a.md", strings.NewReader(noteBody))
+	req.Header.Set("Content-Type", "text/markdown")
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusNoContent {
+		t.Fatalf("put note = %d %s", rec.Code, rec.Body.String())
+	}
+	// The server mints frontmatter on first write; the archive carries the
+	// stored bytes, not the body we sent.
+	raw := get(t, srv, "/n/work/raw?path=a.md", nil)
+	stored := raw.Body.Bytes()
+
+	exp := httptest.NewRequest(http.MethodGet, "/n/work/note/export/archive?path=a.md", nil)
+	expRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(expRec, exp)
+	if expRec.Code != http.StatusOK {
+		t.Fatalf("export archive = %d", expRec.Code)
+	}
+	members := tarMembers(t, expRec.Body.Bytes())
+	if !bytes.Equal(members["a.md"], stored) {
+		t.Fatalf("archive note mismatch: %v", keys(members))
+	}
+	if !bytes.Equal(members["resources/"+sha], png) {
+		t.Fatalf("archive lacks attachment blob: %v", keys(members))
+	}
+	if !strings.Contains(string(members["resources.json"]), `"filename":"pic.png"`) {
+		t.Fatalf("manifest = %s", members["resources.json"])
+	}
+}
+
+func TestImportNoteArchive_restoresNoteAndAttachments(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "# A"}))
+	png := []byte("\x89PNG\r\n\x1a\nfake-image-bytes")
+	up := postResource(t, srv, "work", "pic.png", "image/png", png)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("upload = %d %s", up.Code, up.Body.String())
+	}
+	var sha string
+	decodeJSON(t, up, &struct {
+		SHA *string `json:"sha"`
+	}{&sha})
+	noteBody := "# A\n\n![pic](/n/work/resources/" + sha + ")\n"
+	put := httptest.NewRequest(http.MethodPut, "/n/work/note?path=a.md", strings.NewReader(noteBody))
+	put.Header.Set("Content-Type", "text/markdown")
+	putRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(putRec, put)
+	// Stored bytes include the server-minted frontmatter.
+	stored := get(t, srv, "/n/work/raw?path=a.md", nil).Body.Bytes()
+
+	exp := httptest.NewRequest(http.MethodGet, "/n/work/note/export/archive?path=a.md", nil)
+	expRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(expRec, exp)
+	if expRec.Code != http.StatusOK {
+		t.Fatalf("export = %d", expRec.Code)
+	}
+	archive := expRec.Body.Bytes()
+
+	other := notebookReq(t, srv, http.MethodPost, "/api/v1/notebooks", `{"slug":"copy","name":"Copy"}`)
+	if other.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", other.Code, other.Body.String())
+	}
+
+	dryReq := httptest.NewRequest(http.MethodPost, "/n/copy/note/import?dry_run=true", bytes.NewReader(archive))
+	dryReq.Header.Set("Content-Type", "application/gzip")
+	dryRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(dryRec, dryReq)
+	if dryRec.Code != http.StatusOK {
+		t.Fatalf("dry import = %d %s", dryRec.Code, dryRec.Body.String())
+	}
+	if !strings.Contains(dryRec.Body.String(), `"kind":"resource"`) || !strings.Contains(dryRec.Body.String(), `"status":"created"`) {
+		t.Fatalf("dry run = %s", dryRec.Body.String())
+	}
+
+	impReq := httptest.NewRequest(http.MethodPost, "/n/copy/note/import", bytes.NewReader(archive))
+	impReq.Header.Set("Content-Type", "application/gzip")
+	impRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(impRec, impReq)
+	if impRec.Code != http.StatusOK || strings.Contains(impRec.Body.String(), `"status":"error"`) {
+		t.Fatalf("import = %d %s", impRec.Code, impRec.Body.String())
+	}
+
+	g := get(t, srv, "/n/copy/raw?path=a.md", nil)
+	if g.Code != http.StatusOK || !bytes.Equal(g.Body.Bytes(), stored) {
+		t.Fatalf("restored note = %d %q", g.Code, g.Body.String())
+	}
+	ga := get(t, srv, "/n/copy/resources/"+sha, nil)
+	if ga.Code != http.StatusOK || !bytes.Equal(ga.Body.Bytes(), png) {
+		t.Fatalf("restored attachment = %d", ga.Code)
+	}
+}
+
+func TestExport_includesHistoryByDefault(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"a.md": "# A"})
+	srv := newTestServer(t, config.AuthNone, reg)
+	nb, _ := srv.reg.Get("work")
+	makeCommit(t, nb.Layout.Vault(), "initial note")
+
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/n/work/export", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export = %d", rec.Code)
+	}
+	members := tarMembers(t, rec.Body.Bytes())
+	if _, ok := members["history.bundle"]; !ok {
+		t.Fatalf("export lacks history.bundle: %v", keys(members))
+	}
+	if len(members["history.bundle"]) == 0 {
+		t.Fatal("history.bundle is empty")
+	}
+}
+
+func TestExport_historyCanBeDisabled(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"a.md": "# A"})
+	srv := newTestServer(t, config.AuthNone, reg)
+	nb, _ := srv.reg.Get("work")
+	makeCommit(t, nb.Layout.Vault(), "initial note")
+
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/n/work/export?include_history=false", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export = %d", rec.Code)
+	}
+	members := tarMembers(t, rec.Body.Bytes())
+	if _, ok := members["history.bundle"]; ok {
+		t.Fatalf("history.bundle present despite include_history=false: %v", keys(members))
+	}
+}
+
+func TestImport_appliesHistoryBundle(t *testing.T) {
+	reg := notesFixture(t, map[string]string{"a.md": "# A"})
+	srv := newTestServer(t, config.AuthNone, reg)
+	nb, _ := srv.reg.Get("work")
+	makeCommit(t, nb.Layout.Vault(), "initial note")
+
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/n/work/export", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export = %d", rec.Code)
+	}
+	archive := rec.Body.Bytes()
+
+	other := notebookReq(t, srv, http.MethodPost, "/api/v1/notebooks", `{"slug":"copy","name":"Copy"}`)
+	if other.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", other.Code, other.Body.String())
+	}
+	imp := postImport(t, srv, "copy", archive, false)
+	if imp.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", imp.Code, imp.Body.String())
+	}
+
+	copyNB, _ := srv.reg.Get("copy")
+	out, err := exec.Command("git", "-C", copyNB.Layout.Vault(), "log", "--oneline").Output()
+	if err != nil {
+		t.Fatalf("git log in copy: %v", err)
+	}
+	if !strings.Contains(string(out), "initial note") {
+		t.Fatalf("copy history lacks the imported commit: %s", out)
+	}
+	g := get(t, srv, "/n/copy/raw?path=a.md", nil)
+	if g.Code != http.StatusOK {
+		t.Fatalf("restored note = %d", g.Code)
+	}
 }

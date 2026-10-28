@@ -10,6 +10,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strconv"
@@ -237,6 +238,120 @@ func LogFile(dir, path string, limit int, before string) ([]Commit, bool, error)
 		commits = commits[:limit]
 	}
 	return commits, hasMore, nil
+}
+
+// Bundle creates a git bundle of the entire repo and writes it to w.
+// Returns ErrNoHistory when the repo has no commits yet.
+func Bundle(dir string, w io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "bundle", "create", "-", "--all")
+	cmd.Stdout = w
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "Refusing to create empty bundle") ||
+			strings.Contains(stderr.String(), "nothing to bundle") {
+			return ErrNoHistory
+		}
+		return fmt.Errorf("git bundle: %w\n%s", err, stderr.String())
+	}
+	return nil
+}
+
+// ErrNoHistory is returned by Bundle when the repo contains no commits.
+var ErrNoHistory = fmt.Errorf("no git history")
+
+// Unbundle applies a bundle file to the repo, grafting its history onto the
+// local branches. The bundle must already exist at bundlePath (a temporary
+// file the caller manages).
+//
+// Only a repo with no commits yet (unborn HEAD) is grafted: the bundle's
+// refs are staged under refs/import/* (fetching directly into local branches
+// is refused for the current branch of a non-bare repo) and then moved onto
+// refs/heads/*, with HEAD repointed at the branch the bundle carried when its
+// name differs from the local default (main vs master). A repo that already
+// has commits keeps its own history — the bundle is dropped.
+func Unbundle(dir, bundlePath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// A repo that already has commits keeps its own history: nothing to graft.
+	headErr := exec.CommandContext(ctx, "git", "-C", dir,
+		"rev-parse", "--verify", "HEAD").Run()
+	if headErr == nil {
+		return nil
+	}
+
+	// Stage the bundle's branches under a temporary namespace.
+	stage := exec.CommandContext(ctx, "git", "-C", dir,
+		"fetch", bundlePath, "+refs/heads/*:refs/import/*")
+	if out, err := stage.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch bundle: %w\n%s", err, out)
+	}
+
+	// List the staged refs with their commits.
+	out, err := exec.CommandContext(ctx, "git", "-C", dir,
+		"for-each-ref", "--format=%(refname) %(objectname)", "refs/import/").Output()
+	if err != nil {
+		return nil // Nothing staged; nothing to graft.
+	}
+	type stagedRef struct{ ref, sha string }
+	var staged []stagedRef
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			staged = append(staged, stagedRef{ref: parts[0], sha: parts[1]})
+		}
+	}
+	if len(staged) == 0 {
+		return nil
+	}
+
+	// Move each staged ref onto its local branch.
+	var names []string
+	for _, s := range staged {
+		name := strings.TrimPrefix(s.ref, "refs/import/")
+		names = append(names, name)
+		if err := gitRun(ctx, dir, "update-ref", "refs/heads/"+name, s.sha); err != nil {
+			return err
+		}
+		_ = gitRun(ctx, dir, "update-ref", "-d", s.ref) // clean the temp ref
+	}
+
+	// Point HEAD at a branch that actually has commits.
+	target := pickBranch(names)
+	if target == "" {
+		return nil
+	}
+	return gitRun(ctx, dir, "symbolic-ref", "HEAD", "refs/heads/"+target)
+}
+
+// pickBranch prefers main, then master, then the first name.
+func pickBranch(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	for _, want := range []string{"main", "master"} {
+		for _, n := range names {
+			if n == want {
+				return n
+			}
+		}
+	}
+	return names[0]
+}
+
+// gitRun runs git in dir with the given args, returning a descriptive error.
+func gitRun(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %v: %w\n%s", args, err, out)
+	}
+	return nil
 }
 
 // DiffFile returns the unified diff between two commits for a file.

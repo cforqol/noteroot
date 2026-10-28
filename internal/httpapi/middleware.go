@@ -101,8 +101,10 @@ func Log(log *slog.Logger) func(http.Handler) http.Handler {
 			} else if r.Header.Get("X-Auth-User") != "" {
 				attrs = append(attrs, "user", r.Header.Get("X-Auth-User"))
 			}
-			// Try to resolve hostname (best effort, short timeout not critical)
-			if host, err := net.LookupAddr(ip); err == nil && len(host) > 0 {
+			dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			host, _ := net.DefaultResolver.LookupAddr(dnsCtx, ip)
+			dnsCancel()
+			if len(host) > 0 {
 				attrs = append(attrs, "hostname", strings.TrimSuffix(host[0], "."))
 			}
 			log.Info("req", attrs...)

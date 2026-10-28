@@ -117,8 +117,10 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/backup", mutating(s.createBackup))
 	mux.Handle("GET /n/{slug}/export", auth(s.exportNotebook))
 	mux.Handle("GET /n/{slug}/note/export", auth(s.exportNoteHTML))
+	mux.Handle("GET /n/{slug}/note/export/archive", auth(s.exportNoteArchive))
 	mux.Handle("GET /n/{slug}/export/html", auth(s.exportNotebookHTML))
 	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+	mux.Handle("POST /n/{slug}/note/import", Chain(http.HandlerFunc(s.importNoteArchive), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
@@ -176,6 +178,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/refs", s.bearer("resources", "read", qsha, s.listResourceRefs))
 	mux.Handle("DELETE /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "write", qsha, s.deleteResource))
 	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
+	mux.Handle("GET /api/v1/n/{slug}/note/export/archive", s.bearer("export", "read", qpath, s.exportNoteArchive))
 	mux.Handle("POST /api/v1/n/{slug}/backup", s.bearer("backup", "write", qnone, s.createBackup))
 
 	// External integration proxies — no per-notebook scope, auth only.
