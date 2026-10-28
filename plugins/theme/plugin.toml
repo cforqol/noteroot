@@ -1,0 +1,4 @@
+name = "theme"
+version = "0.1.0"
+description = "Notebook theme preference, applied by the frontend status strip"
+permissions = ["kv:read", "kv:write", "ui:write"]

@@ -1,93 +1,450 @@
 # noteroot
 
+Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
+`noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-## Getting started
+> **Status:** stage 9 complete — plugins and integrations on a Lua sandbox (scoped tokens, signed webhooks, depth-limited bus, three proof plugins). Built-in UI plugin system ships three first-party widgets (HTML renderer, calendar, Pomodoro timer). Stages 0–8 before it: vault, search, write path, vim mode, resources, transforms, S3, dedup/quota/backups/import-export.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+---
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Table of contents
 
-## Add your files
+- [What it is](#what-it-is)
+- [What it is not](#what-it-is-not)
+- [Design principles](#design-principles)
+- [Status](#status)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Data layout](#data-layout)
+- [Tech stack](#tech-stack)
+- [Quick start](#quick-start)
+- [Development](#development)
+- [Configuration](#configuration)
+- [Extensibility](#extensibility)
+- [Roadmap](#roadmap)
+- [Non-goals](#non-goals)
+- [Decisions](#decisions)
+- [License](#license)
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+---
+
+## What it is
+
+A single-user, self-hosted notebook built around a few uncompromising ideas:
+
+- **Your notes are plain `.md` files.** Not rows, not blocks, not a proprietary format. You can `cat`, `grep`, `rsync`, and `git` them without the app.
+- **Real vim, not a vim emulator.** Editing happens in an actual Vim binary running in your browser, so motions, text objects, registers, macros, and `.` repeat behave the way they should.
+- **Notebooks are isolation units.** A corrupt index in one notebook cannot damage another. Separate vaults, separate repos, separate databases, separate failure domains.
+- **Nothing important is unrecoverable.** Atomic writes, git history, trash, and a supported rebuild path for every derived database.
+- **It is a platform, not just an app.** A small frozen core with plugins and integrations on top.
+
+## What it is not
+
+- Not multi-user. No sharing, no ACLs, no permissions between people.
+- Not a Notion clone. No block editor, no databases-in-notes.
+- Not real-time collaborative. No CRDT, no live cursors.
+- Not a mobile app. The web UI is responsive; there is no native client.
+- Not a hosted service. You run it.
+
+## Design principles
+
+1. Plain markdown files are the source of truth. Everything else is derived or cached.
+2. No failure may produce a partial file that looks valid.
+3. Classify failures before responding: client → transport → data.
+4. If a feature can live in an extension, it should. The core stays small and frozen.
+5. Isolation is enforced by boundaries, not convention.
+6. No database holds primary data. Every row is reconstructible from disk, git, or object storage.
+
+## Status
+
+| Stage | Scope | State |
+|-------|-------|-------|
+| 0 | Skeleton, layout, registry, health, auth | ✓ done |
+| 1 | Vault read path, markdown rendering, read-only UI | ✓ done |
+| 2 | Full-text index, search | ✓ done |
+| 3 | Write path, buffer/lock, crash pad, phone editor | ✓ done |
+| 4 | Vim mode (vim.wasm running in-page) | ✓ done |
+| 5 | Resources: policy, local store, upload journal | ✓ done |
+| 6 | Transforms: image resize, video posters | ✓ done |
+| 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
+| 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
+| 9 | Plugins and integrations | ✓ done |
+| UI | Workspace UI: note/folder CRUD, collapsible sidebar, status bar, themes, responsive layout | ✓ done |
+| UI+ | Interactive checkboxes, drag-drop to folder, icon categories, editor switch, UI plugin system (HTML/calendar/pomodoro) | ✓ done |
+
+## Features
+
+### Working today
+
+- Notebook registry discovered from disk; **one broken notebook never takes down the app**
+- `/healthz` (unauthenticated) and `/readyz` (unauthenticated, returns notebook count)
+- Forward-auth integration via Traefik
+- Structured JSON logging, request IDs, panic recovery
+- Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
+- Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
+- Web UI: notebook picker, sidebar, rendered note view
+- Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the sidebar (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the sidebar, per-folder emoji and name color (kept in the browser), sidebar on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in sidebar drawer
+- Folders: `POST` / `PATCH` / `DELETE /n/{slug}/folder` create an empty folder, rename or move a folder with everything in it (identity map follows), or move its notes to the trash and remove it. Session surface only — not exposed on the token API
+- Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
+- Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad
+- Embedded, forward-only, idempotent migrations, run automatically at open
+- Corrupt databases quarantined rather than repaired
+- Graceful shutdown with a drain timeout
+- Vim mode: real Vim (WASM) running in-page, with circuit-breaker fallback to a plain textarea; buffer model with draft autosave and swap files (desktop)
+- Resources: drag-and-drop upload into content-addressed storage, upload journal with verification and crash recovery, dedup by SHA-256, strict size policy
+- Transforms: automatic image resize and video poster frames
+- S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
+- Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
+- Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
+- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels; clicking backlinks in the side panel navigates correctly (not to a raw JSON endpoint)
+- **Interactive task-list checkboxes** in read mode: toggling a checkbox immediately patches the underlying markdown source and saves, no editor required
+- **Drag-and-drop notes to folders** in the sidebar: grab any note row and drop it onto a folder to move it
+- **Folder icon picker** with 10 named categories (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel, Nature, Symbols — ~300 icons) and a filter input above the grid
+- **Editor mode switch** visible whenever a note is open for editing; switches between Vim and the plain textarea; disabled with an explanatory tooltip when Vim is not yet enabled in Settings
+- **Built-in UI plugin system**: enable/disable per notebook from Settings → Plugins; three first-party plugins:
+  - **HTML renderer** — `\`\`\`html` fenced blocks render as sandboxed `<iframe>` previews with a source/rendered toggle
+  - **Calendar widget** — floating draggable monthly calendar, toggled from the top bar (📅)
+  - **Pomodoro timer** — floating three-row timer (Work/Short/Long buttons, SVG ring, Start/Reset) with a session count (🍅); phase lengths (1–180 min each) and the sound / widget-flash notifications are configurable (⚙ in the widget) and saved to your plugin preferences, so they survive a restart. The countdown keeps running when the widget is hidden — the 🍅 button shows a running indicator and pops a "Time is up" dialog if a phase ends unseen
+- Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
+- Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
+- Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
+- Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
+- Sandboxed Lua plugins (gopher-lua): per-notebook `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`; commands, event hooks, kv, panels, frontmatter helpers; permission-checked capabilities, per-plugin VM behind one mutex, context timeouts, panic recovery, circuit breaker; a slow plugin delays itself and nothing else
+- Per-notebook event bus: coalesced bursts, actor/origin self-suppression, depth-limited chains — plugin and integration writes can never loop the app
+- Integrations: outbound signed webhooks from `.notebook/integrations/<name>.toml` (HMAC-SHA256, breaker, redirects refused); inbound HMAC-authenticated webhooks to `/hooks/{slug}/{name}` writing notes with `hook:` attribution; secrets in platform.db, rotation without reload; delivery depth carried across the HTTP round trip so an echo terminates
+- Proof plugins in `plugins/` (copy into the notebook, hit reload): frontmatter tagger, status-bar word count, theme preference — rendered by the UI's plugin panel strip
+
+### Planned
+
+**Notes**
+- Virtual collections (folders already work)
+- Folder icons/colors synced through the server instead of per-browser storage
+
+**Search**
+- Optional semantic search via embeddings
+- Near-duplicate detection for notes (SimHash)
+
+**Safety**
+- Per-notebook circuit breakers (server-side)
+- `state.db` rebuild that also consults object storage
+
+**Operations**
+- Encrypted offsite backups with verification and scheduled restore drills
+- A global disk budget
+- Resumable import/export for very large notebooks
+- Diagnostics bundle and health page
+
+## Architecture
 
 ```
-cd existing_repo
-git remote add origin http://gitlab.eliza/dev/noteroot.git
-git branch -M master
-git push -uf origin master
+Client → reverse proxy (TLS, forward-auth) → noteroot
+                                            │
+                    ────────────────────────────────────────────
+                    │                       │                   │
+                  vault/               .notebook/      object store (stage 7, optional)
+              (markdown, git)     (resources, db, cache)
 ```
 
-## Integrate with your tools
+Every layer below HTTP is instantiated **per notebook**. Nothing is shared except a registry that rebuilds from disk.
 
-* [Set up project integrations](http://gitlab.eliza/dev/noteroot/-/settings/integrations)
+Key components:
 
-## Collaborate with your team
+- **`vault`** — the single write path. Serialized per path, atomic, actor-tagged, `If-Match` guarded.
+- **`index`** — disposable FTS and refs. Deletable; rebuilt from a full vault pass.
+- **`state`** — durable but rebuildable: identity map, resources, locks.
+- **`resources`** — pure policy, then pipeline, then store and transformer. No policy in the store.
+- **`editor`** — swappable backend behind one interface, isolated from the shell.
+- **`platform`** — the shared plugin/integration substrate (stage 9).
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Data layout
 
-## Test and Deploy
+Two separate things live in two separate repositories:
 
-Use the built-in continuous integration in GitLab.
+- **The app repo** (`noteroot/`) — Go source. Has a `.gitignore`.
+- **Each notebook** — user data on disk. Needs **no `.gitignore`**, because `vault/` contains only markdown and nothing app-managed lives inside it.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```
+noteroot-data/                       # NOTEROOT_DATA_DIR
+└── notebooks/
+    └── work/                        # one notebook = one isolation unit
+        ├── notebook.toml            # manifest
+        ├── vault/                   # your notes. git repo root. markdown only.
+        │   ├── index.md
+        │   └── projects/
+        │       └── plan.md
+        └── .notebook/               # app-managed. never edit by hand.
+            ├── resources/           # content-addressed blobs
+            ├── cache/               # disposable
+            ├── drafts/              # buffer drafts and swap
+            ├── trash/               # soft deletes
+            ├── backups/             # git bundles + state snapshots
+            ├── plugins/             # Lua plugins (plugin.toml + plugin.lua)
+            ├── integrations/        # outbound webhook configs
+            ├── hooks/               # inbound webhook configs
+            ├── state.db
+            ├── index.db
+            └── platform.db          # kv, secrets, audit, API tokens (secrets live only here)
+```
 
-***
+Three stores per notebook (state, index, platform) plus the vault. One rule: never touch `.notebook/`.
 
-# Editing this README
+## Tech stack
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+### Runtime
 
-## Suggestions for a good README
+| Component | Version | Why |
+|---|---|---|
+| Go | 1.27+ | Single static binary, no runtime deps |
+| SQLite | via `modernc.org/sqlite` | Pure Go, **no cgo** |
+| Docker | any | Alpine image (`git` included), non-root |
+| Traefik | any | TLS termination and forward-auth |
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### Libraries
 
-## Name
-Choose a self-explaining name for your project.
+**Present in the code**
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+| Library | Purpose | Wired up |
+|---|---|---|
+| `modernc.org/sqlite` | Pure-Go SQLite driver (FTS5 search index) | yes |
+| `github.com/BurntSushi/toml` | `notebook.toml` parsing | yes |
+| `github.com/yuin/goldmark` | Markdown rendering (GFM + footnotes) | yes |
+| `github.com/microcosm-cc/bluemonday` | HTML sanitization | yes |
+| `gopkg.in/yaml.v3` | Frontmatter YAML parsing | yes |
+| `golang.org/x/text/unicode/norm` | NFC path normalization | yes |
+| `net/http` (stdlib) | Router, using 1.22+ method patterns | yes |
+| `log/slog` (stdlib) | Structured logging | yes |
+| ULID identity (stdlib) | `crypto/rand` + CRC32 checksum, homegrown in `frontmatter` | yes |
+| `ffmpeg` / `ffprobe` (external binary) | Image resize and video poster frames | yes (optional at runtime) |
+| vim.wasm + xterm.js (vendored JS) | Real Vim running in-page | yes |
+| `yuin/gopher-lua` | Sandboxed Lua plugin runtime (stage 9) | yes |
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+**Planned**
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+| Library / tool | Purpose |
+|---|---|
+| `fsnotify/fsnotify` | Vault watching (hint only; mtime scan is truth) |
+| `golang.org/x/sync/singleflight` | Cache stampede protection |
+| `hashicorp/golang-lru` | In-process cache |
+| `libvips` (`vipsthumbnail`) | Higher-fidelity stills than ffmpeg (EXIF/ICC/HEIC/AVIF) |
+| `restic` / `rclone` | Encrypted offsite backups |
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### Why these
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+- **Pure Go, no cgo** — cross-compiles cleanly, static binaries, trivial containers. `modernc.org/sqlite` over `mattn/go-sqlite3` specifically for this; FTS5 is enabled and in use since stage 2.
+- **One external tool (`ffmpeg`) for both stills and video** — ships resize and posters with zero extra build deps; the narrow `Transformer` interface lets libvips replace it later if EXIF/ICC/HEIC/AVIF fidelity becomes a need.
+- **WASM Vim over embedding Neovim** — no subprocess, no RPC, no session manager; typing latency stays local. Failures fall back to a plain textarea via the circuit breaker.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## Quick start
+
+### Requirements
+
+- Go 1.27+
+- Docker and Docker Compose (container path only)
+- A reverse proxy that sets `X-Auth-User` (forward-auth) if you expose the container beyond localhost — noteroot ships no proxy of its own
+
+### Local
+
+```bash
+git clone git@gitlab.com:YOUR_USERNAME/noteroot.git
+cd noteroot
+
+go mod tidy
+go build -o bin/noteroot ./cmd/noteroot
+```
+
+**Production-ish run** — uses your real data directory:
+
+```bash
+export NOTEROOT_DATA_DIR="$HOME/.local/share/noteroot"
+NOTEROOT_AUTH_MODE=none ./bin/noteroot
+# Open http://localhost:8080 — click "Create notebook…" on the welcome screen.
+# Or pre-create a notebook from the command line: ./scripts/new-notebook.sh work
+```
+
+**Development run** — uses throwaway data in the project:
+
+```bash
+export NOTEROOT_DATA_DIR="$PWD/.devdata"
+NOTEROOT_AUTH_MODE=none ./bin/noteroot
+# Open http://localhost:8080 — click "Create notebook…" on the welcome screen.
+```
+
+Then:
+
+```bash
+curl localhost:8080/healthz
+curl localhost:8080/api/v1/notebooks
+```
+
+### Container
+
+```bash
+mkdir -p data
+NOTEROOT_AUTH_MODE=none PUID=$(id -u) PGID=$(id -g) \
+  docker compose -f deploy/compose.yaml up -d --build
+```
+
+Open `http://localhost:8080` in a browser. On the first visit with no data, a **"Create notebook"** button appears — click it, give the notebook a slug (e.g. `work`), and you are ready to write.
+
+`PUID`/`PGID` match the container's process uid/gid to your host user so the bind-mounted `data/` directory is writable without manual `chown`.
+
+The image is Alpine with `git` (vault autocommits and backup bundles shell out to it) and `ffmpeg`/`ffprobe` (image, video and audio transforms), runs as non-root uid 1000, and publishes `127.0.0.1:8080` only. `data/` is bind-mounted to `/data` — create it with `mkdir -p data` before the first start so Docker doesn't create it root-owned. Every variable in [Configuration](#configuration) is declared as an `ENV` with its documented default, so `docker inspect` shows the whole surface; the health check follows `NOTEROOT_LISTEN` rather than a hardcoded port.
+
+Auth defaults to `forward`: everything except `/healthz`, `/readyz`, and the static shell returns 401 until a proxy sets `X-Auth-User`. For a local look without a proxy, set `NOTEROOT_AUTH_MODE=none`. A containerized reverse proxy should attach to the `noteroot_default` network instead of going through the published port; TLS stays your proxy's job.
+
+#### Docker Compose examples
+
+**Minimal local install (no authentication, localhost only):**
+```yaml
+# deploy/compose.yaml or your own compose file
+services:
+  noteroot:
+    image: noteroot:0.1.0    # or ghcr.io/cforqol/noteroot:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NOTEROOT_DATA_DIR: /data
+      NOTEROOT_AUTH_MODE: none   # no login required — only use behind a firewall
+    volumes:
+      - ./data:/data
+```
+
+**With Traefik forward-auth (production):**
+```yaml
+services:
+  noteroot:
+    image: ghcr.io/cforqol/noteroot:latest
+    restart: unless-stopped
+    # Do NOT publish the port directly; let Traefik reach it over the internal network.
+    environment:
+      NOTEROOT_DATA_DIR: /data
+      # AUTH_MODE defaults to "forward" — no need to set it explicitly with Traefik.
+      # PUBLIC_ORIGIN can be left unset when Traefik uses passHostHeader: true (the
+      # default); noteroot derives the CSRF allowlist from the forwarded Host header.
+      # Only set PUBLIC_ORIGIN if your Traefik config rewrites the Host header to an
+      # internal value (e.g. "noteroot:8080"), which would cause 403 on every mutation.
+      # NOTEROOT_PUBLIC_ORIGIN: https://notes.example.com
+    volumes:
+      - ./data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.noteroot.rule=Host(`notes.example.com`)"
+      - "traefik.http.routers.noteroot.middlewares=my-forward-auth@file"
+```
+
+CI (`.github/workflows/ci.yml`) runs the Go and web suites, lints the Dockerfile, smoke-tests the image — anonymous calls must 401 under `forward`, `/healthz`, `/api/v1/notebooks` and the shell must answer under `none` — then publishes to `ghcr.io/cforqol/noteroot`, tagged by branch, semver and sha.
+
+## Development
+
+Development uses [direnv](https://direnv.net/). `.envrc` is committed; `.envrc.local` is not. Dev data lives in `./.devdata` and is gitignored, so a dev run can never scribble on your real notes — `make guard` requires `NOTEROOT_DATA_DIR` to be set and warns if you point at production.
+
+```bash
+direnv allow
+make setup     # air, staticcheck, govulncheck, golangci-lint
+make dev       # hot reload
+make check     # fmt, vet, lint, test, vuln
+make help      # list targets
+```
+
+## Configuration
+
+All configuration is environment variables.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `NOTEROOT_DATA_DIR` | `$XDG_DATA_HOME/noteroot` | Absolute path. Holds all notebooks. |
+| `NOTEROOT_LISTEN` | `:8080` | Listen address. |
+| `NOTEROOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
+| `NOTEROOT_AUTH_MODE` | `forward` | Authentication mode. `forward` — a reverse proxy (e.g. Traefik) authenticates the user and sets the `X-Auth-User` request header; noteroot trusts that header. This is the right mode for Traefik/step-ca and similar setups — **you do not need to set this explicitly**, the default is already correct. `none` — no authentication at all; use only on localhost or behind a firewall you control. |
+| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | The exact `scheme://host[:port]` that the browser uses to reach noteroot, e.g. `https://notes.example.com`. Used to validate the `Origin`/`Referer` header on every mutating request (CSRF protection). **With standard Traefik settings (`passHostHeader: true`, the default) you do not need to set this** — Traefik forwards the original `Host` header unchanged, so noteroot derives the allowed origin from the request itself. Only set it if your proxy rewrites or strips the `Host` header to an internal value (e.g. `noteroot:8080`); in that case the browser's `Origin: https://notes.example.com` would no longer match, and every save/create/delete would return 403 until you set this variable. |
+| `NOTEROOT_S3_ENDPOINT` | `` (disabled) | S3-compatible endpoint URL. S3 config is all-or-nothing: all five `NOTEROOT_S3_*` required together. |
+| `NOTEROOT_S3_BUCKET` | `` | Bucket name. |
+| `NOTEROOT_S3_REGION` | `` | Region (part of the SigV4 scope; any value works for MinIO). |
+| `NOTEROOT_S3_ACCESS_KEY` | `` | Access key ID. |
+| `NOTEROOT_S3_SECRET_KEY` | `` | Secret access key. |
+| `NOTEROOT_S3_PATH_STYLE` | `false` | `true` = path-style URLs (MinIO), `false` = virtual-hosted (AWS). |
+| `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
+| `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
+| `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
+| `PUID` | `1000` | *(Docker only)* uid the server process runs as inside the container. Set to your host user's uid (`id -u`) so the container can write to a bind-mounted data directory. |
+| `PGID` | `1000` | *(Docker only)* gid the server process runs as inside the container. Set to your host user's gid (`id -g`). |
+
+**Authentication.** noteroot does not implement a login page or manage user passwords. It relies on an external reverse proxy (e.g. Traefik, Caddy, nginx) to perform authentication and set the `X-Auth-User` request header on success; noteroot trusts that header and strips any client-supplied value. Set `NOTEROOT_AUTH_MODE=none` for local development or trusted-LAN deployments where no proxy is involved. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz`, `/readyz`, and `GET /api/v1/notebooks` are deliberately **unauthenticated** so orchestrators and the first-run setup wizard can reach them directly.
+
+**With Traefik (and most standard reverse proxies), you typically need zero noteroot-specific configuration** — `AUTH_MODE=forward` is the default, and `PUBLIC_ORIGIN` can be left unset as long as Traefik forwards the original `Host` header (`passHostHeader: true`, which is Traefik's default). noteroot then derives the CSRF allowlist from the request's own `Host` header, which already matches what the browser sends as `Origin`.
+
+## Extensibility
+
+Two distinct extension points, sharing one substrate:
+
+| | Plugins | Integrations |
+|---|---|---|
+| What | Code inside the app | A separate service |
+| Runs | In-process, sandboxed Lua | Its own container |
+| Talks via | Capabilities and events | HTTP and webhooks |
+| Can touch UI | Yes | No |
+| Identity | Declared permissions | Scoped API token |
+
+**Plugins** live in `.notebook/plugins/<dir>/` with a `plugin.toml` manifest (name, version, entry, permissions) and a `plugin.lua` entry point — both git-friendly, neither containing a secret. Capabilities (`note:read`/`write`, `kv`, `ui.set_panel`, `fm.parse`/`build`) are permission-checked at call time with the same `resource:action[:qualifier]` grammar as API tokens; plugins are **read-only by default** and grouped by risk at approval. Commands are human-triggered over `POST /n/{slug}/plugins/{name}/commands/{command}`; hooks subscribe to the notebook's event bus (coalesced, actor-suppressed, depth-limited); panels land in platform.db and render in the UI's status strip. Everything runs async with a timeout and a circuit breaker, so no plugin can block a save. `POST /n/{slug}/plugins/reload` picks up an edited directory without a restart.
+
+**Integrations** come in two halves, configured by files under `.notebook/integrations/` (outbound) and `.notebook/hooks/` (inbound). Outbound deliveries are signed POSTs (`X-Noteroot-Signature: sha256=` + HMAC) carrying the event's hop depth; inbound webhooks verify the same signature (GitHub's `X-Hub-Signature-256` works too) and write through the real write path with `hook:` attribution, continuing the chain one hop deeper — a service that echoes deliveries back terminates at the depth limit. Secrets live in platform.db, set over the authenticated API, rotated in place.
+
+The three proof plugins — frontmatter **tagger**, status-bar **word count**, **theme** — ship in the repo's `plugins/` directory: copy one into a notebook, reload, done.
 
 ## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+
+Stages 0–8 are the app. Stage 9 is a menu, not a queue.
+
+- **1** — vault walk, markdown rendering, sanitizer, read-only UI
+- **2** — FTS5 index and search
+- **3** — write path, buffer/lock, crash pad, phone editor, git autocommit
+- **4** — vim mode running in-page, with circuit-breaker failover
+- **5** — resources: policy, local store, upload journal
+- **6** — transforms: image resize, video posters
+- **7** — object storage with presigned upload and authenticated reads
+- **8** — dedup, rename/move, quota, backups, import/export (restore drills deferred)
+- **9** — plugins and integrations ✓ shipped (Lua sandbox, tokens, webhooks, bus)
+
+### Deferred
+
+Everything below is deliberately out of scope until the core is good:
+
+- End-to-end encryption — plaintext plus disk and backup encryption covers a self-hosted threat model, and `zk` would roughly double the code paths
+- Note sharing and a public wiki view
+- AI features, embeddings, and vector search
+- Local-first replication — a crash pad covers the realistic loss cases
+- Plugin updates and a marketplace
+
+## Non-goals
+
+- Multi-user and per-user isolation
+- Real-time collaborative editing
+- A block-based editor
+- Native desktop or mobile clients
+- Absorbing other tools — Karakeep stays Karakeep, it just syncs in
+
+## Decisions
+
+Architecture decisions live in `docs/adr/`:
+
+- `0001` — no local-first
+- `0002` — `state.db` is rebuildable
+- `0003` — local storage and the consolidated app directory
+
+Full reference: `docs/architecture.md`. Also `docs/threat-model.md` and `docs/schema/frontmatter.json`.
 
 ## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Single-maintainer project, but issues and patches are welcome. Before opening a PR:
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+```bash
+make check
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Expect strict review on two things in particular: **atomic writes** and **failure containment**. Those are the properties the whole design rests on.
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+MIT + Commons Clause — see [LICENSE](LICENSE).
