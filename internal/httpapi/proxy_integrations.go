@@ -1,15 +1,15 @@
 package httpapi
 
-// proxy_integrations.go wires noteroot to three optional external services:
+// proxy_integrations.go wires noteroot to four optional external services:
 //
-//   - GET  /api/v1/integrations/status  — reports which integrations are live
+//   - GET  /api/v1/integrations/status         — reports which integrations are live
+//   - GET  /api/v1/integrations/s3/test        — verifies S3 bucket connectivity
 //   - POST /api/v1/integrations/karakeep/archive — archives a URL via Karakeep
 //   - POST /api/v1/integrations/slink/upload    — uploads a file to Slink
 //
-// All three are unauthenticated at the transport level (they sit behind the
-// same auth middleware as the rest of /api/v1), but the external credentials
-// never leave the server: the client sends only the raw URL or binary payload
-// and receives a hosted URL back.
+// All are behind the same auth middleware as the rest of /api/v1, but the
+// external credentials never leave the server: the client sends only the raw
+// URL or binary payload and receives a hosted URL back.
 //
 // Karakeep (https://karakeep.app, formerly Hoarder) REST API:
 //   POST <base>/api/v1/bookmarks  {"url": "..."}
@@ -30,6 +30,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"noteroot/internal/resources"
 )
 
 const (
@@ -44,15 +46,47 @@ var proxyClient = &http.Client{Timeout: proxyTimeout}
 type integrationStatus struct {
 	Karakeep bool `json:"karakeep"`
 	Slink    bool `json:"slink"`
+	S3       bool `json:"s3"`
 }
 
-// integrationStatusHandler returns which external integrations are configured.
-// The client uses this to decide whether to enable paste-archiving and Slink upload.
+// integrationStatus returns which external integrations are configured.
+// The client uses this to decide whether to enable paste-archiving, Slink
+// upload, and S3 object storage.
 func (s *Server) integrationStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, integrationStatus{
 		Karakeep: s.cfg.KarakeepURL != "" && s.cfg.KarakeepKey != "",
 		Slink:    s.cfg.SlinkURL != "" && s.cfg.SlinkKey != "",
+		S3:       s.cfg.S3Enabled(),
 	})
+}
+
+// testS3 handles GET /api/v1/integrations/s3/test — verifies that the
+// configured S3 bucket is reachable. Returns {"ok":true} on success or
+// {"ok":false,"error":"…"} when S3 is not configured or unreachable.
+func (s *Server) testS3(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.S3Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "S3 not configured"})
+		return
+	}
+	store, err := resources.NewS3Store(resources.S3Config{
+		Endpoint:  s.cfg.S3Endpoint,
+		Bucket:    s.cfg.S3Bucket,
+		Region:    s.cfg.S3Region,
+		AccessKey: s.cfg.S3AccessKey,
+		SecretKey: s.cfg.S3SecretKey,
+		PathStyle: s.cfg.S3PathStyle,
+		SSE:       s.cfg.S3SSE,
+		SSEKeyID:  s.cfg.S3SSEKeyID,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if err := store.Ping(r.Context()); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // archiveWithKarakeep proxies a bookmark creation request to Karakeep.

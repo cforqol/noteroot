@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import {
   fetchIntegrationStatus,
   resetIntegrationStatus,
@@ -18,6 +19,7 @@ describe('isHttpUrl', () => {
   test('rejects URL with whitespace', () => expect(isHttpUrl('https://a.com b')).toBe(false));
   test('rejects empty', () => expect(isHttpUrl('')).toBe(false));
   test('rejects null', () => expect(isHttpUrl(null)).toBe(false));
+  test('rejects non-URL string without whitespace', () => expect(isHttpUrl('not-a-url')).toBe(false));
 });
 
 // --- fetchIntegrationStatus ---
@@ -46,7 +48,7 @@ describe('fetchIntegrationStatus', () => {
   test('returns false defaults on HTTP error', async () => {
     const fetchFn = jest.fn().mockResolvedValue({ ok: false });
     const st = await fetchIntegrationStatus({ fetchFn });
-    expect(st).toEqual({ karakeep: false, slink: false });
+    expect(st).toEqual({ karakeep: false, slink: false, s3: false });
   });
 });
 

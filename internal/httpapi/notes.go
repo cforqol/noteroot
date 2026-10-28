@@ -283,12 +283,12 @@ func publicError(err error) string {
 
 // historyCommit represents a single commit in the note's history.
 type historyCommit struct {
-	Hash      string    `json:"hash"`
-	ShortHash string    `json:"shortHash"`
-	Date      int64     `json:"date"`      // Unix timestamp
-	Author    string    `json:"author"`
-	Message   string    `json:"message"`
-	IsMerge   bool      `json:"isMerge"`
+	Hash      string `json:"hash"`
+	ShortHash string `json:"shortHash"`
+	Date      int64  `json:"date"` // Unix timestamp
+	Author    string `json:"author"`
+	Message   string `json:"message"`
+	IsMerge   bool   `json:"isMerge"`
 }
 
 // noteHistory handles GET /n/{slug}/note/history?path=...&limit=50&before=<hash>
@@ -408,4 +408,3 @@ func isGitHash(s string) bool {
 	}
 	return true
 }
-

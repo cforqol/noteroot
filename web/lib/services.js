@@ -14,7 +14,7 @@ let _statusPromise = null;
 export async function fetchIntegrationStatus(deps = {}) {
   if (_statusPromise) return _statusPromise;
   const fetchFn = deps.fetchFn || ((...a) => fetch(...a));
-  _statusPromise = fetchFn(STATUS_URL).then(r => r.ok ? r.json() : { karakeep: false, slink: false });
+  _statusPromise = fetchFn(STATUS_URL).then(r => r.ok ? r.json() : { karakeep: false, slink: false, s3: false });
   return _statusPromise;
 }
 

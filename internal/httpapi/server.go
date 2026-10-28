@@ -183,6 +183,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 
 	// External integration proxies — no per-notebook scope, auth only.
 	mux.Handle("GET /api/v1/integrations/status", auth(s.integrationStatus))
+	mux.Handle("GET /api/v1/integrations/s3/test", auth(s.testS3))
 	mux.Handle("POST /api/v1/integrations/karakeep/archive", mutating(s.archiveWithKarakeep))
 	mux.Handle("POST /api/v1/integrations/slink/upload",
 		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))

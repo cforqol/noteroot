@@ -139,7 +139,7 @@ func (s *S3Store) putBytes(key string, body []byte) error {
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Type", "application/octet-stream")
 	for k, v := range extraHdrs {
-		req.Header.Set(http.CanonicalHeaderKey(k), v)
+		req.Header.Set(k, v)
 	}
 
 	resp, err := s.hc.Do(req)
@@ -181,10 +181,10 @@ func (s *S3Store) putDirect(ctx context.Context, key string, r io.Reader, size i
 
 	// Collect headers that will be signed (must be sorted lexicographically).
 	hdrMap := map[string]string{
-		"content-type":            contentType,
-		"host":                    parsed.Host,
-		"x-amz-content-sha256":   payloadHash,
-		"x-amz-date":             amzDate,
+		"content-type":         contentType,
+		"host":                 parsed.Host,
+		"x-amz-content-sha256": payloadHash,
+		"x-amz-date":           amzDate,
 	}
 	if s.cfg.SessionToken != "" {
 		hdrMap["x-amz-security-token"] = s.cfg.SessionToken
@@ -242,7 +242,7 @@ func (s *S3Store) putDirect(ctx context.Context, key string, r io.Reader, size i
 	}
 	req.ContentLength = size
 	for k, v := range hdrMap {
-		req.Header.Set(http.CanonicalHeaderKey(k), v)
+		req.Header.Set(k, v)
 	}
 	req.Header.Set("Authorization", authHdr)
 
@@ -367,6 +367,36 @@ func (s *S3Store) GC(time.Duration, map[string]bool) (int, error) { return 0, ni
 
 // Root returns the s3:// URL for display purposes.
 func (s *S3Store) Root() string { return "s3://" + s.cfg.Bucket }
+
+// Ping verifies S3 connectivity by issuing a HEAD request to the bucket
+// root. A 200, 403, or 404 response all confirm the endpoint is reachable
+// (permissions are a config issue, not a network one). Any error or 5xx
+// is returned as a descriptive string, nil on success.
+func (s *S3Store) Ping(ctx context.Context) error {
+	u, err := url.Parse(s.cfg.Endpoint)
+	if err != nil {
+		return fmt.Errorf("s3: bad endpoint: %w", err)
+	}
+	var bucketURL string
+	if s.cfg.PathStyle {
+		bucketURL = fmt.Sprintf("%s://%s/%s/", u.Scheme, u.Host, s.cfg.Bucket)
+	} else {
+		bucketURL = fmt.Sprintf("%s://%s.%s/", u.Scheme, s.cfg.Bucket, u.Host)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, bucketURL, nil)
+	if err != nil {
+		return fmt.Errorf("s3: ping request: %w", err)
+	}
+	resp, err := s.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("s3: unreachable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("s3: server error %d", resp.StatusCode)
+	}
+	return nil
+}
 
 // Presign generates a presigned URL for the given method and object key.
 // The URL is valid for the given duration (max 7 days per AWS SigV4).

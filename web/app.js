@@ -2665,6 +2665,14 @@ async function handleSplitFileUpload(file) {
   if (!splitSession) return;
   setSplitSaveState(`Uploading ${file.name}…`, "dirty");
   try {
+    const integ = await fetchIntegrationStatus();
+    if (integ.slink && file.type.startsWith('image/')) {
+      const hostedUrl = await slinkUpload(file);
+      const label = file.name.replace(/([\\[\]()])/g, '\\$1');
+      insertIntoSplitEditor(`![${label}](${hostedUrl})`);
+      setSplitSaveState(`Uploaded ${file.name} via Slink`, "dirty");
+      return;
+    }
     const res = await uploadResource(file);
     if (!res || !/^[a-f0-9]{64}$/.test(res.sha || "")) {
       throw new Error("upload returned no content hash");
@@ -4536,6 +4544,14 @@ async function updateServerInfo() {
       infoRow("Upload limit", quota > 0 ? humanSizePair(used + reserved, quota) : "none (unlimited)"),
       infoRow("Unfinished uploads", String(pending)),
     );
+    // Show which external integrations are active.
+    const integ = await fetchIntegrationStatus().catch(() => ({}));
+    if ($("server-info") !== dl || !slug) return;
+    const integParts = [];
+    if (integ.s3) integParts.push("S3");
+    if (integ.karakeep) integParts.push("Karakeep");
+    if (integ.slink) integParts.push("Slink");
+    rows.push(infoRow("Integrations", integParts.length ? integParts.join(", ") : "none"));
     dl.replaceChildren(...rows);
     if (quota > 0) dl.append(meterFor(used, quota));
   } catch (e) {

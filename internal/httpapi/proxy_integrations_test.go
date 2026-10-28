@@ -79,8 +79,8 @@ func TestIntegrationStatus_nothingConfigured(t *testing.T) {
 	}
 	var st integrationStatus
 	decodeJSON(t, w, &st)
-	if st.Karakeep || st.Slink {
-		t.Errorf("expected both false, got karakeep=%v slink=%v", st.Karakeep, st.Slink)
+	if st.Karakeep || st.Slink || st.S3 {
+		t.Errorf("expected all false, got karakeep=%v slink=%v s3=%v", st.Karakeep, st.Slink, st.S3)
 	}
 }
 
@@ -96,6 +96,9 @@ func TestIntegrationStatus_bothConfigured(t *testing.T) {
 	decodeJSON(t, w, &st)
 	if !st.Karakeep || !st.Slink {
 		t.Errorf("expected both true, got karakeep=%v slink=%v", st.Karakeep, st.Slink)
+	}
+	if st.S3 {
+		t.Errorf("S3 should be false when not configured")
 	}
 }
 
@@ -224,5 +227,96 @@ func TestSlinkUpload_upstreamError(t *testing.T) {
 	w := integPostMultipart(t, s, "/api/v1/integrations/slink/upload", "img.png", "data")
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("want 502, got %d", w.Code)
+	}
+}
+
+// newServerWithS3 builds a server pointing at a fake S3 endpoint.
+func newServerWithS3(t *testing.T, s3Srv *httptest.Server) *Server {
+	t.Helper()
+	reg, problems := notebooks.Open(t.TempDir())
+	if len(problems) != 0 {
+		t.Fatalf("notebooks.Open: %v", problems)
+	}
+	cfg := config.Config{
+		DataDir:    filepath.Join(t.TempDir(), "data"),
+		ListenAddr: ":0",
+		AuthMode:   config.AuthNone,
+	}
+	if s3Srv != nil {
+		cfg.S3Endpoint = s3Srv.URL
+		cfg.S3Bucket = "test-bucket"
+		cfg.S3Region = "us-east-1"
+		cfg.S3AccessKey = "access"
+		cfg.S3SecretKey = "secret"
+		cfg.S3PathStyle = true
+	}
+	return New(cfg, newTestLogger(), reg)
+}
+
+// --- S3 test endpoint ---
+
+func TestS3Test_notConfigured(t *testing.T) {
+	s := newServerWithInteg(t, nil, nil)
+	w := integGet(t, s, "/api/v1/integrations/s3/test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Error("ok should be false when S3 not configured")
+	}
+}
+
+func TestS3Test_reachable(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 200 for HEAD /test-bucket/
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fake.Close()
+
+	s := newServerWithS3(t, fake)
+	w := integGet(t, s, "/api/v1/integrations/s3/test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); !ok {
+		t.Errorf("ok should be true, got %v (error: %v)", resp["ok"], resp["error"])
+	}
+}
+
+func TestS3Test_serverError(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer fake.Close()
+
+	s := newServerWithS3(t, fake)
+	w := integGet(t, s, "/api/v1/integrations/s3/test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Error("ok should be false when S3 returns 5xx")
+	}
+	if resp["error"] == "" {
+		t.Error("error message should be present")
+	}
+}
+
+func TestIntegrationStatus_S3Configured(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer fake.Close()
+
+	s := newServerWithS3(t, fake)
+	w := integGet(t, s, "/api/v1/integrations/status")
+	var st integrationStatus
+	decodeJSON(t, w, &st)
+	if !st.S3 {
+		t.Error("S3 should be true when configured")
 	}
 }
