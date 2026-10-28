@@ -320,8 +320,12 @@ services:
     # Do NOT publish the port directly; let Traefik reach it over the internal network.
     environment:
       NOTEROOT_DATA_DIR: /data
-      NOTEROOT_AUTH_MODE: forward          # Traefik sets X-Auth-User after auth succeeds
-      NOTEROOT_PUBLIC_ORIGIN: https://notes.example.com  # must match the external URL
+      # AUTH_MODE defaults to "forward" — no need to set it explicitly with Traefik.
+      # PUBLIC_ORIGIN can be left unset when Traefik uses passHostHeader: true (the
+      # default); noteroot derives the CSRF allowlist from the forwarded Host header.
+      # Only set PUBLIC_ORIGIN if your Traefik config rewrites the Host header to an
+      # internal value (e.g. "noteroot:8080"), which would cause 403 on every mutation.
+      # NOTEROOT_PUBLIC_ORIGIN: https://notes.example.com
     volumes:
       - ./data:/data
     labels:
@@ -353,8 +357,8 @@ All configuration is environment variables.
 | `NOTEROOT_DATA_DIR` | `$XDG_DATA_HOME/noteroot` | Absolute path. Holds all notebooks. |
 | `NOTEROOT_LISTEN` | `:8080` | Listen address. |
 | `NOTEROOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
-| `NOTEROOT_AUTH_MODE` | `forward` | Authentication mode. `forward` — a reverse proxy (e.g. Traefik) authenticates the user and sets the `X-Auth-User` request header; noteroot trusts that header. `none` — no authentication at all, anyone who can reach the port is in; use only on localhost or behind a firewall you control. |
-| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | The exact `scheme://host[:port]` that the browser uses to reach noteroot, e.g. `https://notes.example.com`. Required when noteroot sits behind a reverse proxy that changes the `Host` header. It is used to validate the `Origin`/`Referer` header on every mutating request (CSRF protection). Leave empty when accessing directly — noteroot will use the incoming `Host` header. |
+| `NOTEROOT_AUTH_MODE` | `forward` | Authentication mode. `forward` — a reverse proxy (e.g. Traefik) authenticates the user and sets the `X-Auth-User` request header; noteroot trusts that header. This is the right mode for Traefik/step-ca and similar setups — **you do not need to set this explicitly**, the default is already correct. `none` — no authentication at all; use only on localhost or behind a firewall you control. |
+| `NOTEROOT_PUBLIC_ORIGIN` | `` (same host) | The exact `scheme://host[:port]` that the browser uses to reach noteroot, e.g. `https://notes.example.com`. Used to validate the `Origin`/`Referer` header on every mutating request (CSRF protection). **With standard Traefik settings (`passHostHeader: true`, the default) you do not need to set this** — Traefik forwards the original `Host` header unchanged, so noteroot derives the allowed origin from the request itself. Only set it if your proxy rewrites or strips the `Host` header to an internal value (e.g. `noteroot:8080`); in that case the browser's `Origin: https://notes.example.com` would no longer match, and every save/create/delete would return 403 until you set this variable. |
 | `NOTEROOT_S3_ENDPOINT` | `` (disabled) | S3-compatible endpoint URL. S3 config is all-or-nothing: all five `NOTEROOT_S3_*` required together. |
 | `NOTEROOT_S3_BUCKET` | `` | Bucket name. |
 | `NOTEROOT_S3_REGION` | `` | Region (part of the SigV4 scope; any value works for MinIO). |
@@ -367,7 +371,9 @@ All configuration is environment variables.
 | `PUID` | `1000` | *(Docker only)* uid the server process runs as inside the container. Set to your host user's uid (`id -u`) so the container can write to a bind-mounted data directory. |
 | `PGID` | `1000` | *(Docker only)* gid the server process runs as inside the container. Set to your host user's gid (`id -g`). |
 
-**Authentication.** noteroot does not implement a login page or manage user passwords. It relies on an external reverse proxy (e.g. Traefik, Caddy, nginx) to perform authentication and set the `X-Auth-User` request header on success; noteroot trusts that header and strips any client-supplied value. Set `NOTEROOT_AUTH_MODE=none` for local development or trusted-LAN deployments where no proxy is involved. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz` and `/readyz` are deliberately **unauthenticated** so orchestrators can reach them directly.
+**Authentication.** noteroot does not implement a login page or manage user passwords. It relies on an external reverse proxy (e.g. Traefik, Caddy, nginx) to perform authentication and set the `X-Auth-User` request header on success; noteroot trusts that header and strips any client-supplied value. Set `NOTEROOT_AUTH_MODE=none` for local development or trusted-LAN deployments where no proxy is involved. Mutations are CSRF-gated server-side (content-type gate + Origin/Referer allowlist; no CORS is ever granted, no application session cookie exists). `/healthz`, `/readyz`, and `GET /api/v1/notebooks` are deliberately **unauthenticated** so orchestrators and the first-run setup wizard can reach them directly.
+
+**With Traefik (and most standard reverse proxies), you typically need zero noteroot-specific configuration** — `AUTH_MODE=forward` is the default, and `PUBLIC_ORIGIN` can be left unset as long as Traefik forwards the original `Host` header (`passHostHeader: true`, which is Traefik's default). noteroot then derives the CSRF allowlist from the request's own `Host` header, which already matches what the browser sends as `Origin`.
 
 ## Extensibility
 
