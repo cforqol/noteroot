@@ -1,3 +1,5 @@
+![noteroot](docs/icon.svg)
+
 # noteroot
 
 Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
