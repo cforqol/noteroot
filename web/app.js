@@ -4286,15 +4286,16 @@ function syncLockSettings() {
   } else {
     info.textContent = "Locked. Enter the password to open it here.";
   }
-  // Lock badge inside the notebook selector
-  const topbarBtn = $("notebook-lock-btn");
-  const nbWrap = topbarBtn?.closest(".nb-select-wrap");
-  if (topbarBtn) {
-    const showBadge = !!slug && (locked || !unlocked);
-    topbarBtn.hidden = !showBadge;
-    topbarBtn.textContent = locked && !unlocked ? "🔒" : "🔓";
-    topbarBtn.title = locked && !unlocked ? "Notebook locked — click to unlock" : "Lock notebook…";
-    nbWrap?.classList.toggle("nb-has-lock", showBadge);
+  // Stamp 🔒 on the current notebook's <option> when the notebook is locked.
+  const sel = $("notebooks");
+  if (sel && slug) {
+    for (const opt of sel.options) {
+      if (opt.value === slug) {
+        const base = opt.textContent.replace(/\s*🔒$/, "");
+        opt.textContent = (locked && !unlocked) ? base + " 🔒" : base;
+        break;
+      }
+    }
   }
   // Redraw tree so the locked placeholder toggles
   if (treeData) drawTree();
@@ -4416,24 +4417,6 @@ $("remove-lock-notebook")?.addEventListener("click", async () => {
     await refreshTree();
   } catch (e) {
     toast(e.message, true);
-  }
-});
-
-// Topbar lock button: toggles between lock/unlock/relock depending on state.
-$("notebook-lock-btn")?.addEventListener("click", async () => {
-  if (!slug) return;
-  const { locked, unlocked } = notebookLock;
-  if (!locked) {
-    await actionLock({ path: "", isDir: true }, "notebook");
-    await refreshNotebookLock();
-  } else if (locked && !unlocked) {
-    if (await promptUnlock("", "notebook")) {
-      await refreshNotebookLock();
-      await openHomepage();
-    }
-  } else {
-    await actionRelock("", "notebook");
-    await refreshNotebookLock();
   }
 });
 

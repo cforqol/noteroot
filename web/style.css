@@ -135,20 +135,8 @@ header.topbar {
 .brand { font-weight: 650; letter-spacing: -0.02em; margin-right: 6px; }
 .brand-version { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 5px; }
 
-/* Notebook selector + attached lock badge */
-.nb-select-wrap { display: inline-flex; align-items: stretch; min-width: 0; }
-#notebooks { max-width: 220px; min-width: 0; border-radius: var(--radius-sm); }
-.nb-select-wrap.nb-has-lock #notebooks { border-radius: var(--radius-sm) 0 0 var(--radius-sm); border-right: none; }
-.nb-lock-icon {
-  display: none; align-items: center; gap: 2px;
-  background: var(--subtle); border: 1px solid var(--line-strong);
-  border-left: none; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  padding: 2px 7px; font-size: 13px; line-height: 1;
-  cursor: pointer; color: inherit; white-space: nowrap;
-  transition: background 0.1s;
-}
-.nb-lock-icon:not([hidden]) { display: flex; }
-.nb-lock-icon:hover { background: var(--hover); }
+/* Notebook selector */
+#notebooks { max-width: 220px; min-width: 0; }
 
 /* Main search input */
 #q { width: 260px; background: var(--subtle); }
