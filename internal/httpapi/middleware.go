@@ -14,6 +14,32 @@ import (
 	"noteroot/internal/config"
 )
 
+// SecurityHeaders sets conservative security response headers on every reply.
+// CSP is intentionally permissive enough to support the CDN-loaded highlight.js
+// and blob: URLs produced by the PDF/epub viewer and vim.wasm worker.
+func SecurityHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'none'; " +
+		"script-src 'self' https://cdn.jsdelivr.net; " +
+		"style-src 'self'; " +
+		"img-src 'self' data: https: blob:; " +
+		"media-src 'self' blob:; " +
+		"connect-src 'self'; " +
+		"font-src 'self'; " +
+		"worker-src 'self' blob:; " +
+		"object-src 'self' blob:; " +
+		"frame-src 'self' blob:; " +
+		"frame-ancestors 'none'; " +
+		"base-uri 'self'; " +
+		"form-action 'self'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
 type ctxKey string
 
 const (
@@ -100,12 +126,6 @@ func Log(log *slog.Logger) func(http.Handler) http.Handler {
 				attrs = append(attrs, "user", user)
 			} else if r.Header.Get("X-Auth-User") != "" {
 				attrs = append(attrs, "user", r.Header.Get("X-Auth-User"))
-			}
-			dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			host, _ := net.DefaultResolver.LookupAddr(dnsCtx, ip)
-			dnsCancel()
-			if len(host) > 0 {
-				attrs = append(attrs, "hostname", strings.TrimSuffix(host[0], "."))
 			}
 			log.Info("req", attrs...)
 		})

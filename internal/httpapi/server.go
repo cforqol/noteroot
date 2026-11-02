@@ -188,11 +188,22 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /api/v1/integrations/slink/upload",
 		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 
-	readTimeout, _ := time.ParseDuration(cfg.ReadTimeout)
-	writeTimeout, _ := time.ParseDuration(cfg.WriteTimeout)
-	idleTimeout, _ := time.ParseDuration(cfg.IdleTimeout)
+	parseDuration := func(s, name string, fallback time.Duration) time.Duration {
+		if s == "" {
+			return fallback
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			log.Warn("invalid timeout config, using default", "name", name, "value", s, "default", fallback)
+			return fallback
+		}
+		return d
+	}
+	readTimeout := parseDuration(cfg.ReadTimeout, "ReadTimeout", 10*time.Second)
+	writeTimeout := parseDuration(cfg.WriteTimeout, "WriteTimeout", 10*time.Second)
+	idleTimeout := parseDuration(cfg.IdleTimeout, "IdleTimeout", 60*time.Second)
 
-	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer)
+	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer, SecurityHeaders)
 	s.http = &http.Server{
 		Addr:           cfg.ListenAddr,
 		Handler:        h,
