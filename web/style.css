@@ -134,9 +134,50 @@ header.topbar {
 }
 .brand { font-weight: 650; letter-spacing: -0.02em; margin-right: 6px; }
 .brand-version { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 5px; }
-#notebooks { max-width: 220px; min-width: 0; }
+
+/* Notebook selector + attached lock badge */
+.nb-select-wrap { display: inline-flex; align-items: stretch; min-width: 0; }
+#notebooks { max-width: 220px; min-width: 0; border-radius: var(--radius-sm); }
+.nb-select-wrap.nb-has-lock #notebooks { border-radius: var(--radius-sm) 0 0 var(--radius-sm); border-right: none; }
+.nb-lock-icon {
+  display: none; align-items: center; gap: 2px;
+  background: var(--subtle); border: 1px solid var(--line-strong);
+  border-left: none; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 2px 7px; font-size: 13px; line-height: 1;
+  cursor: pointer; color: inherit; white-space: nowrap;
+  transition: background 0.1s;
+}
+.nb-lock-icon:not([hidden]) { display: flex; }
+.nb-lock-icon:hover { background: var(--hover); }
+
+/* Main search input */
 #q { width: 260px; background: var(--subtle); }
 #q:focus { background: var(--surface); }
+
+/* Collapsed search button (shown instead of #q at narrow widths) */
+#search-btn { flex-shrink: 0; }
+/* JS ResizeObserver adds .search-compact to the topbar when too narrow */
+header.topbar.search-compact #q { display: none !important; }
+header.topbar.search-compact #search-btn { display: inline-flex !important; }
+
+/* Search popup — slides down below the topbar */
+.search-popup {
+  position: fixed; top: 49px; left: 0; right: 0; z-index: 200;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; background: var(--bg);
+  border-bottom: 2px solid var(--accent);
+  box-shadow: var(--shadow);
+  animation: slideDown 0.12s var(--ease);
+}
+.search-popup:not([hidden]) { display: flex; }
+.search-popup input { flex: 1; min-width: 0; background: var(--subtle); }
+.search-popup input:focus { background: var(--surface); }
+.search-popup-close { flex-shrink: 0; }
+@keyframes slideDown {
+  from { transform: translateY(-6px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
 .topbar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
 
 /* --- layout ----------------------------------------------------------- */
@@ -875,6 +916,13 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
   .brand, .topbar-sep { display: none; }
   #notebooks { max-width: 90px; min-width: 0; }
   #q { width: auto; flex: 1; min-width: 0; }
+}
+/* When topbar is very narrow the search input collapses to an icon button */
+@media (max-width: 480px) {
+  #q { display: none !important; }
+  #search-btn { display: inline-flex !important; }
+}
+@media (max-width: 720px) {
   main, body[data-tree] main { grid-template-columns: minmax(0, 1fr); }
   #sidebar, body[data-tree] #sidebar {
     display: flex; position: absolute; top: 0; bottom: 0; left: 0; z-index: 60;

@@ -1869,6 +1869,76 @@ $("q")?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") search(e.target.value);
 });
 
+// --- responsive search: icon + popup dialog ---------------------------
+// When the topbar is too narrow (#q would be <100 px), hide the inline
+// search input and show a search icon button instead. The button opens
+// a slide-down popup with its own input that drives the same search().
+
+function openSearchBar() {
+  const qEl = $("q");
+  const popupEl = $("search-popup");
+  // Check CSS visibility, not just the [hidden] attribute; compact mode hides
+  // #q via a CSS class/media query without setting the attribute.
+  const qVisible = qEl && getComputedStyle(qEl).display !== "none";
+  if (qVisible) {
+    qEl.focus();
+    qEl.select?.();
+  } else if (popupEl) {
+    if (!popupEl.hidden) { closeSearchPopup(); return; }
+    popupEl.hidden = false;
+    const inp = $("search-popup-q");
+    if (inp) { inp.value = ""; inp.focus(); }
+  }
+}
+
+function closeSearchPopup() {
+  const p = $("search-popup");
+  if (p) p.hidden = true;
+}
+
+// Popup search input: Enter submits, Escape closes.
+$("search-popup-q")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const val = e.target.value;
+    closeSearchPopup();
+    search(val);
+  } else if (e.key === "Escape") {
+    closeSearchPopup();
+  }
+});
+
+$("search-btn")?.addEventListener("click", openSearchBar);
+document.querySelector(".search-popup-close")?.addEventListener("click", closeSearchPopup);
+
+// Close popup when clicking outside of it.
+document.addEventListener("pointerdown", (e) => {
+  const popup = $("search-popup");
+  if (!popup || popup.hidden) return;
+  if (!popup.contains(e.target) && e.target.id !== "search-btn") {
+    closeSearchPopup();
+  }
+}, { capture: true });
+
+// Dynamically switch between inline search input and icon+popup when the
+// topbar is too narrow for a useful input. A ResizeObserver on the topbar
+// toggles the "search-compact" class with hysteresis so the two modes do
+// not thrash at the boundary. The CSS 480px media query is the backstop
+// for very small viewports; the observer handles dynamic cases like the
+// sidebar toggling available space on a mid-size screen.
+(function initSearchResize() {
+  const topbar = document.querySelector("header.topbar");
+  if (!topbar) return;
+  let compact = false;
+  const obs = new ResizeObserver(() => {
+    const w = topbar.clientWidth;
+    if (!compact && w < 460) compact = true;
+    else if (compact && w >= 500) compact = false;
+    topbar.classList.toggle("search-compact", compact);
+    if (!compact) closeSearchPopup();
+  });
+  obs.observe(topbar);
+})();
+
 // --- status bar: mode, position, words, selection, size, writer stats ---
 
 const FIELD_ELEMENTS = {
@@ -3105,8 +3175,7 @@ window.addEventListener("keydown", (e) => {
   }
   if (action === "search") {
     e.preventDefault();
-    $("q").focus();
-    $("q").select?.();
+    openSearchBar();
     return;
   }
   if (action === "edit") {
@@ -4217,12 +4286,15 @@ function syncLockSettings() {
   } else {
     info.textContent = "Locked. Enter the password to open it here.";
   }
-  // Topbar lock button: show when a notebook is open; icon reflects state
+  // Lock badge inside the notebook selector
   const topbarBtn = $("notebook-lock-btn");
+  const nbWrap = topbarBtn?.closest(".nb-select-wrap");
   if (topbarBtn) {
-    topbarBtn.hidden = !slug;
+    const showBadge = !!slug && (locked || !unlocked);
+    topbarBtn.hidden = !showBadge;
     topbarBtn.textContent = locked && !unlocked ? "🔒" : "🔓";
     topbarBtn.title = locked && !unlocked ? "Notebook locked — click to unlock" : "Lock notebook…";
+    nbWrap?.classList.toggle("nb-has-lock", showBadge);
   }
   // Redraw tree so the locked placeholder toggles
   if (treeData) drawTree();
