@@ -492,23 +492,22 @@ func TestImport_mismatchedAttachmentBeforeManifest(t *testing.T) {
 	}
 }
 
-// A blob whose content hashes correctly but whose declared MIME is not
-// allowed must still be rejected, and nothing may be left in the store.
-func TestImport_rejectsDisallowedMIME(t *testing.T) {
+// Any MIME type (including scripts) is accepted by the open policy.
+func TestImport_acceptsAnyMIME(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "# A"}))
-	content := []byte("#!/bin/sh\nrm -rf /\n")
+	content := []byte("#!/bin/sh\necho hello\n")
 	sha := sha256Hex(content)
 	blob := "resources/" + sha
 	files := map[string]string{
 		blob:             string(content),
-		"resources.json": `[{"sha":"` + sha + `","filename":"evil.sh","mime":"application/x-sh"}]`,
+		"resources.json": `[{"sha":"` + sha + `","filename":"script.sh","mime":"application/x-sh"}]`,
 	}
 	rec := postImport(t, srv, "work", buildTarGzOrdered(t, []string{blob, "resources.json"}, files), false)
-	if !strings.Contains(rec.Body.String(), "mime") {
-		t.Fatalf("got %s", rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import failed: %s", rec.Body.String())
 	}
-	if g := get(t, srv, "/n/work/"+blob, nil); g.Code == http.StatusOK {
-		t.Fatal("disallowed blob must not be stored")
+	if g := get(t, srv, "/n/work/"+blob, nil); g.Code != http.StatusOK {
+		t.Fatal("blob must be stored after successful import")
 	}
 }
 

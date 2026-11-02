@@ -35,14 +35,7 @@ const DefaultMaxNameLen = 255
 // DefaultPolicy returns the recommended production policy.
 func DefaultPolicy() Policy {
 	return Policy{
-		MaxSize: DefaultMaxSize,
-		AllowedMIME: []string{
-			"image/*",
-			"video/*",
-			"audio/*",
-			"application/pdf",
-			"text/plain",
-		},
+		MaxSize:    DefaultMaxSize,
 		MaxNameLen: DefaultMaxNameLen,
 	}
 }
@@ -78,17 +71,16 @@ func (p Policy) Validate(filename string, size int64, mime string) (string, erro
 }
 
 func (p Policy) checkMIME(m string) error {
-	if len(p.AllowedMIME) == 0 {
-		return nil
-	}
 	m = strings.ToLower(strings.TrimSpace(m))
 	if m == "" {
 		return fmt.Errorf("%w: empty", ErrBadMIME)
 	}
-	// SVG is XML and executes script same-origin; it must never pass as
-	// an image, even when "image/*" is allowed.
+	// SVG is XML and executes script same-origin; block it unconditionally.
 	if m == "image/svg+xml" {
 		return fmt.Errorf("%w: %q", ErrBadMIME, m)
+	}
+	if len(p.AllowedMIME) == 0 {
+		return nil
 	}
 	for _, allowed := range p.AllowedMIME {
 		allowed = strings.ToLower(strings.TrimSpace(allowed))

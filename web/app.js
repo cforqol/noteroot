@@ -21,7 +21,7 @@ function shouldUseVim() {
 }
 import { VimEditor } from '/lib/vim-editor.js';
 import {
-  normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, isValidId,
+  normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, localDateTime, isValidId,
   splitFrontmatter,
 } from '/lib/frontmatter.js';
 import { indentEdit } from '/lib/textedit.js';
@@ -112,6 +112,45 @@ let view = "empty"; // "empty" | "read" | "edit" — see setView
 let slug = null;
 let lastNote = null; // {path, sha, id, title, ready: Promise}
 let openSeq = 0; // invalidates stale async work after navigation
+
+// --- syntax highlighting (lazy-loaded highlight.js) ---
+
+let hljsReady = null;
+function loadHighlightJS() {
+  if (hljsReady) return hljsReady;
+  hljsReady = import("https://cdn.jsdelivr.net/npm/highlight.js@11/lib/core.min.js")
+    .then((core) => {
+      const hljs = core.default || core;
+      // Load a curated set of common languages up front (small payload).
+      const langs = [
+        "bash", "c", "cpp", "csharp", "css", "diff", "go", "graphql",
+        "ini", "java", "javascript", "json", "kotlin", "lua", "makefile",
+        "markdown", "objectivec", "perl", "php", "plaintext", "python",
+        "r", "ruby", "rust", "scss", "shell", "sql", "swift", "typescript",
+        "xml", "yaml",
+      ];
+      return Promise.all(langs.map((lang) =>
+        import(`https://cdn.jsdelivr.net/npm/highlight.js@11/lib/languages/${lang}.min.js`)
+          .then((m) => { hljs.registerLanguage(lang, m.default || m); })
+          .catch(() => {}),
+      )).then(() => hljs);
+    })
+    .catch(() => null);
+  return hljsReady;
+}
+
+async function renderCodeHighlighting(container) {
+  const blocks = container.querySelectorAll("pre > code[class*='language-']");
+  if (!blocks.length) return;
+  // Skip mermaid blocks — they are handled by renderMermaid().
+  const targets = [...blocks].filter((c) => !c.classList.contains("language-mermaid"));
+  if (!targets.length) return;
+  const hljs = await loadHighlightJS();
+  if (!hljs) return;
+  for (const code of targets) {
+    try { hljs.highlightElement(code); } catch (_) { /* leave unhighlighted */ }
+  }
+}
 
 function esc(s) {
   return String(s)
@@ -480,10 +519,34 @@ async function deleteMultiNotes() {
   });
 }
 
+/** Return a shallow-copied root whose top-level children have the daily journal folder removed. */
+function treeWithoutDailyFolder(root) {
+  const dailyFolder = getSetting('dailyNotesFolder').trim() || 'daily';
+  return {
+    ...root,
+    children: (root.children || []).filter((c) => !(c.isDir && c.path === dailyFolder)),
+  };
+}
+
 function drawTree() {
   if (!treeData) return;
+  // When the notebook is locked and not yet unlocked in this session,
+  // hide the whole tree and show the lock placeholder instead.
+  const treeLocked = $("tree-locked");
+  const treeEl = $("tree");
+  if (notebookLock.locked && !notebookLock.unlocked) {
+    if (treeLocked) treeLocked.hidden = false;
+    if (treeEl) treeEl.hidden = true;
+    $("bookmarks-section")?.setAttribute("hidden", "");
+    $("daily-notes-section")?.setAttribute("hidden", "");
+    $("tags-section")?.setAttribute("hidden", "");
+    return;
+  }
+  if (treeLocked) treeLocked.hidden = true;
+  if (treeEl) treeEl.hidden = false;
   drawBookmarks();
-  const totals = renderTree($("tree"), treeData, {
+  const displayData = treeWithoutDailyFolder(treeData);
+  const totals = renderTree($("tree"), displayData, {
     current,
     splitPath: splitOpen ? splitPath : null,
     multi: multiSelected,
@@ -513,7 +576,9 @@ function drawTree() {
     onMenu: showNodeMenu,
     onDropNote: async (notePath, folderPath) => {
       await guarded(async () => {
-        const dest = cleanRelPath(joinPath(folderPath, baseName(notePath)));
+        const r = cleanRelPath(joinPath(folderPath, baseName(notePath)));
+        if (!r.ok) return;
+        const dest = r.path;
         if (dest === notePath) return;
         await notesApi.moveNote(slug, notePath, dest);
         followMove(notePath, dest, false);
@@ -538,6 +603,16 @@ async function refreshTree() {
   refreshDailyNotes();
 }
 
+/** Full UI refresh: re-fetch the tree and update every sidebar section. */
+async function globalRefresh() {
+  if (!slug) return;
+  await refreshTree();
+  refreshTrashState();
+  refreshNotebookLock();
+  refreshPluginPanels(slug);
+  syncUiPlugins(slug, UI_PLUGIN_REGISTRY);
+}
+
 function findNode(root, path) {
   if (!root) return null;
   for (const c of root.children || []) {
@@ -551,7 +626,7 @@ function findNode(root, path) {
 // Calendar date of a file's last change, for a note missing `created`.
 function fileDate(path) {
   const node = findNode(treeData, path);
-  return node && node.modTime ? localDate(new Date(node.modTime * 1000)) : "";
+  return node && node.modTime ? localDateTime(new Date(node.modTime * 1000)) : "";
 }
 
 // --- reader ---
@@ -812,6 +887,7 @@ function renderRead(n) {
   $("note").innerHTML = parts.join("");
   applyExternalLinkTargets($("note"));
   renderMermaid($("note"));
+  renderCodeHighlighting($("note"));
   activateTaskCheckboxes($("note"), n);
   // The note body stays the note: contents, tags and links live in the
   // panel beside it.
@@ -966,7 +1042,7 @@ async function ensureFrontmatter(path, rendered, src, seq) {
   if (readPad(path)) return;
   const fm = readFrontmatter(src.text);
   if (isValidId(fm.id) && fm.title && fm.created && fm.updated) return;
-  const created = fm.created || fileDate(path) || localDate();
+  const created = fm.created || fileDate(path) || localDateTime();
   const norm = normalizeNote(src.text, {
     path,
     id: rendered.id,
@@ -1099,6 +1175,7 @@ function renderSplitRead(n) {
   if (splitChips) $("split-note").prepend(splitChips);
   applyExternalLinkTargets($("split-note"));
   renderMermaid($("split-note"));
+  renderCodeHighlighting($("split-note"));
   $("split-note").append(linksPanels(n));
   $("split-note").scrollTop = 0;
 }
@@ -1696,14 +1773,21 @@ async function loadTree(s) {
   decorations = getDecorations(s);
   setStatus("Read", { text: null });
   showNoSelection();
+  // Reset lock state so drawTree() shows the correct placeholder for the
+  // new notebook immediately, before the async refreshNotebookLock() resolves.
+  notebookLock = { locked: false, unlocked: true, exact: false };
   treeData = await notesApi.getTree(s);
   drawTree();
   if (isPhone()) setDrawer(true);
   await openHomepage();
+  // Full sidebar refresh: tree already fetched above; these update
+  // everything else (lock, trash, plugins, tags, daily notes).
+  refreshNotebookLock();
   refreshPluginPanels(s);
   syncUiPlugins(s, UI_PLUGIN_REGISTRY);
   refreshTrashState();
   refreshTags();
+  refreshDailyNotes();
 }
 
 async function api(path) {
@@ -2010,6 +2094,33 @@ async function openVimEditor(content, { draft = true } = {}) {
     }
     return;
   }
+  // vim.wasm has no clipboard support: intercept Cmd/Ctrl+C and Cmd/Ctrl+V
+  // in the capture phase (before vim.wasm's own listener) and route them
+  // through the browser Clipboard API + VimEditor.insert().
+  // Named handler + remove-first: switching to vim more than once must
+  // not stack duplicate listeners on the shared #vim-input element.
+  const vimClipboard = (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const k = (e.key || "").toLowerCase();
+    if (k === "c") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      editor.getContent().then((text) => {
+        copyText(text).then((ok) => toast(ok ? "Buffer copied." : "Clipboard unavailable.", !ok));
+      }).catch(() => {});
+    } else if (k === "v") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      navigator.clipboard.readText().then(async (text) => {
+        if (!text) { toast("Clipboard is empty."); return; }
+        const ok = await editor.insert(text);
+        if (ok) markDirty(); else toast("Vim refused the insert.", true);
+      }).catch((err) => toast(err.message, true));
+    }
+  };
+  $("vim-input")?.removeEventListener("keydown", editing.vimClipboardHandler);
+  $("vim-input")?.addEventListener("keydown", vimClipboard, { capture: true });
+  editing.vimClipboardHandler = vimClipboard;
   if (!editing || editing.editor !== editor) return;
   updateEditorStatus();
   syncModeSwitch();
@@ -2917,6 +3028,46 @@ document.addEventListener("selectionchange", () => {
 
 $("editbtn")?.addEventListener("click", openEditor);
 $("savebtn")?.addEventListener("click", () => saveNote(true));
+
+// --- editor clipboard: Copy / Paste toolbar buttons ---
+// Copy: selected text if a selection exists, otherwise the whole buffer.
+$("edit-copybtn")?.addEventListener("click", async () => {
+  if (!editing) return;
+  if (editing.mode === "textarea") {
+    const ta = $("editbody");
+    const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+    const ok = await copyText(sel || ta.value);
+    toast(ok ? (sel ? "Selection copied." : "Note copied.") : "Could not reach the clipboard.", !ok);
+  } else if (editing.mode === "vim" && editing.editor) {
+    const btn = $("edit-copybtn");
+    btn.disabled = true;
+    try {
+      const content = await editing.editor.getContent();
+      const ok = await copyText(content);
+      toast(ok ? "Note copied (whole buffer)." : "Could not reach the clipboard.", !ok);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+});
+
+// Paste: read the clipboard and insert at the cursor via insertIntoEditor.
+$("edit-pastebtn")?.addEventListener("click", async () => {
+  if (!editing) return;
+  const btn = $("edit-pastebtn");
+  btn.disabled = true;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text) { toast("Clipboard is empty."); return; }
+    await insertIntoEditor(text);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 /** Save the open editor and return to the rendered note. */
 async function saveAndCloseEditor() {
   const path = editing && editing.path;
@@ -2964,6 +3115,10 @@ window.addEventListener("keydown", (e) => {
   }
   if (action === "new-note") {
     if (slug) { e.preventDefault(); actionNewNote(); }
+    return;
+  }
+  if (action === "refresh-note") {
+    if (current && !editing) { e.preventDefault(); openNote(current, null); }
     return;
   }
   if (action === "daily-note") {
@@ -3112,16 +3267,20 @@ async function guarded(fn) {
 
 async function actionNewNote(dir = contextDir()) {
   if (!slug) { toast("Create or import a notebook first.", true); return; }
+  const folders = treeData ? folderChoices(treeData) : [{ value: "", label: "Notebook root", depth: 0 }];
   const r = await formDialog({
     title: "New note",
-    message: dir ? `In folder “${dir}”.` : "At the notebook root.",
-    fields: [{ name: "name", label: "Name", placeholder: "ideas/todo", hint: "Subfolders are created as needed; .md is added for you." }],
+    message: dir ? `Default folder: “${dir}”.` : "At the notebook root.",
+    fields: [
+      { name: "name", label: "Name", placeholder: "ideas/todo", hint: "Subfolders are created as needed; .md is added for you." },
+      { name: "folder", label: "Folder", type: "select", options: folders, value: dir || "" },
+    ],
     okLabel: "Create",
-    validate: (v) => { const c = resolveChild(dir, v.name, { asNote: true }); return c.ok ? null : c.error; },
+    validate: (v) => { const c = resolveChild(v.folder || "", v.name, { asNote: true }); return c.ok ? null : c.error; },
   });
   if (!r) return;
   await guarded(async () => {
-    const { path } = resolveChild(dir, r.name, { asNote: true });
+    const { path } = resolveChild(r.folder || "", r.name, { asNote: true });
     await notesApi.createNote(slug, path, newNoteContent(path));
     ensureExpanded(parentDir(path));
     await refreshTree();
@@ -4058,6 +4217,15 @@ function syncLockSettings() {
   } else {
     info.textContent = "Locked. Enter the password to open it here.";
   }
+  // Topbar lock button: show when a notebook is open; icon reflects state
+  const topbarBtn = $("notebook-lock-btn");
+  if (topbarBtn) {
+    topbarBtn.hidden = !slug;
+    topbarBtn.textContent = locked && !unlocked ? "🔒" : "🔓";
+    topbarBtn.title = locked && !unlocked ? "Notebook locked — click to unlock" : "Lock notebook…";
+  }
+  // Redraw tree so the locked placeholder toggles
+  if (treeData) drawTree();
 }
 
 // --- Templates settings ---
@@ -4176,6 +4344,33 @@ $("remove-lock-notebook")?.addEventListener("click", async () => {
     await refreshTree();
   } catch (e) {
     toast(e.message, true);
+  }
+});
+
+// Topbar lock button: toggles between lock/unlock/relock depending on state.
+$("notebook-lock-btn")?.addEventListener("click", async () => {
+  if (!slug) return;
+  const { locked, unlocked } = notebookLock;
+  if (!locked) {
+    await actionLock({ path: "", isDir: true }, "notebook");
+    await refreshNotebookLock();
+  } else if (locked && !unlocked) {
+    if (await promptUnlock("", "notebook")) {
+      await refreshNotebookLock();
+      await openHomepage();
+    }
+  } else {
+    await actionRelock("", "notebook");
+    await refreshNotebookLock();
+  }
+});
+
+// Sidebar lock placeholder: unlock button shown when notebook is locked.
+$("tree-unlock-btn")?.addEventListener("click", async () => {
+  if (!slug) return;
+  if (await promptUnlock("", "notebook")) {
+    await refreshNotebookLock();
+    await openHomepage();
   }
 });
 
@@ -4635,6 +4830,9 @@ document.addEventListener("change", (e) => {
   const value = el.type === "checkbox" ? (el.checked ? "on" : "off") : el.value;
   setSetting(key, value);
   applyPreferences();
+  // The daily-notes folder name controls which folder is hidden from the
+  // main tree and shown in the daily-notes section — refresh both.
+  if (key === "dailyNotesFolder") globalRefresh();
 });
 
 document.addEventListener("change", (e) => {
@@ -5389,4 +5587,11 @@ initAttachmentsEvents();
 
 // Warm the integration status cache so paste handlers don't add latency.
 fetchIntegrationStatus().catch(() => {});
+
+// --- PWA service worker registration ---
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* offline support unavailable */ });
+  });
+}
 

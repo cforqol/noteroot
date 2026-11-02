@@ -49,6 +49,8 @@ function writeJSON(key, value, storage) {
 function readChoice(key, allowed, fallback, storage) {
   try {
     const v = storage?.getItem(key);
+    if (v == null) return fallback;
+    if (allowed.length === 0) return v || fallback; // free-text: accept any stored value
     return allowed.includes(v) ? v : fallback;
   } catch {
     return fallback;
@@ -270,7 +272,11 @@ export function getSetting(name, storage = defaultStorage()) {
 /** Persist a registered setting; invalid values store the default. Returns it. */
 export function setSetting(name, value, storage = defaultStorage()) {
   const s = SETTINGS[name];
-  const v = s.choices.includes(String(value)) ? String(value) : s.fallback;
+  const str = String(value);
+  // choices:[] means free-text — accept any non-empty string
+  const v = s.choices.length === 0
+    ? (str.trim() || s.fallback)
+    : (s.choices.includes(str) ? str : s.fallback);
   writeRaw(s.key, v, storage);
   return v;
 }
@@ -422,21 +428,22 @@ const K_KEYBINDINGS = 'nr.keybindings';
  * `null` means the action is unbound by default (can still be bound by user).
  */
 export const DEFAULT_KEYBINDINGS = {
-  'save':          { key: 's', ctrl: true },
-  'search':        { key: '/' },
-  'search-mod':    { key: 'k', ctrl: true },
-  'help':          { key: '?' },
-  'edit':          { key: 'e' },
-  'new-note':      { key: 'n' },
-  'next-note':     { key: 'j' },
-  'prev-note':     { key: 'k' },
-  'close-note':    { key: 'Escape' },
-  'toggle-split':  { key: 'p', ctrl: true },
-  'new-folder':    { key: 'n', ctrl: true, shift: true },
-  'trash':         { key: 't', ctrl: true, shift: true },
-  'settings':      { key: ',', ctrl: true },
-  'focus-sidebar': { key: 'b', ctrl: true },
-  'toggle-sidebar':{ key: '\\' },
+  'save':           { key: 's', ctrl: true },
+  'search':         { key: '/' },
+  'search-mod':     { key: 'k', ctrl: true },
+  'help':           { key: '?' },
+  'edit':           { key: 'e' },
+  'new-note':       { key: 'n' },
+  'next-note':      { key: 'j' },
+  'prev-note':      { key: 'k' },
+  'close-note':     { key: 'Escape' },
+  'refresh-note':   { key: 'r' },
+  'toggle-split':   { key: 'p', ctrl: true },
+  'new-folder':     { key: 'n', ctrl: true, shift: true },
+  'trash':          { key: 't', ctrl: true, shift: true },
+  'settings':       { key: ',', ctrl: true },
+  'focus-sidebar':  { key: 'b', ctrl: true },
+  'toggle-sidebar': { key: '\\' },
 };
 
 /** Human-readable label for every action (shown in the keybindings table). */
@@ -450,6 +457,7 @@ export const KEYBINDING_LABELS = {
   'next-note':      'Next note (reader)',
   'prev-note':      'Previous note (reader)',
   'close-note':     'Close / back',
+  'refresh-note':   'Refresh open note',
   'toggle-split':   'Toggle split pane',
   'new-folder':     'New folder',
   'trash':          'Open trash',

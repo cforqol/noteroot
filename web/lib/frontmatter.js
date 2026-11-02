@@ -74,6 +74,12 @@ export function localDate(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** Local date-time as YYYY-MM-DDTHH:MM:SS. */
+export function localDateTime(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${localDate(d)}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function utf8Length(s) {
   return new TextEncoder().encode(s).length;
 }
@@ -199,7 +205,7 @@ export function yamlString(s) {
  */
 export function normalizeNote(src, o = {}) {
   const s = String(src ?? '');
-  const today = o.today || localDate();
+  const today = o.today || localDateTime();
   const created = o.created || today;
   const updated = o.touch ? today : (o.updated || created);
   const mint = o.mint || mintId;

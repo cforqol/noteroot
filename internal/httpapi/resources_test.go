@@ -111,11 +111,11 @@ func TestUpload_missingFilename(t *testing.T) {
 	}
 }
 
-func TestUpload_rejectsBadMIME(t *testing.T) {
+func TestUpload_acceptsAnyMIME(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
-	rec := postResource(t, srv, "work", "evil.exe", "application/x-msdownload", []byte("MZ"))
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("status = %d, want 415", rec.Code)
+	rec := postResource(t, srv, "work", "data.bin", "application/x-msdownload", []byte("MZ"))
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", rec.Code)
 	}
 }
 
@@ -595,15 +595,15 @@ func TestPresignUpload_existsWhenBlobPresent(t *testing.T) {
 	}
 }
 
-func TestPresignUpload_rejectsBadMIME(t *testing.T) {
+func TestPresignUpload_acceptsAnyMIME(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
-	body := `{"sha":"` + strings.Repeat("b", 64) + `","size":100,"filename":"evil.exe","mime":"application/x-msdownload"}`
+	body := `{"sha":"` + strings.Repeat("b", 64) + `","size":100,"filename":"data.bin","mime":"application/x-msdownload"}`
 	req := httptest.NewRequest(http.MethodPost, "/n/work/resources/presign", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.http.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("status = %d, want 415", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
 	}
 }
 

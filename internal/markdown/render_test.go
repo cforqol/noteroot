@@ -113,6 +113,33 @@ func TestRender_sanitizes(t *testing.T) {
 	}
 }
 
+// External http(s) images survive sanitization; javascript: URLs do not.
+// Raw <img> HTML is stripped by goldmark itself (no WithUnsafe), so these
+// use markdown image syntax — the path real notes take.
+func TestRender_allowsExternalImg(t *testing.T) {
+	tests := map[string]struct {
+		src    string
+		wantOK bool
+	}{
+		"https image":  {"![x](https://example.com/pic.png)", true},
+		"http image":   {"![x](http://example.com/pic.png)", true},
+		"relative img": {"![x](/local/pic.png)", true},
+		"js src":       {"![x](javascript:alert(1))", false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			out := strings.ToLower(render(t, tt.src))
+			hasSrc := strings.Contains(out, "src=")
+			if tt.wantOK && !hasSrc {
+				t.Errorf("expected src= to survive, got:\n%s", out)
+			}
+			if !tt.wantOK && hasSrc {
+				t.Errorf("expected src= to be stripped, got:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestRender_empty(t *testing.T) {
 	if out := render(t, ""); strings.TrimSpace(out) != "" {
 		t.Errorf("out = %q, want empty", out)

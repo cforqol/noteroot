@@ -1,5 +1,5 @@
 import {
-  ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, splitFrontmatter,
+  ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, localDateTime, splitFrontmatter,
   readFrontmatter, deriveTitle, yamlString, normalizeNote, changedRange,
 } from '../../lib/frontmatter.js';
 
@@ -187,7 +187,7 @@ describe('normalizeNote', () => {
   test('defaults: mints, dates today', () => {
     const r = normalizeNote('x');
     expect(isValidId(r.id)).toBe(true);
-    expect(r.content).toContain(`created: ${localDate()}`);
+    expect(r.content).toContain(`created: ${localDateTime()}`);
     expect(normalizeNote(null).changed).toBe(true);
   });
 });

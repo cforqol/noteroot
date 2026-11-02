@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#1e1e2e">
 <title>noteroot</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,6 +15,7 @@
   <button id="treebtn" class="btn icon-btn ghost" aria-label="Toggle sidebar" title="Toggle sidebar" aria-expanded="true">☰</button>
   <span class="brand">noteroot<small id="app-version" class="brand-version" hidden></small></span>
   <select id="notebooks" aria-label="Notebook"></select>
+  <button id="notebook-lock-btn" class="btn icon-btn ghost" aria-label="Lock notebook" title="Lock/unlock notebook" hidden>🔒</button>
   <input id="q" type="search" placeholder="Search notes…" aria-label="Search notes (press /)" autocomplete="off">
   <span class="spacer"></span>
   <button id="notemenu" class="btn icon-btn ghost" aria-label="Note actions" title="Note actions" hidden>⋯</button>
@@ -48,6 +52,11 @@
     <div id="bookmarks-section" class="bookmarks-section" hidden>
       <div class="bookmarks-header"><span>Bookmarks</span></div>
       <nav id="bookmarks-list" class="bookmarks-list" aria-label="Bookmarked notes"></nav>
+    </div>
+    <div id="tree-locked" class="tree-locked" hidden>
+      <span class="tree-locked-icon" aria-hidden="true">🔒</span>
+      <p class="tree-locked-msg">This notebook is locked.</p>
+      <button id="tree-unlock-btn" class="btn">Unlock notebook…</button>
     </div>
     <nav id="tree" aria-label="Notes"></nav>
     <div id="daily-notes-section" class="daily-notes-section" hidden>
@@ -86,6 +95,8 @@
         <input id="attach-file" type="file" multiple hidden>
         <span id="lockstate" class="muted small"></span>
         <span class="spacer"></span>
+        <button id="edit-copybtn" type="button" class="btn small ghost" title="Copy selection (or entire note if nothing is selected)">Copy</button>
+        <button id="edit-pastebtn" type="button" class="btn small ghost" title="Paste from clipboard">Paste</button>
         <span id="savestate" class="savestate" aria-live="polite"></span>
         <button id="savebtn" class="btn" title="Save now (Ctrl/⌘+S)">Save</button>
         <button id="closebtn" class="btn primary" title="Save and close the editor">Done</button>
@@ -213,6 +224,7 @@
         <button type="button" data-target="set-editor">Editor</button>
         <button type="button" data-target="set-keybindings">Shortcuts</button>
         <button type="button" data-target="set-tree">Sidebar</button>
+        <button type="button" data-target="set-daily">Daily notes</button>
         <button type="button" data-target="set-homepage">Startpage</button>
         <button type="button" data-target="set-status">Status bar</button>
         <button type="button" data-target="set-data">Data</button>
@@ -357,6 +369,15 @@
             <span class="setting-label">Show note counts<small>The [n] beside each folder.</small></span>
             <input type="checkbox" data-setting="treeCounts">
           </label>
+        </section>
+
+        <section class="settings-section" id="set-daily">
+          <h3>Daily notes</h3>
+          <p class="help-text">A journal of one note per day. Ctrl+Shift+N opens today's note. The folder is hidden from the main tree and shown as its own section instead.</p>
+          <div class="setting">
+            <div class="setting-label">Folder name<small>The folder daily notes are written into, e.g. journal.</small></div>
+            <input type="text" data-setting="dailyNotesFolder" placeholder="daily">
+          </div>
         </section>
 
         <section class="settings-section" id="set-homepage">

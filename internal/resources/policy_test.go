@@ -31,10 +31,18 @@ func TestDefaultPolicy_allowsTypicalUploads(t *testing.T) {
 	}
 }
 
-func TestDefaultPolicy_rejectsExecutable(t *testing.T) {
+func TestDefaultPolicy_allowsAnyMIME(t *testing.T) {
 	p := DefaultPolicy()
-	if _, err := p.Validate("evil.exe", 1000, "application/x-msdownload"); !errors.Is(err, ErrBadMIME) {
-		t.Errorf("err = %v, want ErrBadMIME", err)
+	cases := []string{
+		"application/x-msdownload",
+		"application/zip",
+		"application/octet-stream",
+		"text/csv",
+	}
+	for _, m := range cases {
+		if _, err := p.Validate("file.bin", 1000, m); err != nil {
+			t.Errorf("DefaultPolicy should accept %q, got %v", m, err)
+		}
 	}
 }
 

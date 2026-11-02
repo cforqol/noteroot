@@ -227,6 +227,7 @@ const DEFAULT_SHORTCUT_BINDINGS = {
   search: { key: '/' },
   edit: { key: 'e' },
   'new-note': { key: 'n' },
+  'refresh-note': { key: 'r' },
   undo: { key: 'z', ctrl: true },
   redo: { key: 'z', ctrl: true, shift: true },
   'daily-note': { key: 'n', ctrl: true, shift: true },

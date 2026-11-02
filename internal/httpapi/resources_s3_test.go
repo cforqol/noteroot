@@ -434,13 +434,13 @@ func TestS3_policyEnforcedOnPresign(t *testing.T) {
 		t.Errorf("oversize status = %d, want 413", rec.Code)
 	}
 
-	// Bad MIME.
+	// Any MIME is now accepted (open policy).
 	rec = s3Presign(t, srv, sha256HexOf([]byte("y")), 10, "run.exe", "application/x-msdownload")
-	if rec.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("bad-mime status = %d, want 415", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("any-mime status = %d, want 200", rec.Code)
 	}
 
-	// Nothing was written to the remote store for rejected requests.
+	// Only the oversized request was rejected before reaching the store.
 	if f.puts != 0 {
 		t.Errorf("puts = %d, want 0", f.puts)
 	}
