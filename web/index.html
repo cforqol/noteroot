@@ -234,6 +234,7 @@
         <button type="button" data-target="set-data">Data</button>
         <button type="button" data-target="set-trash">Trash</button>
         <button type="button" data-target="set-server">Server</button>
+        <button type="button" data-target="set-integrations">Integrations</button>
         <button type="button" data-target="set-attachments">Attachments</button>
         <button type="button" data-target="set-lock">Lock</button>
         <button type="button" data-target="set-templates">Templates</button>
@@ -489,6 +490,26 @@
             <code>NOTEROOT_QUOTA_BYTES=1073741824</code> (1 GiB; <code>0</code> or unset means no limit) in the server's environment — for Docker,
             the <code>environment:</code> list in <code>deploy/compose.yaml</code> — and restart noteroot. Once a notebook is full, uploads are refused.</p>
 </section>
+
+        <section class="settings-section" id="set-integrations">
+          <h3>Integrations</h3>
+          <p class="help-text">External services connected to noteroot. Configure each by setting environment variables and restarting the server.</p>
+          <dl id="integrations-info" class="info-list">
+            <dt>Status</dt><dd class="muted">Loading…</dd>
+          </dl>
+          <div class="setting" id="integ-s3-row">
+            <div class="setting-label">S3 / MinIO<small>Object storage for uploaded files. Credentials: <code>NOTEROOT_S3_ENDPOINT</code>, <code>NOTEROOT_S3_BUCKET</code>, <code>NOTEROOT_S3_REGION</code>, <code>NOTEROOT_S3_ACCESS_KEY</code>, <code>NOTEROOT_S3_SECRET_KEY</code>.</small></div>
+            <button id="test-s3" class="btn" disabled>Test connection</button>
+          </div>
+          <div class="setting" id="integ-slink-row">
+            <div class="setting-label">Slink<small>Self-hosted file host for image uploads. Set <code>NOTEROOT_SLINK_URL</code> and <code>NOTEROOT_SLINK_KEY</code>.</small></div>
+            <span id="integ-slink-status" class="status-value disabled">Not configured</span>
+          </div>
+          <div class="setting" id="integ-karakeep-row">
+            <div class="setting-label">Karakeep<small>URL archiving on paste. Set <code>NOTEROOT_KARAKEEP_URL</code> and <code>NOTEROOT_KARAKEEP_KEY</code>.</small></div>
+            <span id="integ-karakeep-status" class="status-value disabled">Not configured</span>
+          </div>
+        </section>
 
         <section class="settings-section" id="set-attachments">
           <h3>Attachments</h3>

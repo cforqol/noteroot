@@ -37,7 +37,7 @@ import {
   collectNotePaths, resolveNotePath, filterNotePaths, bodyInsert, adjacentNote,
 } from '/lib/attach.js';
 import * as notesApi from '/lib/notes-api.js';
-import { fetchIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
+import { fetchIntegrationStatus, resetIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
 import {
   isArchive, isMarkdown, exportFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
 } from '/lib/transfer.js';
@@ -4749,6 +4749,7 @@ function syncSettingsForm() {
   updateVimStatus();
   syncVimrcInfo();
   updateServerInfo();
+  updateIntegrationsInfo();
   syncTrashSettings();
   refreshTrashState();
   syncLockSettings();
@@ -4808,6 +4809,56 @@ async function updateServerInfo() {
     if ($("server-info") === dl) dl.replaceChildren(infoRow("Notebook", slug), infoRow("Storage", e.message));
   }
 }
+
+async function updateIntegrationsInfo() {
+  const dl = $("integrations-info");
+  if (!dl) return;
+  // Reset the cache so opening settings always shows fresh state.
+  resetIntegrationStatus();
+  const integ = await fetchIntegrationStatus().catch(() => ({}));
+  const rows = [
+    infoRow("S3 / MinIO", integ.s3 ? "Configured" : "Not configured"),
+    infoRow("Slink", integ.slink ? "Configured" : "Not configured"),
+    infoRow("Karakeep", integ.karakeep ? "Configured" : "Not configured"),
+  ];
+  dl.replaceChildren(...rows);
+  // Enable S3 test button only when S3 is configured.
+  const testBtn = $("test-s3");
+  if (testBtn) testBtn.disabled = !integ.s3;
+  // Update inline status badges.
+  const slinkEl = $("integ-slink-status");
+  if (slinkEl) {
+    slinkEl.textContent = integ.slink ? "Configured" : "Not configured";
+    slinkEl.className = integ.slink ? "status-value enabled" : "status-value disabled";
+  }
+  const kkEl = $("integ-karakeep-status");
+  if (kkEl) {
+    kkEl.textContent = integ.karakeep ? "Configured" : "Not configured";
+    kkEl.className = integ.karakeep ? "status-value enabled" : "status-value disabled";
+  }
+}
+
+$("test-s3")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Testing…";
+  try {
+    const r = await fetch("/api/v1/integrations/s3/test");
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      btn.textContent = "✓ Connected";
+      toast("S3 connection OK.");
+    } else {
+      btn.textContent = "✗ Failed";
+      toast(`S3 test failed: ${j.error || "unknown error"}`, true);
+    }
+  } catch (err) {
+    btn.textContent = "✗ Failed";
+    toast(`S3 test failed: ${err.message}`, true);
+  } finally {
+    setTimeout(() => { btn.textContent = "Test connection"; btn.disabled = false; }, 3000);
+  }
+});
 
 function humanBytes(n) {
   if (!Number.isFinite(n) || n < 0) return "—";
