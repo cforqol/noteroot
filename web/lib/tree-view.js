@@ -7,6 +7,38 @@ import { annotateCounts } from './tree.js';
 
 const INDENT_PX = 12;
 
+function buildRootDropZone(doc, onDropNote) {
+  const row = doc.createElement('div');
+  row.className = 'row root-zone';
+  const btn = doc.createElement('div');
+  btn.className = 'root-node';
+  btn.setAttribute('aria-label', 'Notebook root — drop here to move a note to the root folder');
+  const icon = doc.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = '📂';
+  const label = doc.createElement('span');
+  label.className = 'label';
+  label.textContent = '/ notebook root';
+  btn.append(icon, label);
+  row.append(btn);
+  row.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('text/x-noteroot-path')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    row.classList.add('drop-target');
+  });
+  row.addEventListener('dragleave', (e) => {
+    if (!row.contains(e.relatedTarget)) row.classList.remove('drop-target');
+  });
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    row.classList.remove('drop-target');
+    const notePath = e.dataTransfer.getData('text/x-noteroot-path');
+    if (notePath) onDropNote(notePath, '');
+  });
+  return row;
+}
+
 /**
  * @param {HTMLElement} container
  * @param {object} root         server tree ({children: [...]})
@@ -145,8 +177,10 @@ export function renderTree(container, root, ctx = {}, doc = document) {
   if (!(root.children || []).length) {
     const empty = doc.createElement('p');
     empty.className = 'muted tree-empty';
-    empty.textContent = 'No notes yet. Use “+ Note” to create one.';
+    empty.textContent = 'No notes yet. Use "+ Note" to create one.';
     container.replaceChildren(empty);
+  } else if (onDropNote) {
+    container.replaceChildren(buildRootDropZone(doc, onDropNote), body);
   } else {
     container.replaceChildren(body);
   }

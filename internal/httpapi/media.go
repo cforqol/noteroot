@@ -75,6 +75,10 @@ func embedMedia(html []byte, slug string, mimeBySHA map[string]string) []byte {
 			return []byte(fmt.Sprintf(
 				`<iframe class="embed-pdf" src="%s" title="%s"><a href="%s">%s</a></iframe>`,
 				url, label, url, label))
+		case strings.HasPrefix(mime, "application/epub"):
+			return []byte(fmt.Sprintf(
+				`<div class="embed-epub"><span class="embed-epub-icon">📗</span><a class="embed-epub-link" href="%s">%s</a></div>`,
+				url, label))
 		default:
 			return m
 		}

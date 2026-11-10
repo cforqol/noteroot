@@ -491,6 +491,9 @@ pre.mermaid-error { border-color: var(--danger); }
 article video { display: block; max-width: 100%; margin: 1em 0; background: #000; border-radius: var(--radius); }
 article audio { display: block; max-width: 100%; margin: 1em 0; }
 article iframe.embed-pdf { display: block; width: 100%; height: 600px; border: none; margin: 1em 0; border-radius: var(--radius); }
+article .embed-epub { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin: 1em 0; }
+article .embed-epub-icon { font-size: 1.4em; flex-shrink: 0; }
+article .embed-epub-link { font-weight: 500; word-break: break-all; }
 article blockquote { margin: 1em 0; padding: 2px 16px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 article hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
 article table { border-collapse: collapse; margin: 1em 0; }
@@ -1004,6 +1007,8 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
    ==================================================================== */
 .node.dragging { opacity: 0.5; }
 .row.drop-target { outline: 2px dashed var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.root-zone .root-node { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 14px; color: var(--muted); border: 1px dashed var(--border); background: none; cursor: default; }
+.root-zone .root-node .label { font-style: italic; }
 
 /* ====================================================================
    Plugin settings section
