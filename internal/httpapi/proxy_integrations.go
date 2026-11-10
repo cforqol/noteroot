@@ -233,3 +233,31 @@ func (s *Server) uploadToSlink(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"url": result.URL})
 }
+
+// testSlink handles GET /api/v1/integrations/slink/test — verifies that
+// the configured Slink instance is reachable. Returns {"ok":true} on
+// success or {"ok":false,"error":"…"} when not configured or unreachable.
+func (s *Server) testSlink(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.SlinkURL == "" || s.cfg.SlinkKey == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "Slink not configured"})
+		return
+	}
+	base := strings.TrimRight(s.cfg.SlinkURL, "/")
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, base+"/", nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "bad slink URL"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.cfg.SlinkKey)
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "slink unreachable: " + err.Error()})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 500 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": fmt.Sprintf("slink server error %d", resp.StatusCode)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}

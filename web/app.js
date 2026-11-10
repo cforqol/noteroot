@@ -4823,14 +4823,11 @@ async function updateIntegrationsInfo() {
   ];
   dl.replaceChildren(...rows);
   // Enable S3 test button only when S3 is configured.
-  const testBtn = $("test-s3");
-  if (testBtn) testBtn.disabled = !integ.s3;
-  // Update inline status badges.
-  const slinkEl = $("integ-slink-status");
-  if (slinkEl) {
-    slinkEl.textContent = integ.slink ? "Configured" : "Not configured";
-    slinkEl.className = integ.slink ? "status-value enabled" : "status-value disabled";
-  }
+  const testS3Btn = $("test-s3");
+  if (testS3Btn) testS3Btn.disabled = !integ.s3;
+  const testSlinkBtn = $("test-slink");
+  if (testSlinkBtn) testSlinkBtn.disabled = !integ.slink;
+  // Update Karakeep status badge.
   const kkEl = $("integ-karakeep-status");
   if (kkEl) {
     kkEl.textContent = integ.karakeep ? "Configured" : "Not configured";
@@ -4855,6 +4852,28 @@ $("test-s3")?.addEventListener("click", async (e) => {
   } catch (err) {
     btn.textContent = "✗ Failed";
     toast(`S3 test failed: ${err.message}`, true);
+  } finally {
+    setTimeout(() => { btn.textContent = "Test connection"; btn.disabled = false; }, 3000);
+  }
+});
+
+$("test-slink")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Testing…";
+  try {
+    const r = await fetch("/api/v1/integrations/slink/test");
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      btn.textContent = "✓ Connected";
+      toast("Slink connection OK.");
+    } else {
+      btn.textContent = "✗ Failed";
+      toast(`Slink test failed: ${j.error || "unknown error"}`, true);
+    }
+  } catch (err) {
+    btn.textContent = "✗ Failed";
+    toast(`Slink test failed: ${err.message}`, true);
   } finally {
     setTimeout(() => { btn.textContent = "Test connection"; btn.disabled = false; }, 3000);
   }

@@ -17,13 +17,33 @@ import (
 // SecurityHeaders sets conservative security response headers on every reply.
 // CSP is intentionally permissive enough to support the CDN-loaded highlight.js
 // and blob: URLs produced by the PDF/epub viewer and vim.wasm worker.
+// When S3 or Slink are configured the browser must fetch() their endpoints
+// directly (presigned PUTs, Slink uploads); those origins are added to
+// connect-src via extraConnectOrigins.
 func SecurityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'none'; " +
+	return securityHeadersMW("'self'", next)
+}
+
+// SecurityHeadersFor returns a SecurityHeaders middleware that also allows
+// the given extra origins in connect-src (space-separated list appended
+// after 'self'). Origins that are empty or equal to 'self' are skipped.
+func SecurityHeadersFor(extraConnectOrigins string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		connectSrc := "'self'"
+		if extraConnectOrigins != "" {
+			connectSrc += " " + extraConnectOrigins
+		}
+		return securityHeadersMW(connectSrc, next)
+	}
+}
+
+func securityHeadersMW(connectSrc string, next http.Handler) http.Handler {
+	csp := "default-src 'none'; " +
 		"script-src 'self' https://cdn.jsdelivr.net; " +
 		"style-src 'self'; " +
 		"img-src 'self' data: https: blob:; " +
 		"media-src 'self' blob:; " +
-		"connect-src 'self'; " +
+		"connect-src " + connectSrc + "; " +
 		"font-src 'self'; " +
 		"worker-src 'self' blob:; " +
 		"object-src 'self' blob:; " +
@@ -38,6 +58,19 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// connectOriginFor extracts the scheme+host from a URL string.
+// Returns "" for empty or unparseable URLs.
+func connectOriginFor(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 type ctxKey string

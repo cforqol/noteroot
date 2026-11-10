@@ -184,6 +184,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	// External integration proxies — no per-notebook scope, auth only.
 	mux.Handle("GET /api/v1/integrations/status", auth(s.integrationStatus))
 	mux.Handle("GET /api/v1/integrations/s3/test", auth(s.testS3))
+	mux.Handle("GET /api/v1/integrations/slink/test", auth(s.testSlink))
 	mux.Handle("POST /api/v1/integrations/karakeep/archive", mutating(s.archiveWithKarakeep))
 	mux.Handle("POST /api/v1/integrations/slink/upload",
 		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
@@ -203,7 +204,18 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	writeTimeout := parseDuration(cfg.WriteTimeout, "WriteTimeout", 10*time.Second)
 	idleTimeout := parseDuration(cfg.IdleTimeout, "IdleTimeout", 60*time.Second)
 
-	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer, SecurityHeaders)
+	// Build dynamic connect-src: add S3 and Slink endpoints so the browser
+	// can send presigned PUTs to S3 and file uploads to Slink without the
+	// static 'self' CSP blocking those cross-origin fetches.
+	var extraConnect []string
+	if o := connectOriginFor(cfg.S3Endpoint); o != "" {
+		extraConnect = append(extraConnect, o)
+	}
+	if o := connectOriginFor(cfg.SlinkURL); o != "" {
+		extraConnect = append(extraConnect, o)
+	}
+	secHdrs := SecurityHeadersFor(strings.Join(extraConnect, " "))
+	h := Chain(mux, RequestID, Recover(log), Log(log), SharedArrayBuffer, secHdrs)
 	s.http = &http.Server{
 		Addr:           cfg.ListenAddr,
 		Handler:        h,
