@@ -13,7 +13,6 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 - [What it is](#what-it-is)
 - [What it is not](#what-it-is-not)
 - [Design principles](#design-principles)
-- [Status](#status)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Data layout](#data-layout)
@@ -56,84 +55,74 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 5. Isolation is enforced by boundaries, not convention.
 6. No database holds primary data. Every row is reconstructible from disk, git, or object storage.
 
-## Status
-
-| Stage | Scope | State |
-|-------|-------|-------|
-| 0 | Skeleton, layout, registry, health, auth | ✓ done |
-| 1 | Vault read path, markdown rendering, read-only UI | ✓ done |
-| 2 | Full-text index, search | ✓ done |
-| 3 | Write path, buffer/lock, crash pad, phone editor | ✓ done |
-| 4 | Vim mode (vim.wasm running in-page) | ✓ done |
-| 5 | Resources: policy, local store, upload journal | ✓ done |
-| 6 | Transforms: image resize, video posters | ✓ done |
-| 7 | Remote object storage (S3-compatible, presigned URLs) | ✓ done |
-| 8 | Dedup, bulk ops, quota, backups, import/export | ✓ done |
-| 9 | Plugins and integrations | ✓ done |
-| UI | Workspace UI: note/folder CRUD, collapsible sidebar, status bar, themes, responsive layout | ✓ done |
-| UI+ | Interactive checkboxes, drag-drop to folder, icon categories, editor switch, UI plugin system (HTML/calendar/pomodoro) | ✓ done |
-
 ## Features
 
-### Working today
+### Core infrastructure
 
 - Notebook registry discovered from disk; **one broken notebook never takes down the app**
 - `/healthz` (unauthenticated) and `/readyz` (unauthenticated, returns notebook count)
 - Forward-auth integration via Traefik
 - Structured JSON logging, request IDs, panic recovery
-- Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
-- Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
-- Web UI: notebook picker, sidebar, rendered note view
-- Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the sidebar (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the sidebar, per-folder emoji and name color (kept in the browser), sidebar on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in sidebar drawer
-- Folders: `POST` / `PATCH` / `DELETE /n/{slug}/folder` create an empty folder, rename or move a folder with everything in it (identity map follows), or move its notes to the trash and remove it. Session surface only — not exposed on the token API
-- Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
-- Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad
 - Embedded, forward-only, idempotent migrations, run automatically at open
 - Corrupt databases quarantined rather than repaired
 - Graceful shutdown with a drain timeout
+
+### Safe path handling
+
+- Safe path validation: traversal guards, NFC normalization, reserved-name and control-character checks, cross-platform filename rules
+
+### Vault and notes
+
+- Vault read path: tree walk, note read with frontmatter parse, raw markdown, strict sanitized HTML rendering
+- Write path: atomic `PUT` with `If-Match`/`If-None-Match` (412 + force flow), soft-delete trash with restore, advisory TTL locks, coalesced git autocommit, CSRF-gated mutations, phone editor with autosave and crash pad
+- Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
+- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels; clicking a wikilink navigates to the target note (not a raw JSON endpoint)
+- **Interactive task-list checkboxes** in read mode: toggling a checkbox immediately patches the underlying markdown source and saves, no editor required
+
+### Organisation
+
+- Folders: `POST` / `PATCH` / `DELETE /n/{slug}/folder` create an empty folder, rename or move a folder with everything in it (identity map follows), or move its notes to the trash and remove it. Session surface only — not exposed on the token API
+- **Drag-and-drop notes to folders** in the sidebar: grab any note row and drop it onto a folder to move it
+- **Folder icon picker** with 10 named categories (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel, Nature, Symbols — ~300 icons) and a filter input above the grid
+
+### Search
+
+- Per-notebook FTS5 search index with incremental updates, ranked snippets, and a search box in the UI
+
+### Editor
+
 - Vim mode: real Vim (WASM) running in-page, with circuit-breaker fallback to a plain textarea; buffer model with draft autosave and swap files (desktop)
+- **Editor mode switch** visible whenever a note is open for editing; switches between Vim and the plain textarea; disabled with an explanatory tooltip when Vim is not yet enabled in Settings
+
+### Resources and storage
+
 - Resources: drag-and-drop upload into content-addressed storage, upload journal with verification and crash recovery, dedup by SHA-256, strict size policy
 - Transforms: automatic image resize and video poster frames
 - S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
 - Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
-- Note rename/move: `PATCH /n/{slug}/note` moves the file atomically; the ULID identity travels so links never break
-- Wikilinks with backlinks: `[[target|label]]` resolves through the identity map (aliases, titles, renames); the note view shows outgoing and backlink panels; clicking backlinks in the side panel navigates correctly (not to a raw JSON endpoint)
-- **Interactive task-list checkboxes** in read mode: toggling a checkbox immediately patches the underlying markdown source and saves, no editor required
-- **Drag-and-drop notes to folders** in the sidebar: grab any note row and drop it onto a folder to move it
-- **Folder icon picker** with 10 named categories (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel, Nature, Symbols — ~300 icons) and a filter input above the grid
-- **Editor mode switch** visible whenever a note is open for editing; switches between Vim and the plain textarea; disabled with an explanatory tooltip when Vim is not yet enabled in Settings
+
+### Workspace UI
+
+- Web UI: notebook picker, sidebar, rendered note view
+- Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the sidebar (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the sidebar, per-folder emoji and name color (kept in the browser), sidebar on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in sidebar drawer
+- Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
+
+### Plugins and integrations
+
 - **Built-in UI plugin system**: enable/disable per notebook from Settings → Plugins; three first-party plugins:
   - **HTML renderer** — `\`\`\`html` fenced blocks render as sandboxed `<iframe>` previews with a source/rendered toggle
   - **Calendar widget** — floating draggable monthly calendar, toggled from the top bar (📅)
   - **Pomodoro timer** — floating three-row timer (Work/Short/Long buttons, SVG ring, Start/Reset) with a session count (🍅); phase lengths (1–180 min each) and the sound / widget-flash notifications are configurable (⚙ in the widget) and saved to your plugin preferences, so they survive a restart. The countdown keeps running when the widget is hidden — the 🍅 button shows a running indicator and pops a "Time is up" dialog if a phase ends unseen
-- Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
-- Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
-- Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
-- Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
 - Sandboxed Lua plugins (gopher-lua): per-notebook `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`; commands, event hooks, kv, panels, frontmatter helpers; permission-checked capabilities, per-plugin VM behind one mutex, context timeouts, panic recovery, circuit breaker; a slow plugin delays itself and nothing else
 - Per-notebook event bus: coalesced bursts, actor/origin self-suppression, depth-limited chains — plugin and integration writes can never loop the app
 - Integrations: outbound signed webhooks from `.notebook/integrations/<name>.toml` (HMAC-SHA256, breaker, redirects refused); inbound HMAC-authenticated webhooks to `/hooks/{slug}/{name}` writing notes with `hook:` attribution; secrets in platform.db, rotation without reload; delivery depth carried across the HTTP round trip so an echo terminates
+- Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
 - Proof plugins in `plugins/` (copy into the notebook, hit reload): frontmatter tagger, status-bar word count, theme preference — rendered by the UI's plugin panel strip
 
-### Planned
+### Operations
 
-**Notes**
-- Virtual collections (folders already work)
-- Folder icons/colors synced through the server instead of per-browser storage
-
-**Search**
-- Optional semantic search via embeddings
-- Near-duplicate detection for notes (SimHash)
-
-**Safety**
-- Per-notebook circuit breakers (server-side)
-- `state.db` rebuild that also consults object storage
-
-**Operations**
-- Encrypted offsite backups with verification and scheduled restore drills
-- A global disk budget
-- Resumable import/export for very large notebooks
-- Diagnostics bundle and health page
+- Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
+- Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
 
 ## Architecture
 
