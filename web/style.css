@@ -259,6 +259,9 @@ article#split-note { padding: 16px 20px 28px; }
 .rp-list li > * { max-width: 100%; }
 .rp-list .muted { color: var(--muted); font-size: 12px; }
 .rp-empty { margin: 0; padding: 12px; font-size: 13px; color: var(--muted); }
+.rp-frontmatter { margin: 0; font-size: 13px; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.rp-frontmatter dt { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.rp-frontmatter dd { margin: 0; overflow-wrap: anywhere; }
 
 /* --- sidebar & tree ---------------------------------------------------- */
 #sidebar {
@@ -406,17 +409,18 @@ article#note, article#split-note {
   /* rem, not em: the strip is sized from the article while the numbers are
      sized from their own 0.75rem font, and the two must agree. */
   --read-gutter: 3.6rem; /* column width */
+  --read-content-gap: 14px; /* space between gutter line and note text */
 }
 /* The column hugs the text. On wide windows it fits inside the outer
    margin, which keeps the text centred; on narrower ones the left padding
    grows so the column always has room. */
 article#note {
   --read-gutter-x: max(calc(28px + var(--read-gutter)), calc((100% - var(--measure)) / 2));
-  padding-left: var(--read-gutter-x);
+  padding-left: calc(var(--read-gutter-x) + var(--read-content-gap));
 }
 article#split-note {
   --read-gutter-x: calc(20px + var(--read-gutter));
-  padding-left: var(--read-gutter-x);
+  padding-left: calc(var(--read-gutter-x) + var(--read-content-gap));
 }
 article#note, article#split-note {
   background-image:
@@ -443,7 +447,7 @@ article#split-note > :is(p,h1,h2,h3,h4,h5,h6,pre,blockquote,ul,ol,table,hr)::bef
   position: absolute;
   /* Centered inside the strip, with breathing room on both sides: the
      number sits in the column, a clear gap from the text it counts. */
-  left: calc(6px - var(--read-gutter));
+  left: calc(6px - var(--read-gutter) - var(--read-content-gap));
   width: calc(var(--read-gutter) - 16px);
   text-align: center; line-height: 1.2;
   font-size: 0.75rem; font-family: var(--mono); color: var(--muted);
@@ -484,7 +488,14 @@ article pre code { background: none; padding: 0; font-size: 1em; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 700; }
 .hljs-prompt { color: #abb2bf; }
-article img { max-width: 100%; border-radius: var(--radius); }
+article img { display: block; max-width: 100%; height: auto; border-radius: var(--radius); margin: 0.5em 0; cursor: zoom-in; }
+article p > img:only-child { margin: 0 auto; }
+/* image lightbox overlay */
+.img-lightbox { display: flex; position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,0.85); align-items: center; justify-content: center; }
+.img-lightbox[hidden] { display: none; }
+.img-lightbox-img { max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); border-radius: var(--radius); object-fit: contain; cursor: zoom-out; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+.img-lightbox-close { position: absolute; top: 12px; right: 16px; background: none; border: 0; color: #fff; font-size: 22px; cursor: pointer; opacity: 0.8; line-height: 1; padding: 4px 8px; }
+.img-lightbox-close:hover { opacity: 1; }
 .mermaid-diagram { margin: 1em 0; overflow-x: auto; text-align: center; }
 .mermaid-diagram svg { max-width: 100%; height: auto; }
 pre.mermaid-error { border-color: var(--danger); }
@@ -496,7 +507,9 @@ article .embed-epub-icon { font-size: 1.4em; flex-shrink: 0; }
 article .embed-epub-link { font-weight: 500; word-break: break-all; }
 article blockquote { margin: 1em 0; padding: 2px 16px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 article hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
-article table { border-collapse: collapse; margin: 1em 0; }
+article .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1em 0; }
+article table { border-collapse: collapse; margin: 0; }
+article .table-scroll + * { margin-top: 0; }
 article th, article td { border: 1px solid var(--line); padding: 6px 10px; }
 article th { background: var(--subtle); text-align: left; }
 /* GFM task lists: the checkbox stands in for the bullet. An input the

@@ -22,7 +22,7 @@ function shouldUseVim() {
 import { VimEditor } from '/lib/vim-editor.js';
 import {
   normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, localDateTime, isValidId,
-  splitFrontmatter,
+  splitFrontmatter, replaceH1, ensureH1, setFrontmatterTitle,
 } from '/lib/frontmatter.js';
 import { indentEdit } from '/lib/textedit.js';
 import {
@@ -152,6 +152,48 @@ async function renderCodeHighlighting(container) {
   }
 }
 
+// --- image lightbox ---
+// One shared overlay reused for all images in any rendered note.
+function setupImgLightbox() {
+  const box = $("img-lightbox");
+  const img = $("img-lightbox-img");
+  if (!box || !img) return;
+  const close = () => { box.hidden = true; img.src = ""; };
+  $("img-lightbox-close")?.addEventListener("click", close);
+  box.addEventListener("click", (e) => { if (e.target === box || e.target === img) close(); });
+  document.addEventListener("keydown", (e) => { if (!box.hidden && e.key === "Escape") close(); });
+}
+
+setupImgLightbox();
+
+function attachImgLightbox(container) {
+  const box = $("img-lightbox");
+  const lbImg = $("img-lightbox-img");
+  if (!box || !lbImg) return;
+  container.querySelectorAll("img").forEach((img) => {
+    img.addEventListener("click", () => {
+      // Strip thumbnail parameters to load the original resource.
+      const full = img.src.replace(/\/thumb\?.*$/, "");
+      lbImg.src = full;
+      lbImg.alt = img.alt || "";
+      box.hidden = false;
+    });
+  });
+}
+
+// Wrap each bare <table> in a .table-scroll div so wide tables scroll
+// within their own container rather than forcing the whole article to
+// scroll horizontally (which would detach the gutter background).
+function wrapTables(container) {
+  container.querySelectorAll("table").forEach((t) => {
+    if (t.parentElement.classList.contains("table-scroll")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "table-scroll";
+    t.parentNode.insertBefore(wrap, t);
+    wrap.append(t);
+  });
+}
+
 function esc(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -273,7 +315,7 @@ function drawBookmarks() {
     link.onclick = (e) => { e.preventDefault(); openNote(path, null); };
     const rm = document.createElement("button");
     rm.className = "bookmark-remove btn icon-btn ghost";
-    rm.title = "Remove bookmark";
+    rm.title = "Remove pin";
     rm.textContent = "×";
     rm.onclick = (e) => { e.stopPropagation(); removeBookmark(slug, path); drawBookmarks(); };
     item.append(link, rm);
@@ -888,6 +930,8 @@ function renderRead(n) {
   applyExternalLinkTargets($("note"));
   renderMermaid($("note"));
   renderCodeHighlighting($("note"));
+  wrapTables($("note"));
+  attachImgLightbox($("note"));
   activateTaskCheckboxes($("note"), n);
   // The note body stays the note: contents, tags and links live in the
   // panel beside it.
@@ -975,7 +1019,7 @@ function clearReadPane() {
   const pane = $("readpane");
   if (!pane) return;
   for (const sec of pane.querySelectorAll(".rp-sec")) sec.hidden = true;
-  for (const list of pane.querySelectorAll(".rp-toc, .rp-tags, .rp-list")) list.replaceChildren();
+  for (const list of pane.querySelectorAll(".rp-toc, .rp-tags, .rp-list, .rp-frontmatter")) list.replaceChildren();
   const empty = pane.querySelector(".rp-empty");
   if (empty) empty.hidden = false;
 }
@@ -1028,20 +1072,49 @@ function renderReadPane(n) {
   backUl.replaceChildren(...(n.backlinks || []).map(backlinkItem));
   backSec.hidden = !(n.backlinks && n.backlinks.length);
 
+  // Frontmatter — every field besides id/title/tags, which have their
+  // own panel sections already.
+  const fmSec = pane.querySelector("#rp-frontmatter");
+  const fmDl = fmSec.querySelector(".rp-frontmatter");
+  fmDl.replaceChildren();
+  const fmEntries = Object.entries(n.frontmatter || {}).sort(([a], [b]) => a.localeCompare(b));
+  for (const [key, value] of fmEntries) {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = formatFrontmatterValue(value);
+    fmDl.append(dt, dd);
+  }
+  fmSec.hidden = fmEntries.length === 0;
+
   const empty = pane.querySelector(".rp-empty");
-  if (empty) empty.hidden = ![tocSec, tagsSec, outSec, backSec].every((s) => s.hidden);
+  if (empty) empty.hidden = ![tocSec, tagsSec, outSec, backSec, fmSec].every((s) => s.hidden);
+}
+
+/** Render an arbitrary YAML frontmatter value as a short display string. */
+function formatFrontmatterValue(v) {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map(formatFrontmatterValue).join(", ");
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
 }
 
 /**
- * Give the note a complete header (id, title, created, updated) on open.
- * Textual like the server's WithID: only missing keys are added, guarded
- * by the sha just read, and skipped whenever a local draft exists (a
- * draft always wins). Failures are quiet: the next open retries.
+ * Give the note a complete header (id, title, created, updated) and a
+ * top-level heading on open. Textual like the server's WithID: only
+ * missing keys (or a missing H1) are added, guarded by the sha just
+ * read, and skipped whenever a local draft exists (a draft always
+ * wins). Failures are quiet: the next open retries.
  */
 async function ensureFrontmatter(path, rendered, src, seq) {
   if (readPad(path)) return;
   const fm = readFrontmatter(src.text);
-  if (isValidId(fm.id) && fm.title && fm.created && fm.updated) return;
+  const sp = splitFrontmatter(src.text);
+  const body = sp.ok ? sp.body : src.text;
+  const h1Title = fm.title || deriveTitle(body, path);
+  const bodyWithH1 = ensureH1(body, h1Title);
+  const h1Added = bodyWithH1 !== body;
+  if (isValidId(fm.id) && fm.title && fm.created && fm.updated && !h1Added) return;
   const created = fm.created || fileDate(path) || localDateTime();
   const norm = normalizeNote(src.text, {
     path,
@@ -1049,20 +1122,27 @@ async function ensureFrontmatter(path, rendered, src, seq) {
     created,
     updated: fm.updated || created,
   });
-  if (!norm.changed) return;
+  if (!norm.changed && !h1Added) return;
+  let content = norm.content;
+  if (h1Added) {
+    // normalizeNote never touches the body, so re-splitting its output
+    // lands on the same body we already computed bodyWithH1 from.
+    const sp2 = splitFrontmatter(content);
+    content = sp2.ok ? `${sp2.head}${sp2.block}${sp2.close}${bodyWithH1}` : bodyWithH1;
+  }
   try {
-    const res = await notesApi.saveNote(slug, path, norm.content, { baseSha: src.sha });
+    const res = await notesApi.saveNote(slug, path, content, { baseSha: src.sha });
     if (seq !== openSeq || !lastNote || lastNote.path !== path) return;
     lastNote.sha = res.sha || src.sha;
     lastNote.id = res.id || norm.id;
-    const meta = readFrontmatter(norm.content);
+    const meta = readFrontmatter(content);
     lastNote.title = meta.title || lastNote.title;
     document.title = lastNote.title + " — noteroot";
     if (!editing && current === path) {
       const fresh = await notesApi.getNote(slug, path);
       if (seq !== openSeq || current !== path || editing) return;
       renderRead(fresh);
-      setStatus("Read", { text: norm.content });
+      setStatus("Read", { text: content });
     }
   } catch {
     /* read-only, offline or a concurrent edit: keep reading, retry next time */
@@ -1176,6 +1256,8 @@ function renderSplitRead(n) {
   applyExternalLinkTargets($("split-note"));
   renderMermaid($("split-note"));
   renderCodeHighlighting($("split-note"));
+  wrapTables($("split-note"));
+  attachImgLightbox($("split-note"));
   $("split-note").append(linksPanels(n));
   $("split-note").scrollTop = 0;
 }
@@ -3551,12 +3633,39 @@ async function actionRename(node) {
       if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = t.path + selectedFolder.slice(node.path.length);
     } else {
       await notesApi.moveNote(slug, node.path, t.path);
+      await syncTitleToPath(t.path);
     }
     followMove(node.path, t.path, node.isDir);
     ensureExpanded(node.isDir ? t.path : parentDir(t.path));
     await refreshTree();
     toast(`Renamed to ${t.path}`);
   });
+}
+
+// Keep a note's frontmatter title and first-H1 heading matching its
+// filename after a sidebar rename: renaming is the clearest expression
+// of intent the UI has for what a note should be called, so the other
+// two name surfaces (design doc's third, frontmatter, follow it here).
+// Best-effort — the rename itself already succeeded, so a save
+// conflict here (e.g. a concurrent edit) is swallowed rather than
+// surfaced as an error.
+async function syncTitleToPath(path) {
+  try {
+    const src = await notesApi.getSource(slug, path);
+    const title = deriveTitle('', path);
+    const sp = splitFrontmatter(src.text);
+    const body = sp.ok ? sp.body : src.text;
+    const newBody = replaceH1(body, title);
+    const content = sp.ok
+      ? setFrontmatterTitle(`${sp.head}${sp.block}${sp.close}${newBody}`, title)
+      : newBody;
+    if (content !== src.text) {
+      await notesApi.saveNote(slug, path, content, { baseSha: src.sha });
+      if (lastNote && lastNote.path === path) lastNote.title = title;
+    }
+  } catch (_) {
+    // Non-fatal: see comment above.
+  }
 }
 
 async function actionMove(node) {
@@ -3797,7 +3906,7 @@ function showNodeMenu(node, x, y) {
       return [
         { label: "Open", onSelect: () => openNote(node.path, null) },
         { label: "Open in split pane", onSelect: () => openInSplit(node.path) },
-        { label: pinned ? "Remove bookmark" : "Bookmark", onSelect: () => { toggleBookmark(slug, node.path); drawBookmarks(); } },
+        { label: pinned ? "Remove pin" : "Pin", onSelect: () => { toggleBookmark(slug, node.path); drawBookmarks(); } },
         { label: "Rename…", onSelect: () => actionRename(node) },
         { label: bulk ? `Move ${bulkN} notes…` : "Move…", onSelect: () => (bulk ? moveMultiNotes() : actionMove(node)) },
         { label: "Download .md", onSelect: () => actionDownloadNote(node) },

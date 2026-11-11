@@ -18,6 +18,24 @@ import (
 	"noteroot/internal/vault"
 )
 
+// extraFrontmatter returns the note's frontmatter fields the note panel
+// has not already surfaced through dedicated response keys (id, title,
+// tags). nil when nothing is left to show.
+func extraFrontmatter(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	skip := map[string]bool{"id": true, "title": true, "tags": true}
+	out := make(map[string]any, len(meta))
+	for k, v := range meta {
+		if skip[k] {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func (s *Server) vaultFor(slug string) (*vault.Vault, bool) {
 	nb, ok := s.reg.Get(slug)
 	if !ok {
@@ -155,6 +173,9 @@ func (s *Server) note(w http.ResponseWriter, r *http.Request) {
 	}
 	if doc.Err != nil {
 		resp["frontmatterError"] = doc.Err.Error()
+	}
+	if fm := extraFrontmatter(doc.Meta); len(fm) > 0 {
+		resp["frontmatter"] = fm
 	}
 
 	// Refresh the index (mtime-cheap, same as search) and read the link

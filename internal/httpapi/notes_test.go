@@ -99,6 +99,29 @@ func TestNote_rendersAndParsesFrontmatter(t *testing.T) {
 	}
 }
 
+func TestNote_frontmatterFieldExposesExtraKeys(t *testing.T) {
+	src := "---\ntitle: Hi\nid: 01JAKQZX6H5QW5K5J0H5J0H5AA\ntags: [x]\nauthor: Ada\nstatus: draft\n---\nbody\n"
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": src}))
+	rec := get(t, srv, notePath("n.md"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Frontmatter map[string]any `json:"frontmatter"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Frontmatter["author"] != "Ada" || body.Frontmatter["status"] != "draft" {
+		t.Errorf("frontmatter = %+v", body.Frontmatter)
+	}
+	for _, skip := range []string{"id", "title", "tags"} {
+		if _, ok := body.Frontmatter[skip]; ok {
+			t.Errorf("frontmatter must not repeat %q (already a top-level field)", skip)
+		}
+	}
+}
+
 func TestNote_irregularTableKeepsEveryCell(t *testing.T) {
 	// A body row wider than the header must keep its extra cells in the
 	// HTML the read view renders.

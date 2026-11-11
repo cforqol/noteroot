@@ -180,6 +180,81 @@ export function deriveTitle(text, path = '') {
   return p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/i, '') || 'Untitled';
 }
 
+// The 0-based line index of the body's first ATX H1 outside code
+// fences (deriveTitle's heading rule, exposed for setH1/ensureH1); -1
+// when there is none.
+function firstH1Line(text) {
+  const lines = String(text ?? '').split('\n');
+  let fence = '';
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].replace(/\r$/, '');
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (f) {
+      if (!fence) fence = f[1][0];
+      else if (f[1][0] === fence) fence = '';
+      continue;
+    }
+    if (fence) continue;
+    const m = /^ {0,3}#[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (m && m[1].trim()) return i;
+  }
+  return -1;
+}
+
+/**
+ * Replace the body's first top-level heading with `title`, keeping the
+ * line's own trailing CR. Returns `body` unchanged when it has none —
+ * callers that want one added regardless use `ensureH1`.
+ */
+export function replaceH1(body, title) {
+  const s = String(body ?? '');
+  const i = firstH1Line(s);
+  if (i < 0) return s;
+  const lines = s.split('\n');
+  const cr = lines[i].endsWith('\r') ? '\r' : '';
+  lines[i] = `# ${title}${cr}`;
+  return lines.join('\n');
+}
+
+/**
+ * Give the body a top-level heading if it has none, prepending
+ * `# title` ahead of whatever text was already there.
+ */
+export function ensureH1(body, title) {
+  const s = String(body ?? '');
+  if (firstH1Line(s) >= 0) return s;
+  const cr = s.includes('\r\n') ? '\r' : '';
+  const head = `# ${title}${cr}`;
+  if (s.trim() === '') return `${head}\n`;
+  return `${head}\n\n${s}`;
+}
+
+/**
+ * Force the frontmatter `title` field to `title`, overwriting an
+ * existing value (normalizeNote only fills a missing one). A no-op on
+ * notes without a frontmatter block — those get one from normalizeNote
+ * on next open instead of a bespoke partial header here.
+ */
+export function setFrontmatterTitle(src, title) {
+  const s = String(src ?? '');
+  const sp = splitFrontmatter(s);
+  if (!sp.ok) return s;
+  const value = yamlString(title);
+  const cr = sp.eol === '\r\n' ? '\r' : '';
+  const lines = sp.block.split('\n');
+  lines.pop();
+  const keys = topLevel(lines);
+  const k = keys.get('title');
+  if (k) {
+    lines[k.index] = `title: ${value}${lines[k.index].endsWith('\r') ? '\r' : ''}`;
+  } else {
+    let i = lines.length;
+    while (i > 0 && lines[i - 1].trim() === '') i -= 1;
+    lines.splice(i, 0, `title: ${value}${cr}`);
+  }
+  return `${sp.head}${lines.join('\n')}\n${sp.close}${sp.body}`;
+}
+
 const RESERVED = /^(?:true|false|yes|no|on|off|null|y|n|~)$/i;
 
 /** A YAML scalar for s: plain when unambiguous, else double-quoted. */

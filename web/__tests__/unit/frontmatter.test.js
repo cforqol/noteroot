@@ -1,6 +1,7 @@
 import {
   ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, localDateTime, splitFrontmatter,
   readFrontmatter, deriveTitle, yamlString, normalizeNote, changedRange,
+  replaceH1, ensureH1, setFrontmatterTitle,
 } from '../../lib/frontmatter.js';
 
 const ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV00';
@@ -198,4 +199,53 @@ test('changedRange finds the single replaced span', () => {
   expect(changedRange('aXc', 'aYYc')).toEqual({ start: 1, end: 2, text: 'YY' });
   expect(changedRange('aaa', 'aa')).toEqual({ start: 2, end: 3, text: '' });
   expect(changedRange('', 'x')).toEqual({ start: 0, end: 0, text: 'x' });
+});
+
+describe('replaceH1', () => {
+  test('replaces the first top-level heading', () => {
+    expect(replaceH1('# Old\n\nbody', 'New')).toBe('# New\n\nbody');
+  });
+  test('ignores headings inside code fences and deeper levels', () => {
+    expect(replaceH1('```\n# fenced\n```\n## Two\n# Real\nbody', 'New')).toBe('```\n# fenced\n```\n## Two\n# New\nbody');
+  });
+  test('leaves body untouched when there is no H1', () => {
+    expect(replaceH1('no heading here', 'New')).toBe('no heading here');
+    expect(replaceH1('', 'New')).toBe('');
+  });
+  test('keeps a CRLF line ending on the replaced line', () => {
+    expect(replaceH1('# Old\r\nbody', 'New')).toBe('# New\r\nbody');
+  });
+});
+
+describe('ensureH1', () => {
+  test('prepends a heading when none exists', () => {
+    expect(ensureH1('body text', 'Title')).toBe('# Title\n\nbody text');
+  });
+  test('leaves an existing heading alone', () => {
+    expect(ensureH1('# Already\nbody', 'Title')).toBe('# Already\nbody');
+  });
+  test('an empty body gets just the heading', () => {
+    expect(ensureH1('', 'Title')).toBe('# Title\n');
+    expect(ensureH1('   \n', 'Title')).toBe('# Title\n');
+  });
+});
+
+describe('setFrontmatterTitle', () => {
+  test('overwrites an existing title', () => {
+    const src = `---\nid: ${ID}\ntitle: Old\ncreated: 2020-01-01\nupdated: 2020-01-01\n---\nbody`;
+    expect(setFrontmatterTitle(src, 'New Name')).toBe(
+      `---\nid: ${ID}\ntitle: New Name\ncreated: 2020-01-01\nupdated: 2020-01-01\n---\nbody`,
+    );
+  });
+  test('adds a title key when the block has none', () => {
+    const src = `---\nid: ${ID}\n---\nbody`;
+    expect(setFrontmatterTitle(src, 'New')).toBe(`---\nid: ${ID}\ntitle: New\n---\nbody`);
+  });
+  test('quotes a title that needs it', () => {
+    const src = '---\ntitle: Old\n---\n';
+    expect(setFrontmatterTitle(src, 'true')).toBe('---\ntitle: "true"\n---\n');
+  });
+  test('is a no-op without a frontmatter block', () => {
+    expect(setFrontmatterTitle('no frontmatter here', 'New')).toBe('no frontmatter here');
+  });
 });

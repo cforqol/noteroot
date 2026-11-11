@@ -54,8 +54,8 @@
       <button id="multi-delete" class="btn small ghost-danger" title="Move the selected notes to the trash">🗑 Delete</button>
     </div>
     <div id="bookmarks-section" class="bookmarks-section" hidden>
-      <div class="bookmarks-header"><span>Bookmarks</span></div>
-      <nav id="bookmarks-list" class="bookmarks-list" aria-label="Bookmarked notes"></nav>
+      <div class="bookmarks-header"><span>📌 Pins</span></div>
+      <nav id="bookmarks-list" class="bookmarks-list" aria-label="Pinned notes"></nav>
     </div>
     <div id="tree-locked" class="tree-locked" hidden>
       <span class="tree-locked-icon" aria-hidden="true">🔒</span>
@@ -158,10 +158,19 @@
         <h2>Backlinks</h2>
         <ul class="rp-list"></ul>
       </section>
+      <section class="rp-sec" id="rp-frontmatter" hidden>
+        <h2>Frontmatter</h2>
+        <dl class="rp-frontmatter"></dl>
+      </section>
       <p class="rp-empty" hidden>Nothing to show for this note.</p>
     </aside>
   </div>
 </main>
+
+<div id="img-lightbox" class="img-lightbox" hidden aria-modal="true" role="dialog" aria-label="Image viewer">
+  <button class="img-lightbox-close" id="img-lightbox-close" aria-label="Close image viewer">✕</button>
+  <img id="img-lightbox-img" src="" alt="" class="img-lightbox-img">
+</div>
 
 <footer id="statusbar" class="statusbar" aria-label="Editor status">
   <span id="sb-mode" class="sb-item sb-mode" title="Editor mode">Read</span>
