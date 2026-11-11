@@ -33,6 +33,10 @@ type S3Config struct {
 	SSE string
 	// SSEKeyID is the KMS key ARN/ID used when SSE is "aws:kms". Empty = AWS-managed key.
 	SSEKeyID string
+	// Transport overrides the http.Client's RoundTripper, e.g. to trust a
+	// private CA or present an mTLS client certificate for a self-hosted,
+	// S3-compatible endpoint. nil = http.DefaultTransport.
+	Transport http.RoundTripper
 }
 
 // Enabled reports whether S3 is configured (all required fields present).
@@ -62,7 +66,7 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 	cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
 	return &S3Store{
 		cfg: cfg,
-		hc:  &http.Client{Timeout: 60 * time.Second},
+		hc:  &http.Client{Timeout: 60 * time.Second, Transport: cfg.Transport},
 		now: time.Now,
 	}, nil
 }

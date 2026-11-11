@@ -116,6 +116,10 @@ kbd {
 .btn.small { min-height: 26px; padding: 2px 9px; font-size: 13px; }
 .icon-btn { min-width: 32px; padding: 2px 6px; font-size: 17px; line-height: 1; }
 .btn.small.icon-btn { min-width: 26px; padding: 2px 5px; font-size: 14px; }
+/* Notebook is locked but opened this session: same 🔓 glyph as "no lock
+   set", distinguished by a dimmed, accented look so the two are not
+   mistaken for each other. */
+#notebook-lock-btn.locked-open { opacity: 0.6; color: var(--accent); }
 select, input[type="search"], input[type="text"], input:not([type]), textarea {
   font: inherit; color: var(--fg); background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--radius);

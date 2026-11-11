@@ -232,7 +232,11 @@ function scheduleTags() {
 async function refreshTags() {
   const section = $("tags-section");
   if (!section) return;
-  if (!slug) { section.hidden = true; return; }
+  // A locked-and-not-yet-unlocked notebook must not show this section's
+  // content: without this check, a fetch started just before the lock
+  // state updates (or a debounced scheduleTags() call) can resolve
+  // after drawTree() has hidden everything and re-show it regardless.
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) { section.hidden = true; return; }
   const seq = ++tagsSeq;
   const mine = slug;
   let tags = {};
@@ -242,6 +246,8 @@ async function refreshTags() {
     /* tags are a convenience: a failed scan just leaves the section empty */
   }
   if (seq !== tagsSeq) return;
+  // Re-check: see the matching comment in refreshDailyNotes().
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) { section.hidden = true; return; }
   const names = Object.keys(tags).sort((a, b) => a.localeCompare(b));
   const list = $("tags-list");
   list.replaceChildren();
@@ -328,7 +334,10 @@ async function refreshDailyNotes() {
   const section = $("daily-notes-section");
   const list = $("daily-notes-list");
   if (!section || !list) return;
-  if (!slug) { section.hidden = true; return; }
+  // See the matching comment in refreshTags(): a locked-and-unopened
+  // notebook must never show this section's content, even if a fetch
+  // in flight resolves after drawTree() has already hidden it.
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) { section.hidden = true; return; }
 
   const folder = getSetting('dailyNotesFolder').trim() || 'daily';
   let notes = [];
@@ -346,6 +355,9 @@ async function refreshDailyNotes() {
     section.hidden = true;
     return;
   }
+  // Re-check: the notebook can have been locked while that fetch was
+  // in flight (racing refreshNotebookLock() on the same boot/switch).
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) { section.hidden = true; return; }
 
   // Sort by date (newest first)
   notes.sort((a, b) => b.path.localeCompare(a.path));
@@ -570,6 +582,14 @@ function treeWithoutDailyFolder(root) {
   };
 }
 
+// Tracks whether the last drawTree() call found the notebook
+// locked-and-hidden, so the transition back to unlocked can be told
+// apart from "already unlocked" — only the transition needs the daily
+// notes/tags sections re-fetched; every other drawTree() call (folder
+// toggle, multi-select, decorations, …) would otherwise redo that fetch
+// for nothing.
+let wasLockHidden = false;
+
 function drawTree() {
   if (!treeData) return;
   // When the notebook is locked and not yet unlocked in this session,
@@ -577,6 +597,7 @@ function drawTree() {
   const treeLocked = $("tree-locked");
   const treeEl = $("tree");
   if (notebookLock.locked && !notebookLock.unlocked) {
+    wasLockHidden = true;
     if (treeLocked) treeLocked.hidden = false;
     if (treeEl) treeEl.hidden = true;
     $("bookmarks-section")?.setAttribute("hidden", "");
@@ -586,6 +607,13 @@ function drawTree() {
   }
   if (treeLocked) treeLocked.hidden = true;
   if (treeEl) treeEl.hidden = false;
+  if (wasLockHidden) {
+    // Just unlocked: the sections above were force-hidden and need
+    // their content fetched again, not just un-hidden.
+    wasLockHidden = false;
+    refreshDailyNotes();
+    scheduleTags();
+  }
   drawBookmarks();
   const displayData = treeWithoutDailyFolder(treeData);
   const totals = renderTree($("tree"), displayData, {
@@ -4406,6 +4434,7 @@ function syncLockSettings() {
       }
     }
   }
+  syncNotebookLockBtn();
   // Redraw tree so the locked placeholder toggles
   if (treeData) drawTree();
 }
@@ -4494,22 +4523,36 @@ async function notebookLockGuard() {
   return slug;
 }
 
-$("lock-notebook")?.addEventListener("click", async () => {
+// Notebook-level lock actions, shared by the Settings dialog, the
+// sidebar's locked placeholder and the topbar's quick lock button —
+// one place for the follow-up each needs, rather than three copies.
+async function lockNotebook() {
   if (!slug) return;
   await actionLock({ path: "", isDir: true }, "notebook");
   await refreshNotebookLock();
-});
-$("unlock-notebook")?.addEventListener("click", async () => {
+}
+
+async function relockNotebook() {
   if (!slug) return;
-  if (await promptUnlock("", "notebook")) {
-    await refreshNotebookLock();
-    await openHomepage();
-  }
-});
-$("relock-notebook")?.addEventListener("click", async () => {
   await actionRelock("", "notebook");
   await refreshNotebookLock();
-});
+}
+
+async function unlockNotebook() {
+  if (!slug) return false;
+  if (!(await promptUnlock("", "notebook"))) return false;
+  // Not just refreshNotebookLock(): the tree redraw it triggers only
+  // toggles the locked placeholder. Sections it hid while locked
+  // (daily notes, tags) need their own refetch to come back, which
+  // only a full refreshTree() (inside globalRefresh) does.
+  await globalRefresh();
+  await openHomepage();
+  return true;
+}
+
+$("lock-notebook")?.addEventListener("click", lockNotebook);
+$("unlock-notebook")?.addEventListener("click", unlockNotebook);
+$("relock-notebook")?.addEventListener("click", relockNotebook);
 $("remove-lock-notebook")?.addEventListener("click", async () => {
   if (!slug) return;
   const ok = await confirmDialog({
@@ -4530,12 +4573,42 @@ $("remove-lock-notebook")?.addEventListener("click", async () => {
 });
 
 // Sidebar lock placeholder: unlock button shown when notebook is locked.
-$("tree-unlock-btn")?.addEventListener("click", async () => {
+$("tree-unlock-btn")?.addEventListener("click", unlockNotebook);
+
+// Topbar quick lock button, next to the notebook selector: one button
+// whose icon/title/action follow notebookLock, kept in sync from
+// syncLockSettings() (the single place that already reacts to every
+// lock-status refresh).
+function syncNotebookLockBtn() {
+  const btn = $("notebook-lock-btn");
+  if (!btn) return;
+  btn.hidden = !slug;
   if (!slug) return;
-  if (await promptUnlock("", "notebook")) {
-    await refreshNotebookLock();
-    await openHomepage();
+  const { locked, unlocked } = notebookLock;
+  if (!locked) {
+    btn.textContent = "🔓";
+    btn.classList.remove("locked-open");
+    btn.setAttribute("aria-label", "Lock this notebook");
+    btn.title = "Lock this notebook…";
+  } else if (unlocked) {
+    btn.textContent = "🔓";
+    btn.classList.add("locked-open");
+    btn.setAttribute("aria-label", "Lock this notebook again");
+    btn.title = "Locked, open in this browser — click to lock again";
+  } else {
+    btn.textContent = "🔒";
+    btn.classList.remove("locked-open");
+    btn.setAttribute("aria-label", "Unlock this notebook");
+    btn.title = "Locked — click to unlock";
   }
+}
+
+$("notebook-lock-btn")?.addEventListener("click", async () => {
+  if (!slug) return;
+  const { locked, unlocked } = notebookLock;
+  if (!locked) await lockNotebook();
+  else if (unlocked) await relockNotebook();
+  else await unlockNotebook();
 });
 
 const plural = (n) => `${n} note${n === 1 ? "" : "s"}`;

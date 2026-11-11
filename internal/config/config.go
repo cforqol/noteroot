@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -52,6 +55,17 @@ type Config struct {
 	// Empty or "0" disables scheduled backups.
 	BackupSchedule string
 
+	// TLS trust and mTLS for outbound requests this server makes to other
+	// services (Karakeep, Slink, S3-compatible storage): most deployments
+	// need none of this, it only matters behind a private CA or an
+	// mTLS-gated endpoint. TLSCAFile's certs are added to the system pool,
+	// not used in place of it. TLSClientCertFile/TLSClientKeyFile are a
+	// PEM certificate/key pair presented as the client identity; both or
+	// neither must be set.
+	TLSCAFile         string
+	TLSClientCertFile string
+	TLSClientKeyFile  string
+
 	// Stage 8: housekeeping and limits.
 
 	// QuotaBytes is the per-notebook storage limit in bytes. 0 = unlimited.
@@ -70,6 +84,47 @@ type Config struct {
 	// MaxHeaderBytes is the maximum size of the request headers.
 	// Defaults to 1 << 16 (65536) if not set.
 	MaxHeaderBytes int
+}
+
+// BuildTransport returns the http.RoundTripper outbound requests to
+// other services (Karakeep, Slink, S3-compatible storage) should use:
+// nil (meaning "use http.DefaultTransport") when neither TLSCAFile nor
+// TLSClientCertFile is set, otherwise a Transport cloned from the
+// default with TLSCAFile's certs added to the system trust pool and/or
+// TLSClientCertFile+TLSClientKeyFile presented as the client identity.
+// Called once at startup by the caller that validates Load()'s result
+// and again by whoever wires up the actual HTTP clients — cheap, and
+// keeps Config a plain, loggable data struct rather than one carrying
+// a live *http.Transport.
+func (c Config) BuildTransport() (http.RoundTripper, error) {
+	if c.TLSCAFile == "" && c.TLSClientCertFile == "" {
+		return nil, nil
+	}
+	tlsCfg := &tls.Config{}
+	if c.TLSCAFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		pem, err := os.ReadFile(c.TLSCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("NOTEROOT_TLS_CA_FILE: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("NOTEROOT_TLS_CA_FILE %q: no certificates found", c.TLSCAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	if c.TLSClientCertFile != "" {
+		cert, err := tls.LoadX509KeyPair(c.TLSClientCertFile, c.TLSClientKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("NOTEROOT_TLS_CLIENT_CERT_FILE/NOTEROOT_TLS_CLIENT_KEY_FILE: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = tlsCfg
+	return tr, nil
 }
 
 // S3Enabled reports whether object storage is configured.
@@ -103,6 +158,10 @@ func Load() (Config, error) {
 		SlinkKey: env("NOTEROOT_SLINK_KEY", ""),
 
 		BackupSchedule: env("NOTEROOT_BACKUP_SCHEDULE", ""),
+
+		TLSCAFile:         env("NOTEROOT_TLS_CA_FILE", ""),
+		TLSClientCertFile: env("NOTEROOT_TLS_CLIENT_CERT_FILE", ""),
+		TLSClientKeyFile:  env("NOTEROOT_TLS_CLIENT_KEY_FILE", ""),
 
 		QuotaBytes: envInt64("NOTEROOT_QUOTA_BYTES", 0),
 		GCInterval: env("NOTEROOT_GC_INTERVAL", "24h"),
@@ -152,6 +211,12 @@ func Load() (Config, error) {
 	}
 	if (c.SlinkURL == "") != (c.SlinkKey == "") {
 		return c, fmt.Errorf("NOTEROOT_SLINK_URL and NOTEROOT_SLINK_KEY must be set together")
+	}
+	if (c.TLSClientCertFile == "") != (c.TLSClientKeyFile == "") {
+		return c, fmt.Errorf("NOTEROOT_TLS_CLIENT_CERT_FILE and NOTEROOT_TLS_CLIENT_KEY_FILE must be set together")
+	}
+	if _, err := c.BuildTransport(); err != nil {
+		return c, err
 	}
 	// S3 config must be all-or-nothing.
 	s3Fields := map[string]string{

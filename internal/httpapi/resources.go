@@ -44,6 +44,7 @@ func (s *Server) openResources(ctx context.Context, nb *notebooks.Notebook) (
 		PathStyle: s.cfg.S3PathStyle,
 		SSE:       s.cfg.S3SSE,
 		SSEKeyID:  s.cfg.S3SSEKeyID,
+		Transport: s.transport,
 	}
 	store, err := resources.NewStore(nb.Layout.Resources(), s3Cfg)
 	if err != nil {

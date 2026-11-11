@@ -37,7 +37,9 @@ USER root
 # Every variable noteroot reads, with its documented default (README,
 # "Configuration"). Override any of them at run time; empty means
 # "use the built-in default / disabled". Secrets (S3 keys) stay unset
-# here and are injected by the orchestrator.
+# here and are injected by the orchestrator. The NOTEROOT_TLS_* variables
+# are file paths, not raw PEM content — bind-mount a cert volume and
+# point these at it.
 # hadolint ignore=DL3064
 ENV PUID=1000 \
     PGID=1000 \
@@ -59,6 +61,9 @@ ENV PUID=1000 \
     NOTEROOT_WRITE_TIMEOUT=10s \
     NOTEROOT_IDLE_TIMEOUT=60s \
     NOTEROOT_MAX_HEADER_BYTES=65536 \
+    NOTEROOT_TLS_CA_FILE= \
+    NOTEROOT_TLS_CLIENT_CERT_FILE= \
+    NOTEROOT_TLS_CLIENT_KEY_FILE= \
     GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=safe.directory \
     GIT_CONFIG_VALUE_0=*

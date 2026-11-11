@@ -357,6 +357,9 @@ All configuration is environment variables.
 | `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 | `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
 | `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
+| `NOTEROOT_TLS_CA_FILE` | `` (disabled) | Path to a PEM file of extra CA certificate(s) to trust for every outbound request this server makes to another service (Karakeep, Slink, S3-compatible storage). Added to the system trust pool, not a replacement for it — only needed behind a private/internal CA. |
+| `NOTEROOT_TLS_CLIENT_CERT_FILE` | `` (disabled) | Path to a PEM client certificate presented for mTLS on the same outbound requests. Must be set together with `NOTEROOT_TLS_CLIENT_KEY_FILE`. |
+| `NOTEROOT_TLS_CLIENT_KEY_FILE` | `` (disabled) | Path to the PEM private key matching `NOTEROOT_TLS_CLIENT_CERT_FILE`. |
 | `PUID` | `1000` | *(Docker only)* uid the server process runs as inside the container. Set to your host user's uid (`id -u`) so the container can write to a bind-mounted data directory. |
 | `PGID` | `1000` | *(Docker only)* gid the server process runs as inside the container. Set to your host user's gid (`id -g`). |
 

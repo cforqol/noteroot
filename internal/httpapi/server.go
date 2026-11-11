@@ -30,6 +30,16 @@ type Server struct {
 	integ *integrations.Manager
 	http  *http.Server
 
+	// transport is shared by every outbound request this server makes to
+	// another service (Karakeep, Slink, S3-compatible storage): nil
+	// unless NOTEROOT_TLS_CA_FILE/NOTEROOT_TLS_CLIENT_CERT_FILE are set,
+	// in which case http.Client{Transport: s.transport} trusts the extra
+	// CA and/or presents the client certificate. Built once here — cfg
+	// already validated the same call in config.Load(), so an error on
+	// this second pass would mean the files changed from under the
+	// process; fall back to the default transport rather than panic.
+	transport http.RoundTripper
+
 	gitMu sync.Mutex
 	git   map[string]*git.Flusher
 
@@ -44,6 +54,11 @@ type Server struct {
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s := &Server{cfg: cfg, log: log, reg: reg, plat: platform.NewManager(log)}
+	if tr, err := cfg.BuildTransport(); err != nil {
+		log.Error("custom TLS transport failed, falling back to default", "err", err)
+	} else {
+		s.transport = tr
+	}
 	s.plug = plugins.NewManager(log, func(slug string) plugins.NoteStore {
 		return &pluginNoteStore{s: s, slug: slug}
 	})

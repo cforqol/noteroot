@@ -1,8 +1,18 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setenv(t *testing.T, key, val string) {
@@ -322,4 +332,135 @@ func TestLoad_acceptsValidDurations(t *testing.T) {
 	unsetenv(t, "NOTEROOT_GC_INTERVAL")
 	unsetenv(t, "NOTEROOT_S3_PRESIGN_TTL")
 	unsetenv(t, "NOTEROOT_QUOTA_BYTES")
+}
+
+// selfSignedPEM writes a throwaway self-signed cert+key pair (PEM) to
+// two files under t.TempDir() and returns their paths.
+func selfSignedPEM(t *testing.T) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "noteroot-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func TestBuildTransport_unsetIsNoop(t *testing.T) {
+	tr, err := Config{}.BuildTransport()
+	if err != nil || tr != nil {
+		t.Errorf("BuildTransport() = %v, %v; want nil, nil", tr, err)
+	}
+}
+
+func TestBuildTransport_caFile(t *testing.T) {
+	certFile, _ := selfSignedPEM(t)
+	tr, err := Config{TLSCAFile: certFile}.BuildTransport()
+	if err != nil {
+		t.Fatalf("BuildTransport() error = %v", err)
+	}
+	ht, ok := tr.(*http.Transport)
+	if !ok || ht.TLSClientConfig == nil || ht.TLSClientConfig.RootCAs == nil {
+		t.Fatalf("expected a *http.Transport with RootCAs set, got %+v", tr)
+	}
+}
+
+func TestBuildTransport_caFileMissing(t *testing.T) {
+	if _, err := (Config{TLSCAFile: "/no/such/file.pem"}).BuildTransport(); err == nil {
+		t.Fatal("want error for a missing CA file")
+	}
+}
+
+func TestBuildTransport_caFileNotPEM(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "not-a-cert.pem")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Config{TLSCAFile: bad}).BuildTransport(); err == nil {
+		t.Fatal("want error for a CA file with no certificates")
+	}
+}
+
+func TestBuildTransport_clientCert(t *testing.T) {
+	certFile, keyFile := selfSignedPEM(t)
+	tr, err := Config{TLSClientCertFile: certFile, TLSClientKeyFile: keyFile}.BuildTransport()
+	if err != nil {
+		t.Fatalf("BuildTransport() error = %v", err)
+	}
+	ht, ok := tr.(*http.Transport)
+	if !ok || ht.TLSClientConfig == nil || len(ht.TLSClientConfig.Certificates) != 1 {
+		t.Fatalf("expected a *http.Transport with one client certificate, got %+v", tr)
+	}
+}
+
+func TestBuildTransport_clientCertBadPair(t *testing.T) {
+	certFile, _ := selfSignedPEM(t)
+	_, otherKeyFile := selfSignedPEM(t)
+	if _, err := (Config{TLSClientCertFile: certFile, TLSClientKeyFile: otherKeyFile}).BuildTransport(); err == nil {
+		t.Fatal("want error for a cert/key that do not match")
+	}
+}
+
+func TestLoad_tlsClientCertKeyMustBeSetTogether(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/data/notes")
+	certFile, keyFile := selfSignedPEM(t)
+	t.Cleanup(func() {
+		unsetenv(t, "NOTEROOT_TLS_CLIENT_CERT_FILE")
+		unsetenv(t, "NOTEROOT_TLS_CLIENT_KEY_FILE")
+	})
+
+	setenv(t, "NOTEROOT_TLS_CLIENT_CERT_FILE", certFile)
+	unsetenv(t, "NOTEROOT_TLS_CLIENT_KEY_FILE")
+	if _, err := Load(); err == nil {
+		t.Error("want error for cert without key")
+	}
+
+	unsetenv(t, "NOTEROOT_TLS_CLIENT_CERT_FILE")
+	setenv(t, "NOTEROOT_TLS_CLIENT_KEY_FILE", keyFile)
+	if _, err := Load(); err == nil {
+		t.Error("want error for key without cert")
+	}
+
+	setenv(t, "NOTEROOT_TLS_CLIENT_CERT_FILE", certFile)
+	setenv(t, "NOTEROOT_TLS_CLIENT_KEY_FILE", keyFile)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.TLSClientCertFile != certFile || cfg.TLSClientKeyFile != keyFile {
+		t.Errorf("cert/key paths not carried through: %+v", cfg)
+	}
+}
+
+func TestLoad_rejectsBadTLSCAFile(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/data/notes")
+	setenv(t, "NOTEROOT_TLS_CA_FILE", "/no/such/file.pem")
+	t.Cleanup(func() { unsetenv(t, "NOTEROOT_TLS_CA_FILE") })
+	if _, err := Load(); err == nil {
+		t.Error("want error for a missing NOTEROOT_TLS_CA_FILE")
+	}
 }

@@ -13,6 +13,7 @@ describe('default document / options', () => {
     expect(c.querySelector('.help-grid')).toBeTruthy();
     expect(shortcutFor({ key: '?', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false })).toBe('help');
     expect(shortcutFor({ key: 'e' })).toBe('edit'); // typing defaults to false
+    expect(shortcutFor({ key: 'r' })).toBe('refresh-note');
     expect(shortcutFor({ key: '' })).toBeNull(); // empty key
     expect(shortcutFor({})).toBeNull(); // missing key
   });

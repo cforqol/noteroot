@@ -40,7 +40,12 @@ const (
 	proxyTimeout   = 30 * time.Second
 )
 
-var proxyClient = &http.Client{Timeout: proxyTimeout}
+// proxyClient is shared by every Karakeep/Slink request: s.transport
+// is nil unless custom TLS trust/mTLS is configured, in which case
+// http.Client falls back to http.DefaultTransport on its own.
+func (s *Server) proxyClient() *http.Client {
+	return &http.Client{Timeout: proxyTimeout, Transport: s.transport}
+}
 
 // integrationStatus is the response shape for GET /api/v1/integrations/status.
 type integrationStatus struct {
@@ -77,6 +82,7 @@ func (s *Server) testS3(w http.ResponseWriter, r *http.Request) {
 		PathStyle: s.cfg.S3PathStyle,
 		SSE:       s.cfg.S3SSE,
 		SSEKeyID:  s.cfg.S3SSEKeyID,
+		Transport: s.transport,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
@@ -130,7 +136,7 @@ func (s *Server) archiveWithKarakeep(w http.ResponseWriter, r *http.Request) {
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Authorization", "Bearer "+s.cfg.KarakeepKey)
 
-	resp, err := proxyClient.Do(upstream)
+	resp, err := s.proxyClient().Do(upstream)
 	if err != nil {
 		s.log.Warn("karakeep proxy: upstream error", "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "karakeep unreachable"})
@@ -206,7 +212,7 @@ func (s *Server) uploadToSlink(w http.ResponseWriter, r *http.Request) {
 	upstream.Header.Set("Content-Type", mw.FormDataContentType())
 	upstream.Header.Set("Authorization", "Bearer "+s.cfg.SlinkKey)
 
-	resp, err := proxyClient.Do(upstream)
+	resp, err := s.proxyClient().Do(upstream)
 	if err != nil {
 		s.log.Warn("slink proxy: upstream error", "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "slink unreachable"})
@@ -249,7 +255,7 @@ func (s *Server) testSlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+s.cfg.SlinkKey)
-	resp, err := proxyClient.Do(req)
+	resp, err := s.proxyClient().Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "slink unreachable: " + err.Error()})
 		return
