@@ -1802,7 +1802,8 @@ function fillNotebookOptions(notebooks) {
   sel.replaceChildren();
   for (const nb of notebooks) {
     const o = document.createElement("option");
-    o.value = o.textContent = nb.slug;
+    o.value = nb.slug;
+    o.textContent = nb.locked ? `${nb.slug} 🔒` : nb.slug;
     sel.append(o);
   }
   if (notebooks.length) {
@@ -2918,12 +2919,25 @@ async function insertIntoEditor(text) {
   }
 }
 
+// Slink is configured per-server, but routing *this user's* pastes
+// through it is opt-out: Settings → Integrations → "Use Slink for
+// image uploads" (default on, to keep existing deployments' behaviour
+// unchanged).
+function wantsSlinkForImages() {
+  return getSetting('useSlinkForImages') !== 'off';
+}
+
+// Same opt-out shape for Karakeep's paste-to-archive behaviour.
+function wantsKarakeepForUrls() {
+  return getSetting('useKarakeepForUrls') !== 'off';
+}
+
 async function handleFileUpload(file) {
   if (!editing) return;
   setSaveState(`Uploading ${file.name}…`, "dirty");
   try {
     const integ = await fetchIntegrationStatus();
-    if (integ.slink && file.type.startsWith('image/')) {
+    if (integ.slink && wantsSlinkForImages() && file.type.startsWith('image/')) {
       const hostedUrl = await slinkUpload(file);
       const label = file.name.replace(/([\\[\]()])/g, '\\$1');
       await insertIntoEditor(`![${label}](${hostedUrl})`);
@@ -2957,7 +2971,7 @@ async function handleSplitFileUpload(file) {
   setSplitSaveState(`Uploading ${file.name}…`, "dirty");
   try {
     const integ = await fetchIntegrationStatus();
-    if (integ.slink && file.type.startsWith('image/')) {
+    if (integ.slink && wantsSlinkForImages() && file.type.startsWith('image/')) {
       const hostedUrl = await slinkUpload(file);
       const label = file.name.replace(/([\\[\]()])/g, '\\$1');
       insertIntoSplitEditor(`![${label}](${hostedUrl})`);
@@ -3015,7 +3029,7 @@ async function handlePaste(e, editorEl) {
   const plain = getPlainText(e.clipboardData);
   if (isHttpUrl(plain)) {
     const integ = await fetchIntegrationStatus();
-    if (integ.karakeep) {
+    if (integ.karakeep && wantsKarakeepForUrls()) {
       karakeepArchive(plain).then(async (archiveUrl) => {
         await insertIntoEditor(` ([archived](${archiveUrl}))`);
         markDirty();
@@ -3079,7 +3093,7 @@ function setupSplitPasteZone() {
     const plain = getPlainText(e.clipboardData);
     if (isHttpUrl(plain)) {
       const integ = await fetchIntegrationStatus();
-      if (integ.karakeep) {
+      if (integ.karakeep && wantsKarakeepForUrls()) {
         karakeepArchive(plain).then(async (archiveUrl) => {
           await insertIntoSplitEditor(` ([archived](${archiveUrl}))`);
         }).catch(() => { /* archive failure is non-fatal */ });
@@ -5009,12 +5023,21 @@ async function updateIntegrationsInfo() {
   if (testS3Btn) testS3Btn.disabled = !integ.s3;
   const testSlinkBtn = $("test-slink");
   if (testSlinkBtn) testSlinkBtn.disabled = !integ.slink;
+  const useSlinkToggle = $("integ-slink-use");
+  if (useSlinkToggle) useSlinkToggle.disabled = !integ.slink;
   // Update Karakeep status badge.
   const kkEl = $("integ-karakeep-status");
   if (kkEl) {
     kkEl.textContent = integ.karakeep ? "Configured" : "Not configured";
     kkEl.className = integ.karakeep ? "status-value enabled" : "status-value disabled";
   }
+  const useKarakeepToggle = $("integ-karakeep-use");
+  if (useKarakeepToggle) useKarakeepToggle.disabled = !integ.karakeep;
+  // The bookmark manager is useful even with archiving turned off right
+  // now — it just lists what's already in notes — but there is nothing
+  // to show when Karakeep was never configured at all.
+  const bookmarksBtn = $("bookmarks-manage");
+  if (bookmarksBtn) bookmarksBtn.disabled = !integ.karakeep;
 }
 
 $("test-s3")?.addEventListener("click", async (e) => {
@@ -5614,6 +5637,7 @@ window.addEventListener("keydown", (e) => {
   else if (!$("settings-modal").hidden) closeSettingsModal();
   else if (!$("trash-modal").hidden) closeTrash();
   else if (!$("attachments-modal").hidden) closeAttachmentsModal();
+  else if (!$("bookmarks-modal").hidden) closeBookmarksModal();
   else if (!$("shortcuts-modal").hidden) closeShortcutsModal();
   else if (!$("history-modal").hidden) closeHistoryWindow();
   else if (isPhone() && document.body.classList.contains("tree-open")) setDrawer(false);
@@ -5642,7 +5666,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keydown", (e) => {
   if (editing || e.defaultPrevented) return;
   if (view !== "read" || isTypingTarget(e.target)) return;
-  if (!$("help-modal").hidden || !$("settings-modal").hidden || !$("trash-modal").hidden || !$("attachments-modal").hidden || !$("vimrc-modal").hidden) return;
+  if (!$("help-modal").hidden || !$("settings-modal").hidden || !$("trash-modal").hidden || !$("attachments-modal").hidden || !$("bookmarks-modal").hidden || !$("vimrc-modal").hidden) return;
   if (document.querySelector(".ctx-menu")) return;
   const kb = getKeybindings();
   let delta = 0;
@@ -5891,6 +5915,131 @@ function initAttachmentsEvents() {
 
 // Module loads after DOM in both the browser (type=module defer) and jsdom tests.
 initAttachmentsEvents();
+
+// --- Bookmarks manager (Karakeep) ---
+// There is no separate bookmarks database: this just lists whatever
+// the paste handler's "([archived](...))" marker is still sitting in
+// notes right now, grouped by URL (see internal/httpapi's
+// listKarakeepBookmarks for why that is the right source of truth).
+
+let _bookmarksCache = [];
+
+function openBookmarksModal() {
+  if (!slug) { toast("Open a notebook first.", true); return; }
+  const m = $("bookmarks-modal");
+  if (m) m.hidden = false;
+  const s = $("bookmarks-search"); if (s) s.value = "";
+  loadBookmarksManager();
+}
+
+function closeBookmarksModal() {
+  const m = $("bookmarks-modal");
+  if (m) m.hidden = true;
+}
+
+async function loadBookmarksManager() {
+  const grid = $("bookmarks-grid");
+  const sum = $("bookmarks-summary");
+  if (!grid) return;
+  if (!slug) {
+    grid.innerHTML = '<p class="muted small">Open a notebook to see its bookmarks.</p>';
+    if (sum) sum.textContent = "";
+    return;
+  }
+  grid.innerHTML = '<p class="muted small">Loading…</p>';
+  if (sum) sum.textContent = "Loading…";
+  try {
+    const data = await notesApi.listKarakeepBookmarks(slug);
+    const items = data?.bookmarks || [];
+    _bookmarksCache = items;
+    renderBookmarksManager(items);
+  } catch (e) {
+    grid.innerHTML = `<p class="muted small">Error loading bookmarks: ${esc(e.message)}</p>`;
+    if (sum) sum.textContent = "Error";
+  }
+}
+
+function renderBookmarksManager(items) {
+  const grid = $("bookmarks-grid");
+  const sum = $("bookmarks-summary");
+  if (!grid) return;
+  const qv = ($("bookmarks-search")?.value || "").toLowerCase();
+  const filtered = items.filter((b) => {
+    if (!qv) return true;
+    if (b.url.toLowerCase().includes(qv)) return true;
+    if ((b.archiveUrl || "").toLowerCase().includes(qv)) return true;
+    return (b.paths || []).some((p) => p.toLowerCase().includes(qv));
+  });
+  if (sum) sum.textContent = `${filtered.length} of ${items.length} bookmark${items.length === 1 ? "" : "s"}`;
+  if (filtered.length === 0) {
+    grid.innerHTML = '<p class="muted small attachments-empty">No bookmarks match.</p>';
+    return;
+  }
+  grid.replaceChildren();
+  for (const b of filtered) {
+    const paths = b.paths || [];
+    const card = document.createElement("div");
+    card.className = "attach-card";
+    const meta = document.createElement("div");
+    meta.className = "attach-meta";
+    const nm = document.createElement("div");
+    nm.className = "attach-name";
+    nm.title = b.url;
+    nm.textContent = b.url;
+    const sub = document.createElement("div");
+    sub.className = "attach-sub";
+    sub.textContent = `Archived · ${paths.length} note${paths.length === 1 ? "" : "s"}`;
+    meta.append(nm, sub);
+    const acts = document.createElement("div");
+    acts.className = "attach-actions";
+    const openOrig = document.createElement("button");
+    openOrig.className = "btn small ghost";
+    openOrig.textContent = "Open original";
+    openOrig.onclick = () => window.open(b.url, "_blank", "noopener,noreferrer");
+    const openArchive = document.createElement("button");
+    openArchive.className = "btn small ghost";
+    openArchive.textContent = "Open archive";
+    openArchive.onclick = () => window.open(b.archiveUrl, "_blank", "noopener,noreferrer");
+    const copy = document.createElement("button");
+    copy.className = "btn small ghost";
+    copy.textContent = "Copy archive URL";
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.archiveUrl); toast("Copied archive URL."); } catch { toast(b.archiveUrl, false); }
+    };
+    acts.append(openOrig, openArchive, copy);
+    const refsBox = document.createElement("div");
+    refsBox.className = "attach-refs";
+    refsBox.append("Used in: ");
+    paths.forEach((p, i) => {
+      if (i > 0) refsBox.append(", ");
+      const a = document.createElement("a");
+      a.href = "#";
+      a.textContent = p;
+      a.onclick = (e) => { e.preventDefault(); closeBookmarksModal(); closeSettingsModal(); openNote(p, null); };
+      refsBox.append(a);
+    });
+    card.append(meta, acts, refsBox);
+    grid.append(card);
+  }
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target && e.target.id === "bookmarks-manage") {
+    e.preventDefault();
+    closeSettingsModal();
+    openBookmarksModal();
+    return;
+  }
+});
+
+function initBookmarksEvents() {
+  $("bookmarks-close")?.addEventListener("click", closeBookmarksModal);
+  $("bookmarks-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeBookmarksModal);
+  $("bookmarks-refresh")?.addEventListener("click", loadBookmarksManager);
+  $("bookmarks-search")?.addEventListener("input", () => renderBookmarksManager(_bookmarksCache));
+}
+
+initBookmarksEvents();
 
 // Warm the integration status cache so paste handlers don't add latency.
 fetchIntegrationStatus().catch(() => {});

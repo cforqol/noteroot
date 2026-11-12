@@ -304,11 +304,11 @@
         <section class="settings-section" id="set-editor">
           <h3>Editor</h3>
           <div class="setting">
-            <div class="setting-label">Editor<small>Vim needs a desktop browser; phones always use plain text.</small></div>
+            <div class="setting-label">Default editor<small>The mode a note opens in. Vim needs a desktop browser; phones always use plain text. Either way, the editor's own Vim/plain-text button switches a single note without changing this default.</small></div>
             <div class="radio-group">
-              <label><input type="radio" name="editor-mode" value="auto" checked><span>Auto (Vim on desktop, plain text on mobile)</span></label>
-              <label><input type="radio" name="editor-mode" value="vim"><span>Always Vim (if available)</span></label>
-              <label><input type="radio" name="editor-mode" value="textarea"><span>Always Plain Text</span></label>
+              <label><input type="radio" name="editor-mode" value="auto" checked><span>Auto — Vim on desktop, plain text on mobile</span></label>
+              <label><input type="radio" name="editor-mode" value="vim"><span>Vim (if available)</span></label>
+              <label><input type="radio" name="editor-mode" value="textarea"><span>Plain text</span></label>
             </div>
           </div>
           <label class="setting">
@@ -515,10 +515,21 @@
             <div class="setting-label">Slink<small>Self-hosted file host for image uploads. Set <code>NOTEROOT_SLINK_URL</code> and <code>NOTEROOT_SLINK_KEY</code>.</small></div>
             <button id="test-slink" class="btn" disabled>Test connection</button>
           </div>
+          <label class="setting switch" id="integ-slink-use-row">
+            <span class="setting-label">Use Slink for image uploads<small>When configured, pasted/dropped/attached images upload to Slink and embed its link instead of this notebook's own storage. Off keeps them local (or in S3, if configured).</small></span>
+            <input type="checkbox" data-setting="useSlinkForImages" id="integ-slink-use" disabled>
+          </label>
           <div class="setting" id="integ-karakeep-row">
             <div class="setting-label">Karakeep<small>URL archiving on paste. Set <code>NOTEROOT_KARAKEEP_URL</code> and <code>NOTEROOT_KARAKEEP_KEY</code>.</small></div>
-            <span id="integ-karakeep-status" class="status-value disabled">Not configured</span>
+            <div class="lock-actions">
+              <span id="integ-karakeep-status" class="status-value disabled">Not configured</span>
+              <button id="bookmarks-manage" class="btn small" disabled>Bookmarks…</button>
+            </div>
           </div>
+          <label class="setting switch" id="integ-karakeep-use-row">
+            <span class="setting-label">Archive pasted URLs with Karakeep<small>When configured, pasting a plain URL into the editor archives it and adds an "(archived)" link next to it. Off still lets you browse bookmarks already archived.</small></span>
+            <input type="checkbox" data-setting="useKarakeepForUrls" id="integ-karakeep-use" disabled>
+          </label>
         </section>
 
         <section class="settings-section" id="set-attachments">
@@ -632,6 +643,26 @@
       <div id="attachments-summary" class="attachments-summary" aria-live="polite"></div>
       <div id="attachments-grid" class="attachments-grid">
         <p class="muted small">Open a notebook to see its attachments.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="bookmarks-modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-content attachments-content" role="dialog" aria-modal="true" aria-labelledby="bookmarks-title">
+    <div class="modal-header">
+      <h2 id="bookmarks-title">Bookmarks</h2>
+      <div class="attachments-header-tools">
+        <input id="bookmarks-search" type="search" placeholder="Filter by URL or note…" aria-label="Filter bookmarks" autocomplete="off">
+        <button id="bookmarks-refresh" class="btn small ghost" title="Reload the list">Refresh</button>
+        <button id="bookmarks-close" class="btn icon-btn ghost" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="modal-body attachments-body">
+      <div id="bookmarks-summary" class="attachments-summary" aria-live="polite"></div>
+      <div id="bookmarks-grid" class="attachments-grid">
+        <p class="muted small">Open a notebook to see its bookmarks.</p>
       </div>
     </div>
   </div>

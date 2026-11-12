@@ -18,7 +18,7 @@ function buildRootDropZone(doc, onDropNote) {
   icon.textContent = '📂';
   const label = doc.createElement('span');
   label.className = 'label';
-  label.textContent = '/ notebook root';
+  label.textContent = '/ root';
   btn.append(icon, label);
   row.append(btn);
   row.addEventListener('dragover', (e) => {

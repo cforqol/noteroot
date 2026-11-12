@@ -261,6 +261,12 @@ export const SETTINGS = {
   dailyNotesFolder: { key: 'nr.dailyNotesFolder', choices: [], fallback: 'daily' },
   dailyNotesFormat: { key: 'nr.dailyNotesFormat', choices: ['YYYY-MM-DD', 'YYYY/MM/DD', 'DD-MM-YYYY'], fallback: 'YYYY-MM-DD' },
   dailyNotesTemplate: { key: 'nr.dailyNotesTemplate', choices: [], fallback: '' },
+  // Only consulted when the server reports Slink as configured; this
+  // lets a user opt out of routing their own pastes/drops/attachments
+  // through it even though the notebook's admin has it available.
+  useSlinkForImages: { key: 'nr.useSlinkForImages', choices: ['on', 'off'], fallback: 'on' },
+  // Same shape as useSlinkForImages, for Karakeep's paste-to-archive.
+  useKarakeepForUrls: { key: 'nr.useKarakeepForUrls', choices: ['on', 'off'], fallback: 'on' },
 };
 
 /** Current value of a registered setting (its default when unset or invalid). */

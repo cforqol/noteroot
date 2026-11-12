@@ -6,7 +6,7 @@ import {
   restoreTrashFolder, deleteTrashFolder,
   saveNote, exportNotebook, importNotebook, createBackup, resourceStats,
   createNotebook, renameNotebook, deleteNotebook,
-  listResources, deleteResource, listTags,
+  listResources, deleteResource, listTags, listKarakeepBookmarks,
   lockStatus, setLock, removeLock, unlock, relock,
 } from '../../lib/notes-api.js';
 
@@ -394,6 +394,13 @@ describe('resource attachments', () => {
     expect(f.calls[0].init.method).toBe('GET');
     await listResources('nb', 'reserved', f);
     expect(f.calls[1].url).toBe('/n/nb/resources?state=reserved&limit=500');
+  });
+
+  test('listKarakeepBookmarks GETs the per-notebook listing', async () => {
+    const f = mockFetch([{ status: 200, body: { bookmarks: [] } }]);
+    expect(await listKarakeepBookmarks('my nb', f)).toEqual({ bookmarks: [] });
+    expect(f.calls[0].url).toBe('/n/my%20nb/integrations/karakeep/bookmarks');
+    expect(f.calls[0].init.method).toBe('GET');
   });
 
   test('deleteResource DELETEs by SHA', async () => {

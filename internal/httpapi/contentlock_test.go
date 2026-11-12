@@ -142,6 +142,48 @@ func TestContentLock_notebookCoversAll(t *testing.T) {
 	}
 }
 
+// TestListNotebooks_marksLockedNotebook guards against the notebook
+// selector showing no lock indicator for an already-locked notebook
+// until the user actually switches into it: GET /api/v1/notebooks must
+// report locked:true for every session that has not opened it, and
+// locked:false again once it has (same cookie as every other
+// content-lock check).
+func TestListNotebooks_marksLockedNotebook(t *testing.T) {
+	c := newLockClient(t, map[string]string{"a.md": "a\n"})
+	listLocked := func() bool {
+		rec := c.do(http.MethodGet, "/api/v1/notebooks", "", nil)
+		var resp struct {
+			Notebooks []struct {
+				Slug   string `json:"slug"`
+				Locked bool   `json:"locked"`
+			} `json:"notebooks"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Notebooks) != 1 || resp.Notebooks[0].Slug != "work" {
+			t.Fatalf("notebooks = %+v", resp.Notebooks)
+		}
+		return resp.Notebooks[0].Locked
+	}
+	if listLocked() {
+		t.Fatal("unlocked notebook reported as locked")
+	}
+	if rec := c.do(http.MethodPut, "/n/work/contentlock",
+		`{"path":"","kind":"notebook","password":"pw12"}`, nil); rec.Code != http.StatusOK {
+		t.Fatalf("set notebook lock = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !listLocked() {
+		t.Error("newly locked notebook not reported as locked")
+	}
+	if rec := c.unlock("", "pw12"); rec.Code != http.StatusOK {
+		t.Fatalf("unlock = %d", rec.Code)
+	}
+	if listLocked() {
+		t.Error("session that opened the lock should no longer see it in the listing")
+	}
+}
+
 func TestContentLock_treeMarksLockedFolder(t *testing.T) {
 	c := newLockClient(t, map[string]string{"dir/a.md": "a\n", "top.md": "t\n"})
 	if rec := c.setLock("dir", "folder", "pw12"); rec.Code != http.StatusOK {

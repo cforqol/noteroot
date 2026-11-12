@@ -41,7 +41,10 @@ async function fakeFetch(url, init = {}) {
   const method = (init.method || 'GET').toUpperCase();
   const route = `${method} ${u.pathname}`;
   switch (route) {
-    case 'GET /api/v1/notebooks': return respond(200, { notebooks: [{ slug: 'nb' }] });
+    // nb2 is locked too, but never switched to in this file — its entry
+    // must come from the listing response alone (see "an inactive but
+    // already-locked notebook" below), not a live per-notebook query.
+    case 'GET /api/v1/notebooks': return respond(200, { notebooks: [{ slug: 'nb', locked: true }, { slug: 'nb2', locked: true }] });
     case 'GET /n/nb/tree': return respond(200, buildTree());
     case 'GET /n/nb/contentlock': return respond(200, lockState);
     case 'POST /n/nb/contentlock/unlock':
@@ -86,6 +89,11 @@ describe('locked notebook', () => {
     expect($('tree-locked').hidden).toBe(false);
     expect($('tree').hidden).toBe(true);
     expect($('daily-notes-section').hidden).toBe(true);
+  });
+
+  test('an inactive but already-locked notebook shows 🔒 in the dropdown without switching to it', () => {
+    const opt = [...$('notebooks').options].find((o) => o.value === 'nb2');
+    expect(opt.textContent).toBe('nb2 🔒');
   });
 
   test('unlocking restores the tree and re-populates the daily notes section', async () => {

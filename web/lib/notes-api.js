@@ -221,6 +221,11 @@ export function listResources(slug, state = 'committed', f) {
   return request('GET', `/n/${enc(slug)}/resources?state=${enc(state)}&limit=500`, {}, f);
 }
 
+/** List every Karakeep-archived URL in the notebook and the notes that mention it. */
+export function listKarakeepBookmarks(slug, f) {
+  return request('GET', `/n/${enc(slug)}/integrations/karakeep/bookmarks`, {}, f);
+}
+
 /** Delete an uploaded resource by SHA. */
 export function deleteResource(slug, sha, f) {
   return request('DELETE', `/n/${enc(slug)}/resources/${enc(sha)}`, { headers: { Accept: 'application/json' } }, f);

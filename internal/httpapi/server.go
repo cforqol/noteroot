@@ -144,6 +144,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", auth(s.presignRead))
 	mux.Handle("GET /n/{slug}/resources/{sha}/refs", auth(s.listResourceRefs))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
+	mux.Handle("GET /n/{slug}/integrations/karakeep/bookmarks", auth(s.listKarakeepBookmarks))
 
 	// Stage 9 phase 2: scoped API tokens (human-managed under the
 	// forward-auth surface) and the token-authenticated machine API.
@@ -369,15 +370,16 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) listNotebooks(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listNotebooks(w http.ResponseWriter, r *http.Request) {
 	type item struct {
 		Slug    string `json:"slug"`
 		Name    string `json:"name"`
 		Profile string `json:"profile"`
+		Locked  bool   `json:"locked"`
 	}
 	out := make([]item, 0)
 	for _, nb := range s.reg.List() {
-		out = append(out, item{nb.Manifest.Slug, nb.Manifest.Name, nb.Manifest.Profile})
+		out = append(out, item{nb.Manifest.Slug, nb.Manifest.Name, nb.Manifest.Profile, s.notebookLocked(r, nb.Manifest.Slug)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"notebooks": out})
 }

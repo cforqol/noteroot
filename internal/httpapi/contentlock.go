@@ -74,6 +74,21 @@ func (ls *lockState) allows(r *http.Request, target string) (bool, error) {
 	return true, nil
 }
 
+// notebookLocked reports whether this request's session cannot read
+// slug's notebook root — the same check every note read already makes
+// (lockGuard/allows), reused here so the notebook list can show a 🔒
+// for an already-locked notebook without the client needing a status
+// request per notebook just to populate the dropdown.
+func (s *Server) notebookLocked(r *http.Request, slug string) bool {
+	ls, ok := s.openLockState(r, slug)
+	if !ok {
+		return false
+	}
+	defer ls.close()
+	allowed, err := ls.allows(r, "")
+	return err == nil && !allowed
+}
+
 // lockGuard is the one enforcement point for request handlers. It opens
 // and closes the state database itself and reports whether the request
 // may proceed; when it may not, the response has already been written
