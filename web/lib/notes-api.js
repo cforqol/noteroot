@@ -196,6 +196,21 @@ export async function exportNotebook(slug, f = globalThis.fetch) {
 }
 
 /**
+ * A sidebar multi-selection (notes and/or whole folders) as a .zip Blob.
+ * `paths` may mix note and folder paths; the server expands folders to
+ * every note beneath them. `attachments` adds every referenced resource
+ * blob, deduplicated across the selection.
+ */
+export async function exportSelection(slug, paths, { attachments = false } = {}, f = globalThis.fetch) {
+  const q = new URLSearchParams();
+  for (const p of paths) q.append('path', p);
+  if (attachments) q.set('attachments', '1');
+  const r = await f(`/n/${enc(slug)}/export/selection?${q.toString()}`);
+  if (!r.ok) throw await failure(r);
+  return r.blob();
+}
+
+/**
  * Import a .tar.gz of notes: {dryRun, entries: [{path, size, sha, status,
  * message}]} with status created | updated | skipped | error. A dry run
  * only reports what would happen.

@@ -267,6 +267,9 @@ export const SETTINGS = {
   useSlinkForImages: { key: 'nr.useSlinkForImages', choices: ['on', 'off'], fallback: 'on' },
   // Same shape as useSlinkForImages, for Karakeep's paste-to-archive.
   useKarakeepForUrls: { key: 'nr.useKarakeepForUrls', choices: ['on', 'off'], fallback: 'on' },
+  // Re-align pipe tables (pad cells, normalize the delimiter row) on
+  // every save, same as the frontmatter stamp already does unconditionally.
+  formatTables: { key: 'nr.formatTables', choices: ['on', 'off'], fallback: 'on' },
 };
 
 /** Current value of a registered setting (its default when unset or invalid). */

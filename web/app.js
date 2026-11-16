@@ -24,6 +24,7 @@ import {
   normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, localDateTime, isValidId,
   splitFrontmatter, replaceH1, ensureH1, setFrontmatterTitle,
 } from '/lib/frontmatter.js';
+import { formatPipeTables } from '/lib/tables.js';
 import { indentEdit } from '/lib/textedit.js';
 import {
   formatTreeStatus, folderPaths, parentDir, joinPath, ancestors, isWithin,
@@ -39,7 +40,7 @@ import {
 import * as notesApi from '/lib/notes-api.js';
 import { fetchIntegrationStatus, resetIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
 import {
-  isArchive, isMarkdown, exportFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
+  isArchive, isMarkdown, exportFileName, selectionFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
 } from '/lib/transfer.js';
 import { renderHelp, isTypingTarget, shortcutFor } from '/lib/help.js';
 import {
@@ -192,6 +193,45 @@ function wrapTables(container) {
     t.parentNode.insertBefore(wrap, t);
     wrap.append(t);
   });
+}
+
+// Read-mode heading folds: a caret on every top-level heading hides
+// everything up to the next heading of the same or shallower level.
+// State lives only on the DOM (not persisted) — a fresh render always
+// starts fully unfolded, same as collapsed-folder state does NOT carry
+// over to a note's own headings.
+function setupHeadingFolds(container) {
+  for (const h of container.querySelectorAll(":scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6")) {
+    const caret = document.createElement("button");
+    caret.type = "button";
+    caret.className = "fold-caret";
+    caret.setAttribute("aria-label", "Fold this section");
+    caret.setAttribute("aria-expanded", "true");
+    caret.textContent = "▾";
+    caret.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleHeadingFold(h, caret);
+    });
+    h.prepend(caret);
+  }
+}
+
+function toggleHeadingFold(heading, caret) {
+  const level = Number(heading.tagName[1]);
+  const folded = !heading.classList.contains("folded");
+  heading.classList.toggle("folded", folded);
+  caret.textContent = folded ? "▸" : "▾";
+  caret.setAttribute("aria-expanded", String(!folded));
+  for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
+    const m = /^H([1-6])$/.exec(el.tagName);
+    if (m && Number(m[1]) <= level) break;
+    // The split pane appends its links/backlinks panels as further
+    // siblings of the note body — folding the last section must not
+    // reach past the note content into those.
+    if (el.classList.contains("links-panel")) break;
+    el.classList.toggle("fold-hidden", folded);
+  }
 }
 
 function esc(s) {
@@ -573,6 +613,28 @@ async function deleteMultiNotes() {
   });
 }
 
+// Downloads a sidebar selection (notes and/or whole folders — the server
+// expands a folder path to every note beneath it) as a .zip. Shared by
+// the multi-bar's Download button, its attachments submenu, and the
+// per-node context menu's Download entry, so there is exactly one place
+// that decides the filename and success toast.
+async function actionDownloadSelection(paths, attachments) {
+  if (!slug || paths.length === 0) return;
+  await guarded(async () => {
+    const blob = await notesApi.exportSelection(slug, paths, { attachments });
+    downloadBlob(blob, selectionFileName(slug, paths));
+    toast(`Downloaded ${paths.length} item${paths.length === 1 ? "" : "s"}${attachments ? " with attachments" : ""}.`);
+  });
+}
+
+/** The attachments-or-not choice, popped at (x, y) — same two options from the sidebar icon and every context menu entry. */
+function actionDownloadSelectionMenu(paths, x, y) {
+  showMenu(x, y, [
+    { label: "Download", onSelect: () => actionDownloadSelection(paths, false) },
+    { label: "Download with attachments", onSelect: () => actionDownloadSelection(paths, true) },
+  ]);
+}
+
 /** Return a shallow-copied root whose top-level children have the daily journal folder removed. */
 function treeWithoutDailyFolder(root) {
   const dailyFolder = getSetting('dailyNotesFolder').trim() || 'daily';
@@ -657,6 +719,7 @@ function drawTree() {
         toast(`Moved to ${folderPath || "/"}`);
       });
     },
+    onLongPress: (path) => toggleMultiNote(path),
   });
   $("tree-status").textContent = formatTreeStatus(totals);
   updateMultiBar();
@@ -960,6 +1023,7 @@ function renderRead(n) {
   renderCodeHighlighting($("note"));
   wrapTables($("note"));
   attachImgLightbox($("note"));
+  setupHeadingFolds($("note"));
   activateTaskCheckboxes($("note"), n);
   // The note body stays the note: contents, tags and links live in the
   // panel beside it.
@@ -1286,6 +1350,7 @@ function renderSplitRead(n) {
   renderCodeHighlighting($("split-note"));
   wrapTables($("split-note"));
   attachImgLightbox($("split-note"));
+  setupHeadingFolds($("split-note"));
   $("split-note").append(linksPanels(n));
   $("split-note").scrollTop = 0;
 }
@@ -2639,8 +2704,13 @@ async function saveNoteContent(content, manual) {
     updated: ed.updated,
     touch: true,
   });
-  const sent = norm.changed ? norm.content : content;
-  if (norm.changed) await applyFixedContent(ed, sent);
+  let sent = norm.changed ? norm.content : content;
+  let fixed = norm.changed;
+  if (getSetting("formatTables") !== "off") {
+    const tables = formatPipeTables(sent);
+    if (tables.changed) { sent = tables.content; fixed = true; }
+  }
+  if (fixed) await applyFixedContent(ed, sent);
   try {
     const res = await notesApi.saveNote(slug, ed.path, sent, { baseSha: ed.baseSha });
     if (editing !== ed) return true;
@@ -3937,6 +4007,7 @@ function showNodeMenu(node, x, y) {
       { label: "Rename…", onSelect: () => actionRename(node) },
       { label: "Move…", onSelect: () => actionMove(node) },
       { label: "Icon & color…", onSelect: () => actionDecorate(node) },
+      { label: "Download…", onSelect: () => actionDownloadSelectionMenu([node.path], x, y) },
       { separator: true },
       ...lockItems,
       { label: "Delete folder…", danger: true, onSelect: () => actionDelete(node) },
@@ -3952,6 +4023,10 @@ function showNodeMenu(node, x, y) {
         { label: "Rename…", onSelect: () => actionRename(node) },
         { label: bulk ? `Move ${bulkN} notes…` : "Move…", onSelect: () => (bulk ? moveMultiNotes() : actionMove(node)) },
         { label: "Download .md", onSelect: () => actionDownloadNote(node) },
+        {
+          label: bulk ? `Download ${bulkN} notes…` : "Download as zip…",
+          onSelect: () => actionDownloadSelectionMenu(bulk ? [...multiSelected] : [node.path], x, y),
+        },
         { separator: true },
         ...lockItems,
         { label: bulk ? `Delete ${bulkN} notes…` : "Delete note…", danger: true, onSelect: () => (bulk ? deleteMultiNotes() : actionDelete(node)) },
@@ -5025,12 +5100,8 @@ async function updateIntegrationsInfo() {
   if (testSlinkBtn) testSlinkBtn.disabled = !integ.slink;
   const useSlinkToggle = $("integ-slink-use");
   if (useSlinkToggle) useSlinkToggle.disabled = !integ.slink;
-  // Update Karakeep status badge.
-  const kkEl = $("integ-karakeep-status");
-  if (kkEl) {
-    kkEl.textContent = integ.karakeep ? "Configured" : "Not configured";
-    kkEl.className = integ.karakeep ? "status-value enabled" : "status-value disabled";
-  }
+  const testKarakeepBtn = $("test-karakeep");
+  if (testKarakeepBtn) testKarakeepBtn.disabled = !integ.karakeep;
   const useKarakeepToggle = $("integ-karakeep-use");
   if (useKarakeepToggle) useKarakeepToggle.disabled = !integ.karakeep;
   // The bookmark manager is useful even with archiving turned off right
@@ -5079,6 +5150,28 @@ $("test-slink")?.addEventListener("click", async (e) => {
   } catch (err) {
     btn.textContent = "✗ Failed";
     toast(`Slink test failed: ${err.message}`, true);
+  } finally {
+    setTimeout(() => { btn.textContent = "Test connection"; btn.disabled = false; }, 3000);
+  }
+});
+
+$("test-karakeep")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Testing…";
+  try {
+    const r = await fetch("/api/v1/integrations/karakeep/test");
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      btn.textContent = "✓ Connected";
+      toast("Karakeep connection OK.");
+    } else {
+      btn.textContent = "✗ Failed";
+      toast(`Karakeep test failed: ${j.error || "unknown error"}`, true);
+    }
+  } catch (err) {
+    btn.textContent = "✗ Failed";
+    toast(`Karakeep test failed: ${err.message}`, true);
   } finally {
     setTimeout(() => { btn.textContent = "Test connection"; btn.disabled = false; }, 3000);
   }
@@ -5603,6 +5696,20 @@ function syncVimrcInfo() {
 $("multi-move")?.addEventListener("click", moveMultiNotes);
 $("multi-delete")?.addEventListener("click", deleteMultiNotes);
 $("multi-clear")?.addEventListener("click", clearMultiNotes);
+$("multi-download")?.addEventListener("click", () => actionDownloadSelection([...multiSelected], false));
+$("multi-download-more")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const caret = e.currentTarget;
+  const r = caret.getBoundingClientRect();
+  caret.setAttribute("aria-expanded", "true");
+  const run = (fn) => () => { caret.setAttribute("aria-expanded", "false"); fn(); };
+  showMenu(r.left, Math.min(r.bottom + 4, window.innerHeight - 80), [
+    { label: "Download", onSelect: run(() => actionDownloadSelection([...multiSelected], false)) },
+    { label: "Download with attachments", onSelect: run(() => actionDownloadSelection([...multiSelected], true)) },
+  ]);
+  const reset = () => { caret.setAttribute("aria-expanded", "false"); document.removeEventListener("pointerdown", reset, true); };
+  document.addEventListener("pointerdown", reset, true);
+});
 
 $("edit-vimrc")?.addEventListener("click", openVimrcModal);
 $("vimrc-cancel")?.addEventListener("click", closeVimrcModal);

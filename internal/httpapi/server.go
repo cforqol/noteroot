@@ -134,6 +134,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/note/export", auth(s.exportNoteHTML))
 	mux.Handle("GET /n/{slug}/note/export/archive", auth(s.exportNoteArchive))
 	mux.Handle("GET /n/{slug}/export/html", auth(s.exportNotebookHTML))
+	mux.Handle("GET /n/{slug}/export/selection", auth(s.exportSelection))
 	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("POST /n/{slug}/note/import", Chain(http.HandlerFunc(s.importNoteArchive), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
@@ -201,6 +202,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /api/v1/integrations/status", auth(s.integrationStatus))
 	mux.Handle("GET /api/v1/integrations/s3/test", auth(s.testS3))
 	mux.Handle("GET /api/v1/integrations/slink/test", auth(s.testSlink))
+	mux.Handle("GET /api/v1/integrations/karakeep/test", auth(s.testKarakeep))
 	mux.Handle("POST /api/v1/integrations/karakeep/archive", mutating(s.archiveWithKarakeep))
 	mux.Handle("POST /api/v1/integrations/slink/upload",
 		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))

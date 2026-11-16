@@ -19,6 +19,19 @@ export function exportFileName(slug, date = new Date()) {
 }
 
 /**
+ * File name for a sidebar multi-selection download. A single item uses
+ * its own name (matching the single-note "Download .md" naming); more
+ * than one falls back to the notebook slug and date, same shape as
+ * exportFileName.
+ */
+export function selectionFileName(slug, paths, date = new Date()) {
+  if (paths.length === 1) {
+    return `${baseName(paths[0].replace(/\/$/, '')).replace(/\.md$/, '')}.zip`;
+  }
+  return `${slug}-selection-${localDate(date)}.zip`;
+}
+
+/**
  * Counts per import status: {created, updated, skipped, error, files,
  * total}. Attachments (kind "resource") are counted apart as `files`
  * (new ones) so the note counts stay about notes; their failures still

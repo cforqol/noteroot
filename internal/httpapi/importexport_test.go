@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os/exec"
 	"strings"
 	"testing"
@@ -709,5 +711,144 @@ func TestImport_appliesHistoryBundle(t *testing.T) {
 	g := get(t, srv, "/n/copy/raw?path=a.md", nil)
 	if g.Code != http.StatusOK {
 		t.Fatalf("restored note = %d", g.Code)
+	}
+}
+
+// zipMembers lists member name -> bytes of a .zip.
+func zipMembers(t *testing.T, archive []byte) map[string][]byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string][]byte{}
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		out[f.Name] = b
+	}
+	return out
+}
+
+func exportSelectionReq(t *testing.T, srv *Server, slug string, paths []string, attachments bool) *httptest.ResponseRecorder {
+	t.Helper()
+	q := url.Values{}
+	for _, p := range paths {
+		q.Add("path", p)
+	}
+	if attachments {
+		q.Set("attachments", "1")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/n/"+slug+"/export/selection?"+q.Encode(), nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestExportSelection_notesOnly(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{
+		"a.md":         "# A",
+		"b.md":         "# B",
+		"dir/c.md":     "# C",
+		"untouched.md": "# nope",
+	}))
+	rec := exportSelectionReq(t, srv, "work", []string{"a.md", "dir"}, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	members := zipMembers(t, rec.Body.Bytes())
+	for _, want := range []string{"a.md", "dir/c.md"} {
+		if _, ok := members[want]; !ok {
+			t.Errorf("missing %q in %v", want, keys(members))
+		}
+	}
+	for _, unwanted := range []string{"b.md", "untouched.md"} {
+		if _, ok := members[unwanted]; ok {
+			t.Errorf("unexpected %q in selection export", unwanted)
+		}
+	}
+}
+
+func TestExportSelection_attachmentsToggle(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "# A"}))
+	png := []byte("\x89PNG\r\n\x1a\nfake-image-bytes")
+	up := postResource(t, srv, "work", "pic.png", "image/png", png)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("upload = %d %s", up.Code, up.Body.String())
+	}
+	var sha string
+	decodeJSON(t, up, &struct {
+		SHA *string `json:"sha"`
+	}{&sha})
+	noteBody := "# A\n\n![pic](/n/work/resources/" + sha + ")\n"
+	req := httptest.NewRequest(http.MethodPut, "/n/work/note?path=a.md", strings.NewReader(noteBody))
+	req.Header.Set("Content-Type", "text/markdown")
+	putRec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(putRec, req)
+	if putRec.Code != http.StatusOK && putRec.Code != http.StatusNoContent {
+		t.Fatalf("put note = %d %s", putRec.Code, putRec.Body.String())
+	}
+
+	without := exportSelectionReq(t, srv, "work", []string{"a.md"}, false)
+	membersWithout := zipMembers(t, without.Body.Bytes())
+	if _, ok := membersWithout["resources/"+sha]; ok {
+		t.Error("attachments=0 (default) must not include the blob")
+	}
+
+	with := exportSelectionReq(t, srv, "work", []string{"a.md"}, true)
+	membersWith := zipMembers(t, with.Body.Bytes())
+	if !bytes.Equal(membersWith["resources/"+sha], png) {
+		t.Fatalf("attachments=1 must include the blob: %v", keys(membersWith))
+	}
+	if !strings.Contains(string(membersWith["resources.json"]), `"filename":"pic.png"`) {
+		t.Fatalf("manifest = %s", membersWith["resources.json"])
+	}
+}
+
+func TestExportSelection_missingPathRejected(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"a.md": "# A"}))
+	req := httptest.NewRequest(http.MethodGet, "/n/work/export/selection", nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestExportSelection_unknownNotebook(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, nil)
+	rec := exportSelectionReq(t, srv, "nope", []string{"a.md"}, false)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestExportSelection_lockedNoteExcluded(t *testing.T) {
+	c := newLockClient(t, map[string]string{"a.md": "# A", "secret.md": "# S"})
+	if rec := c.setLock("secret.md", "note", "pw12"); rec.Code != http.StatusOK {
+		t.Fatalf("set lock = %d", rec.Code)
+	}
+	q := url.Values{}
+	q.Add("path", "a.md")
+	q.Add("path", "secret.md")
+	req := httptest.NewRequest(http.MethodGet, "/n/work/export/selection?"+q.Encode(), nil)
+	rec := httptest.NewRecorder()
+	c.srv.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	members := zipMembers(t, rec.Body.Bytes())
+	if _, ok := members["a.md"]; !ok {
+		t.Error("unlocked note missing from export")
+	}
+	if _, ok := members["secret.md"]; ok {
+		t.Error("locked note must not be exported without unlocking first")
 	}
 }

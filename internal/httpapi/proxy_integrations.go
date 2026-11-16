@@ -267,3 +267,37 @@ func (s *Server) testSlink(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// testKarakeep handles GET /api/v1/integrations/karakeep/test — verifies
+// that the configured Karakeep instance is reachable and the API key is
+// accepted. Uses a read-only list request (never creates a bookmark).
+// Returns {"ok":true} on success or {"ok":false,"error":"…"} when not
+// configured or unreachable.
+func (s *Server) testKarakeep(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.KarakeepURL == "" || s.cfg.KarakeepKey == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "Karakeep not configured"})
+		return
+	}
+	base := strings.TrimRight(s.cfg.KarakeepURL, "/")
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, base+"/api/v1/bookmarks?limit=1", nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "bad karakeep URL"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.cfg.KarakeepKey)
+	resp, err := s.proxyClient().Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "karakeep unreachable: " + err.Error()})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "karakeep rejected the API key"})
+		return
+	}
+	if resp.StatusCode >= 500 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": fmt.Sprintf("karakeep server error %d", resp.StatusCode)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}

@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import {
-  isArchive, isMarkdown, exportFileName, summarizeImport, describeImport,
+  isArchive, isMarkdown, exportFileName, selectionFileName, summarizeImport, describeImport,
   uniquePath, downloadBlob,
 } from '../../lib/transfer.js';
 
@@ -24,6 +24,19 @@ describe('file-type checks', () => {
 test('exportFileName stamps the local date', () => {
   expect(exportFileName('my nb', new Date(2026, 9, 17))).toBe('my nb-2026-10-17.tar.gz');
   expect(exportFileName('nb')).toMatch(/^nb-\d{4}-\d{2}-\d{2}\.tar\.gz$/);
+});
+
+describe('selectionFileName', () => {
+  test('a single note or folder uses its own name', () => {
+    expect(selectionFileName('nb', ['dir/plan.md'])).toBe('plan.zip');
+    expect(selectionFileName('nb', ['dir/sub'])).toBe('sub.zip');
+    expect(selectionFileName('nb', ['dir/sub/'])).toBe('sub.zip');
+  });
+
+  test('more than one item falls back to the notebook slug and date', () => {
+    expect(selectionFileName('my nb', ['a.md', 'b.md'], new Date(2026, 9, 17)))
+      .toBe('my nb-selection-2026-10-17.zip');
+  });
 });
 
 describe('summarizeImport', () => {

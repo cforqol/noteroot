@@ -166,3 +166,103 @@ test('marks the split pane note and multi-selected notes', () => {
   expect(other.classList.contains('split-open')).toBe(false);
   expect(other.getAttribute('aria-selected')).toBe('false');
 });
+
+describe('touch long-press (#84): neither modifier-click nor native drag exist on touch', () => {
+  const touch = (x, y) => new TouchEvent('touchstart', { touches: [{ clientX: x, clientY: y }] });
+  const move = (x, y) => new TouchEvent('touchmove', { touches: [{ clientX: x, clientY: y }], cancelable: true });
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    delete document.elementFromPoint;
+  });
+
+  test('held still past the threshold calls onLongPress, not onDropNote', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(touch(100, 100));
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(true);
+    note.dispatchEvent(new Event('touchend'));
+
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
+    expect(onDropNote).not.toHaveBeenCalled();
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('moving before the long-press timer fires is treated as a plain scroll: neither callback fires', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(touch(100, 100));
+    note.dispatchEvent(move(100, 160)); // well past the 10px threshold, before 450ms
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(new Event('touchend'));
+
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(onDropNote).not.toHaveBeenCalled();
+  });
+
+  test('long-press then drag onto a folder calls onDropNote with that folder, and clears the highlight', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+    const folder = el.querySelector('[data-path="empty"]');
+    const folderRow = folder.closest('.row');
+
+    document.elementFromPoint = jest.fn().mockReturnValue(folder);
+    note.dispatchEvent(touch(100, 100));
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(move(100, 300));
+    expect(note.classList.contains('touch-dragging')).toBe(true);
+    expect(folderRow.classList.contains('drop-target')).toBe(true);
+
+    note.dispatchEvent(new Event('touchend'));
+    expect(onDropNote).toHaveBeenCalledWith('top.md', 'empty');
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(folderRow.classList.contains('drop-target')).toBe(false);
+    expect(note.classList.contains('touch-dragging')).toBe(false);
+  });
+
+  test('long-press then drag onto the root zone moves to root (empty path)', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="work/plan.md"]');
+    const rootNode = el.querySelector('.root-node');
+
+    document.elementFromPoint = jest.fn().mockReturnValue(rootNode);
+    note.dispatchEvent(touch(50, 50));
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(move(50, 10));
+    note.dispatchEvent(new Event('touchend'));
+
+    expect(onDropNote).toHaveBeenCalledWith('work/plan.md', '');
+  });
+
+  test('a locked note gets no long-press wiring at all', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, { isDir: true, children: [{ name: 'v.md', path: 'v.md', locked: true }] }, { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="v.md"]');
+    note.dispatchEvent(touch(0, 0));
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('without onLongPress, no touch listeners are attached (desktop-only mouse drag still works)', () => {
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote });
+    const note = el.querySelector('[data-path="top.md"]');
+    expect(note.draggable).toBe(true);
+    note.dispatchEvent(touch(0, 0));
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+});

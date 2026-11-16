@@ -175,6 +175,76 @@ func TestKarakeepArchive_upstreamError(t *testing.T) {
 	}
 }
 
+// --- karakeep test ---
+
+func TestKarakeepTest_notConfigured(t *testing.T) {
+	s := newServerWithInteg(t, nil, nil)
+	w := integGet(t, s, "/api/v1/integrations/karakeep/test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Error("ok should be false when Karakeep not configured")
+	}
+}
+
+func TestKarakeepTest_reachable(t *testing.T) {
+	kk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer kk-test-key" || r.Method != http.MethodGet {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer kk.Close()
+
+	s := newServerWithInteg(t, kk, nil)
+	w := integGet(t, s, "/api/v1/integrations/karakeep/test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); !ok {
+		t.Errorf("ok should be true, got %v (error: %v)", resp["ok"], resp["error"])
+	}
+}
+
+func TestKarakeepTest_badKey(t *testing.T) {
+	kk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer kk.Close()
+
+	s := newServerWithInteg(t, kk, nil)
+	w := integGet(t, s, "/api/v1/integrations/karakeep/test")
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Error("ok should be false when Karakeep rejects the key")
+	}
+}
+
+func TestKarakeepTest_serverError(t *testing.T) {
+	kk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer kk.Close()
+
+	s := newServerWithInteg(t, kk, nil)
+	w := integGet(t, s, "/api/v1/integrations/karakeep/test")
+	var resp map[string]any
+	decodeJSON(t, w, &resp)
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Error("ok should be false when Karakeep returns 5xx")
+	}
+	if resp["error"] == "" {
+		t.Error("error message should be present")
+	}
+}
+
 // --- slink proxy ---
 
 func TestSlinkUpload_success(t *testing.T) {

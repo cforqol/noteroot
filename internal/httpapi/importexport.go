@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"noteroot/internal/git"
@@ -233,6 +234,146 @@ func (s *Server) exportNoteArchive(w http.ResponseWriter, r *http.Request) {
 
 	_ = tw.Close()
 	_ = gz.Close()
+}
+
+// exportSelection handles GET /n/{slug}/export/selection?path=&path=...
+// — a sidebar multi-select download. Each path is either a note (exact
+// match) or a folder (every note under it, recursively); duplicates and
+// overlaps collapse naturally since the result is a vault walk filtered
+// by prefix, not a per-path lookup. Streams a .zip (not .tar.gz, unlike
+// the other archive exports here) because that is what was asked for —
+// double-clickable on every OS without extra tooling. attachments=1
+// adds every referenced resource blob, deduplicated across the whole
+// selection, in the same resources.json + resources/<sha> layout
+// exportNoteArchive already uses.
+func (s *Server) exportSelection(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	nb, ok := s.reg.Get(slug)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	selected := r.URL.Query()["path"]
+	if len(selected) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one path required"})
+		return
+	}
+	includeAttachments := r.URL.Query().Get("attachments") == "1"
+
+	ls, ok := s.openLockState(r, slug)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		return
+	}
+	defer ls.close()
+
+	matches := func(notePath string) bool {
+		for _, p := range selected {
+			if notePath == p || strings.HasPrefix(notePath, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	v := vault.Open(nb.Layout.Vault())
+	vaultRoot := nb.Layout.Vault()
+	var notePaths []string
+	_ = filepath.WalkDir(vaultRoot, func(p string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return werr
+		}
+		rel, relErr := filepath.Rel(vaultRoot, p)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if vault.Ignored(rel) || !vault.IsNote(rel) || !matches(rel) {
+			return nil
+		}
+		// A lock on the note or any ancestor this session hasn't opened
+		// excludes it silently — a bulk download must not be a way to
+		// read around a lock the tree already hides the note behind.
+		if allowed, aerr := ls.allows(r, rel); aerr != nil || !allowed {
+			return nil
+		}
+		notePaths = append(notePaths, rel)
+		return nil
+	})
+	if len(notePaths) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "nothing to export"})
+		return
+	}
+	sort.Strings(notePaths)
+
+	archiveName := safeFilename(nb.Manifest.Slug)
+	if len(selected) == 1 {
+		archiveName = safeFilename(strings.TrimSuffix(filepath.Base(strings.TrimSuffix(selected[0], "/")), ".md"))
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+archiveName+`.zip"`)
+	w.WriteHeader(http.StatusOK)
+
+	zw := zip.NewWriter(w)
+	defer func() { _ = zw.Close() }()
+
+	for _, rel := range notePaths {
+		content, rerr := v.Read(rel)
+		if rerr != nil {
+			continue
+		}
+		f, cerr := zw.Create(rel)
+		if cerr != nil {
+			continue
+		}
+		_, _ = f.Write(content)
+	}
+
+	if !includeAttachments {
+		return
+	}
+	store, journal, cleanup, rerr := s.openResources(r.Context(), nb)
+	if rerr != nil {
+		s.log.Warn("selection export: resources unavailable", "notebook", slug, "err", rerr)
+		return
+	}
+	defer cleanup()
+
+	seen := map[string]bool{}
+	var metas []resourceMeta
+	for _, rel := range notePaths {
+		content, rerr := v.Read(rel)
+		if rerr != nil {
+			continue
+		}
+		for _, m := range noteResourceSHAs(content, store, journal) {
+			if seen[m.SHA] {
+				continue
+			}
+			seen[m.SHA] = true
+			metas = append(metas, m)
+		}
+	}
+	if len(metas) == 0 {
+		return
+	}
+	if mf, merr := json.Marshal(metas); merr == nil {
+		if f, cerr := zw.Create(resourceManifestName); cerr == nil {
+			_, _ = f.Write(mf)
+		}
+	}
+	for _, m := range metas {
+		rc, gerr := store.Get(m.SHA)
+		if gerr != nil {
+			s.log.Warn("selection export: blob unreadable", "sha", m.SHA, "err", gerr)
+			continue
+		}
+		f, cerr := zw.Create(resourceDirPrefix + m.SHA)
+		if cerr == nil {
+			_, _ = io.Copy(f, rc)
+		}
+		_ = rc.Close()
+	}
 }
 
 // importNoteArchive handles POST /n/{slug}/note/import — accepts a .tar.gz

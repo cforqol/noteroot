@@ -308,6 +308,16 @@ test.describe('direct-to-S3 browser upload', () => {
     await expect(img).toBeVisible({ timeout: 10000 });
     const loaded = await img.evaluate((el) => el.complete && el.naturalWidth > 0);
     expect(loaded).toBe(true);
+
+    // #79: clicking the thumbnail must open the full-resolution image
+    // too — same assertion as the local-storage test, but here the
+    // bytes are actually fetched back through the S3-backed store.
+    await img.click();
+    const lbImg = page.locator('#img-lightbox-img');
+    await expect(page.locator('#img-lightbox')).toBeVisible();
+    await expect(lbImg).toHaveAttribute('src', new RegExp(`/n/s3note/resources/${sha}$`), { timeout: 10000 });
+    const lbLoaded = await lbImg.evaluate((el) => el.complete && el.naturalWidth > 0);
+    expect(lbLoaded).toBe(true);
   });
 });
 

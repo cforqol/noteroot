@@ -203,6 +203,35 @@ test.describe('drag-and-drop upload (local mode)', () => {
     const loaded = await img.evaluate((el) => el.complete && el.naturalWidth > 0);
     expect(loaded).toBe(true);
   });
+
+  test('clicking the rendered image opens a lightbox with the full-resolution image', async ({ page }) => {
+    await openEditor(page);
+    await dropFile(page, 'pic2.png', '', 'image/png');
+    await expect(page.locator('#editbody')).toHaveValue(
+      /\[pic2\.png\]\(\/n\/upnote\/resources\/[a-f0-9]{64}\)|!\[pic2\.png\]\(\/n\/upnote\/resources\/[a-f0-9]{64}\)/,
+      { timeout: 15000 },
+    );
+    await expect(page.locator('#savestate')).toHaveText('Saved.', { timeout: 15000 });
+
+    await page.reload();
+    await page.waitForFunction(() => {
+      const sel = document.getElementById('notebooks');
+      return sel && sel.options.length > 0;
+    }, { timeout: 10000 });
+    await page.selectOption('#notebooks', 'upnote');
+    await page.waitForSelector('.node', { timeout: 10000 });
+    await page.click('.node');
+
+    const img = page.locator('#note img[alt="pic2.png"]');
+    await expect(img).toBeVisible({ timeout: 10000 });
+    await img.click();
+
+    const lbImg = page.locator('#img-lightbox-img');
+    await expect(page.locator('#img-lightbox')).toBeVisible();
+    await expect(lbImg).toHaveAttribute('src', /\/n\/upnote\/resources\/[a-f0-9]{64}$/, { timeout: 10000 });
+    const loaded = await lbImg.evaluate((el) => el.complete && el.naturalWidth > 0);
+    expect(loaded).toBe(true);
+  });
 });
 
 test.describe('presign API (local mode)', () => {

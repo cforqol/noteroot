@@ -305,6 +305,30 @@ test('theme: header button cycles and persists; dark really darkens the page', a
   expect(await bg()).toBe('rgb(255, 255, 255)');
 });
 
+test('#81: sidebar and note panel are visually distinct from the main background, in both themes', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await openApp(page);
+  const bgOf = (sel) => page.evaluate((s) => getComputedStyle(document.querySelector(s)).backgroundColor, sel);
+
+  const bodyLight = await bgOf('body');
+  const sidebarLight = await bgOf('#sidebar');
+  const readpaneLight = await bgOf('#readpane');
+  expect(sidebarLight).not.toBe(bodyLight);
+  expect(readpaneLight).not.toBe(bodyLight);
+  // Both panels should share the same surface, not just "differ somehow".
+  expect(sidebarLight).toBe(readpaneLight);
+
+  await page.click('#themebtn'); // light
+  await page.click('#themebtn'); // dark
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const bodyDark = await bgOf('body');
+  const sidebarDark = await bgOf('#sidebar');
+  const readpaneDark = await bgOf('#readpane');
+  expect(sidebarDark).not.toBe(bodyDark);
+  expect(readpaneDark).not.toBe(bodyDark);
+  expect(sidebarDark).toBe(readpaneDark);
+});
+
 test('theme: explicit light beats a dark OS preference; settings radio works', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await openApp(page);

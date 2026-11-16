@@ -4,7 +4,7 @@ import {
   deleteFolder, listTrash, restoreTrash, getNote, getSource, getRaw,
   deleteTrashEntry, setTrashRetention, purgeTrash,
   restoreTrashFolder, deleteTrashFolder,
-  saveNote, exportNotebook, importNotebook, createBackup, resourceStats,
+  saveNote, exportNotebook, exportSelection, importNotebook, createBackup, resourceStats,
   createNotebook, renameNotebook, deleteNotebook,
   listResources, deleteResource, listTags, listKarakeepBookmarks,
   lockStatus, setLock, removeLock, unlock, relock,
@@ -236,6 +236,19 @@ describe('notebook transfer', () => {
 
     const g = jest.fn(async () => ({ ok: false, status: 500, statusText: '', json: async () => ({ error: 'boom' }) }));
     await expect(exportNotebook('nb', g)).rejects.toMatchObject({ message: 'boom', status: 500 });
+  });
+
+  test('exportSelection encodes every path and the attachments flag', async () => {
+    const blob = new Blob(['x']);
+    const f = jest.fn(async () => ({ ok: true, status: 200, blob: async () => blob }));
+    expect(await exportSelection('my nb', ['a.md', 'dir/b.md'], {}, f)).toBe(blob);
+    expect(f.mock.calls[0][0]).toBe('/n/my%20nb/export/selection?path=a.md&path=dir%2Fb.md');
+
+    await exportSelection('nb', ['a.md'], { attachments: true }, f);
+    expect(f.mock.calls[1][0]).toBe('/n/nb/export/selection?path=a.md&attachments=1');
+
+    const g = jest.fn(async () => ({ ok: false, status: 404, statusText: '', json: async () => ({ error: 'nothing to export' }) }));
+    await expect(exportSelection('nb', ['a.md'], {}, g)).rejects.toMatchObject({ message: 'nothing to export', status: 404 });
   });
 
   test('importNotebook posts the file multipart, with an optional dry run', async () => {

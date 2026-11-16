@@ -52,6 +52,10 @@
       <span class="spacer"></span>
       <button id="multi-clear" class="btn small ghost" title="Clear the selection">Clear</button>
       <button id="multi-move" class="btn small ghost" title="Move selected notes to a folder">Move…</button>
+      <div class="split-btn" id="multi-download-split">
+        <button id="multi-download" class="btn small ghost split-main" title="Download selected notes as a zip">📦 Download</button>
+        <button id="multi-download-more" class="btn small ghost split-caret" aria-label="Download options" title="Download options" aria-haspopup="menu" aria-expanded="false">▾</button>
+      </div>
       <button id="multi-delete" class="btn small ghost-danger" title="Move the selected notes to the trash">🗑 Delete</button>
     </div>
     <div id="bookmarks-section" class="bookmarks-section" hidden>
@@ -345,6 +349,10 @@
             <span class="setting-label">Wrap long lines<small>Plain-text editor.</small></span>
             <input type="checkbox" data-setting="wrap">
           </label>
+          <label class="setting switch">
+            <span class="setting-label">Format pipe tables on save<small>Pads cells to their column's widest cell and normalizes the delimiter row. Off leaves tables exactly as typed.</small></span>
+            <input type="checkbox" data-setting="formatTables">
+          </label>
           <div class="setting">
             <div class="setting-label">Vim configuration (vimrc)<small id="vimrc-info">No vimrc set.</small></div>
             <button id="edit-vimrc" class="btn">Edit vimrc…</button>
@@ -465,7 +473,7 @@
             <button id="reset-prefs" class="btn">Reset preferences</button>
           </div>
           <div class="setting">
-            <div class="setting-label">Export preferences<small>Theme, editor, sidebar and startpage choices as a small .json file.</small></div>
+            <div class="setting-label">Export preferences<small>Theme, editor (including your vimrc), sidebar, startpage and other browser-local choices as a small .json file.</small></div>
             <button id="export-prefs" class="btn">Export preferences</button>
           </div>
           <div class="setting">
@@ -522,7 +530,7 @@
           <div class="setting" id="integ-karakeep-row">
             <div class="setting-label">Karakeep<small>URL archiving on paste. Set <code>NOTEROOT_KARAKEEP_URL</code> and <code>NOTEROOT_KARAKEEP_KEY</code>.</small></div>
             <div class="lock-actions">
-              <span id="integ-karakeep-status" class="status-value disabled">Not configured</span>
+              <button id="test-karakeep" class="btn" disabled>Test connection</button>
               <button id="bookmarks-manage" class="btn small" disabled>Bookmarks…</button>
             </div>
           </div>
