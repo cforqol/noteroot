@@ -96,6 +96,11 @@ describe('locked notebook', () => {
     expect(opt.textContent).toBe('nb2 🔒');
   });
 
+  test('the empty-state "New note" button stays off while locked', () => {
+    expect(q('#note .empty-state')).toBeTruthy();
+    expect(q('#note .empty-state button')).toBeNull();
+  });
+
   test('unlocking restores the tree and re-populates the daily notes section', async () => {
     $('tree-unlock-btn').click();
     await until(() => q('.dialog form'), 'unlock dialog');
@@ -112,5 +117,8 @@ describe('locked notebook', () => {
       () => !$('daily-notes-section').hidden && $('daily-notes-list').textContent.includes('today'),
       'daily notes section to repopulate after unlock',
     );
+
+    // Unlocked: the empty state's "New note" button is back.
+    expect(q('#note .empty-state button').textContent).toBe('New note');
   });
 });

@@ -263,6 +263,134 @@ test('an uploaded video plays inline with a poster and serves byte ranges', asyn
   expect(poster.headers()['content-type']).toBe('image/jpeg');
 });
 
+// A one-second MP3 clip, for the audio-player tests below.
+function makeAudioClip() {
+  const out = join(scratchDir, 'clip.mp3');
+  try {
+    execSync(
+      `ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:duration=1" -c:a libmp3lame -b:a 64k ${out}`,
+      { stdio: 'ignore' },
+    );
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// A plain 100x100 PNG, big enough to click reliably (unlike a 1x1 test
+// fixture, which real images never are).
+function makeTestImage() {
+  const out = join(scratchDir, 'swatch.png');
+  try {
+    execSync(
+      `ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=red:s=100x100" -frames:v 1 ${out}`,
+      { stdio: 'ignore' },
+    );
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+test('an uploaded audio file plays inline, even when the browser reports no MIME type for it', async ({ page }) => {
+  const clip = makeAudioClip();
+  test.skip(!clip, 'ffmpeg with libmp3lame is not installed');
+
+  await openNote(page, 'media.md', 'Clips:');
+  await editAtEnd(page);
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    attachMenu(page, 'Upload file'),
+  ]);
+  // "application/octet-stream" is exactly what app.js's uploadResource()
+  // sends when file.type comes back empty — some browsers don't map
+  // every audio extension to a MIME type client-side. The server must
+  // still recognize it as audio from the filename (see resources.go's
+  // upload handler), or it renders as a dead download link instead of
+  // a player.
+  await chooser.setFiles({ name: 'clip.mp3', mimeType: 'application/octet-stream', buffer: readFileSync(clip) });
+  await expect(page.locator('#editbody')).toHaveValue(
+    new RegExp(`\\[clip\\.mp3\\]\\(/n/${SLUG}/resources/[a-f0-9]{64}\\)`),
+    { timeout: 15000 },
+  );
+  await expect(page.locator('#savestate')).toHaveText('Saved.', { timeout: 15000 });
+  await page.click('#closebtn');
+
+  const audio = page.locator('#note audio');
+  await expect(audio).toBeVisible({ timeout: 15000 });
+  await expect(audio).toHaveAttribute('controls', '');
+  const src = await audio.getAttribute('src');
+  expect(src).toMatch(new RegExp(`^/n/${SLUG}/resources/[a-f0-9]{64}$`));
+  await expect.poll(() => audio.evaluate((a) => a.readyState), { timeout: 15000 }).toBeGreaterThanOrEqual(1);
+
+  const played = await audio.evaluate((a) => a.play().then(() => {
+    return new Promise((resolve) => setTimeout(() => resolve({ paused: a.paused, currentTime: a.currentTime }), 500));
+  }));
+  expect(played.paused).toBe(false);
+  expect(played.currentTime).toBeGreaterThan(0);
+
+  const res = await page.request.get(`${BASE}${src}`);
+  expect(res.headers()['content-type']).toBe('audio/mpeg'); // not application/octet-stream
+});
+
+test('clicking an image in a note opens it full-size in the lightbox, and Escape closes it', async ({ page }) => {
+  const swatch = makeTestImage();
+  test.skip(!swatch, 'ffmpeg is not installed');
+
+  await put('gallery.md', '# Gallery\n\nPicture:\n');
+  await openNote(page, 'gallery.md', 'Picture:');
+  await editAtEnd(page);
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    attachMenu(page, 'Upload file'),
+  ]);
+  await chooser.setFiles(swatch);
+  await expect(page.locator('#editbody')).toHaveValue(/swatch\.png/, { timeout: 15000 });
+  await expect(page.locator('#savestate')).toHaveText('Saved.', { timeout: 15000 });
+  await page.click('#closebtn');
+
+  const img = page.locator('#note img');
+  await expect(img).toBeVisible({ timeout: 15000 });
+  const thumbSrc = await img.getAttribute('src');
+  expect(thumbSrc).toMatch(/\/thumb\?w=\d+&h=\d+$/); // rewritten to a thumbnail
+
+  await expect(page.locator('#img-lightbox')).toBeHidden();
+  await img.click();
+  await expect(page.locator('#img-lightbox')).toBeVisible();
+  const full = await page.locator('#img-lightbox-img').getAttribute('src');
+  expect(new URL(full).pathname).toBe(thumbSrc.replace(/\/thumb\?.*$/, '')); // original, not the thumbnail
+  const res = await page.request.get(full);
+  expect(res.status()).toBe(200);
+  expect(res.headers()['content-type']).toBe('image/png');
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#img-lightbox')).toBeHidden();
+});
+
+test('an image thumbnail in the Attachments manager also opens the lightbox', async ({ page }) => {
+  const swatch = makeTestImage();
+  test.skip(!swatch, 'ffmpeg is not installed');
+
+  await openNote(page, 'media.md', 'Clips:');
+  await editAtEnd(page);
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    attachMenu(page, 'Upload file'),
+  ]);
+  await chooser.setFiles({ name: 'manager-swatch.png', mimeType: 'image/png', buffer: readFileSync(swatch) });
+  await expect(page.locator('#editbody')).toHaveValue(/manager-swatch\.png/, { timeout: 15000 });
+  await expect(page.locator('#savestate')).toHaveText('Saved.', { timeout: 15000 });
+  await page.click('#closebtn');
+
+  await openSettings(page, 'set-attachments');
+  await page.click('#attachments-manage');
+  const thumbImg = page.locator('.attach-thumb img').first();
+  await expect(thumbImg).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('#img-lightbox')).toBeHidden();
+  await thumbImg.click();
+  await expect(page.locator('#img-lightbox')).toBeVisible();
+});
+
 test('Vim: an attached link lands in the buffer and the keys go back to Vim', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('nr.editorPref', 'vim'));
   await openNote(page, 'vim.md', 'Vim note');

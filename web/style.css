@@ -29,7 +29,7 @@
   --radius-sm: 6px; --radius: 8px; --radius-lg: 12px;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --fs: 15px; --fs-editor: 14px; --measure: 76ch;
+  --fs: 15px; --fs-editor: 14px; --measure: 76ch; --fold-arrow-size: 22px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @media (prefers-color-scheme: dark) {
@@ -82,6 +82,8 @@ body[data-font="large"] { --fs: 17px; --fs-editor: 16px; }
 body[data-width="narrow"] { --measure: 62ch; }
 body[data-width="wide"] { --measure: 100%; }
 body[data-counts="off"] .node .count { display: none; }
+body[data-arrow-size="small"] { --fold-arrow-size: 14px; }
+body[data-arrow-size="large"] { --fold-arrow-size: 32px; }
 
 /* --------------------------------------------------------------------- */
 * { box-sizing: border-box; }
@@ -304,6 +306,24 @@ article#split-note { padding: 16px 20px 28px; }
 }
 .tag-item:hover { background: var(--accent-soft); }
 .tag-item .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.daily-notes-section { border-top: 1px solid var(--line); flex: none; }
+.daily-notes-header {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 10px 3px;
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; text-align: left;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.daily-notes-header #daily-notes-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daily-notes-header .count { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.daily-notes-list { max-height: 22vh; overflow-y: auto; padding: 2px 6px 6px; }
+.daily-note-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 6px; border: 0;
+  border-radius: var(--radius); background: transparent; color: var(--fg);
+  font-size: 13px; text-align: left;
+}
+.daily-note-item:hover { background: var(--accent-soft); }
+.daily-note-item.active .daily-note-link { font-weight: 600; color: var(--accent); }
+.daily-note-link { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); text-decoration: none; }
+.daily-note-link:hover { color: var(--accent); }
 .bookmark-item { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: var(--radius); }
 .bookmark-item:hover { background: var(--hover); }
 .bookmark-item.active .bookmark-link { font-weight: 600; color: var(--accent); }
@@ -353,12 +373,17 @@ article#split-note { padding: 16px 20px 28px; }
 .node.split-open .label::after {
   content: "◫"; margin-left: 6px; font-size: 11px; color: var(--muted);
 }
+/* Icon-only buttons (#84 follow-up), not text ("Move…", "Download",
+   "Delete"): the bar sits in a fixed-width sidebar and must always fit
+   regardless of how many digits the count grows to. */
 .multi-bar {
-  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  display: flex; align-items: center; gap: 2px; padding: 4px 6px;
   border-bottom: 1px solid var(--line); background: var(--accent-soft);
-  font-size: 12px; color: var(--fg);
+  font-size: 12px; color: var(--fg); flex-wrap: nowrap;
 }
 .multi-bar .btn.ghost-danger { color: var(--danger); border-color: var(--danger); }
+.multi-count::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+.multi-count { font-weight: 600; white-space: nowrap; }
 .node.dir.selected .label { text-decoration: underline; text-underline-offset: 3px; }
 .kids { margin-left: 12px; }
 /* Content lock: a locked node stays listed (its name is not secret) but is
@@ -477,14 +502,26 @@ article h3 { font-size: 1.15em; margin: 1.4em 0 0.4em; }
    already carry an absolutely-positioned ::before for the line-number
    gutter, which must stay anchored to the heading's own box exactly
    as it is for every other block — changing display type here is not
-   worth the risk to that positioning. */
+   worth the risk to that positioning.
+   font-size is a fixed value (Settings → Appearance → Heading arrows),
+   not an em relative to the heading's own size (#97): h1..h6 have very
+   different font sizes, so an em-relative arrow looked different on
+   every heading level instead of being one consistent size. */
 .fold-caret {
   display: inline-block; vertical-align: middle; background: none; border: 0;
-  padding: 0 4px 0 0; margin: 0; cursor: pointer; font-size: 0.65em; line-height: 1;
+  padding: 0 6px 0 0; margin: 0; cursor: pointer; font-size: var(--fold-arrow-size); line-height: 1;
   color: var(--muted);
 }
 .fold-caret:hover { color: var(--fg); }
-.fold-hidden { display: none !important; }
+/* display:none would drop the block from the formatting model, so the
+   readln counter (#98) would skip it and renumber everything after it.
+   visibility:hidden keeps the box (and its counter-increment) in place
+   while zeroing out anything that would otherwise take space. */
+.fold-hidden {
+  display: block !important; visibility: hidden !important;
+  height: 0 !important; min-height: 0 !important; overflow: hidden !important;
+  margin: 0 !important; padding: 0 !important; border: 0 !important;
+}
 article a { color: var(--accent); }
 article pre {
   background: var(--subtle); border: 1px solid var(--line); padding: 12px 14px;
@@ -765,7 +802,7 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
   height: 118px; background: var(--subtle); display: flex; align-items: center; justify-content: center;
   overflow: hidden; color: var(--muted); font-size: 12px; text-align: center; padding: 6px;
 }
-.attach-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.attach-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; cursor: zoom-in; }
 .attach-thumb .attach-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
 .attach-meta { padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .attach-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

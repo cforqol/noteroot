@@ -987,7 +987,7 @@ describe('sidebar multi-select', () => {
     const [a, b] = [...qa('#tree .node:not(.dir)')].slice(0, 2).map((n) => n.dataset.path);
     click(a, { ctrlKey: true });
     expect($('multi-bar').hidden).toBe(false);
-    expect($('multi-count').textContent).toBe('1 selected');
+    expect($('multi-count').textContent).toBe('1');
     click(b, { ctrlKey: true });
     expect(picks()).toEqual([a, b]);
     click(b, { ctrlKey: true }); // toggles off
@@ -1019,7 +1019,7 @@ describe('sidebar multi-select', () => {
     const two = find('multi-two.md');
     click(one, { ctrlKey: true });
     click(two, { ctrlKey: true });
-    expect($('multi-count').textContent).toBe('2 selected');
+    expect($('multi-count').textContent).toBe('2');
     $('multi-delete').click();
     await until(() => q('.dialog .btn[type="submit"]'), 'delete confirm');
     expect(q('.dialog').textContent).toContain('Delete 2 notes');
@@ -1052,7 +1052,7 @@ describe('sidebar multi-select', () => {
     // Multi-select both
     click(pathA, { ctrlKey: true });
     click(pathB, { ctrlKey: true });
-    expect($('multi-count').textContent).toBe('2 selected');
+    expect($('multi-count').textContent).toBe('2');
     expect($('multi-bar').hidden).toBe(false);
 
     // Click Move… — dialog should appear
@@ -1089,7 +1089,7 @@ describe('sidebar multi-select', () => {
     expect(node(pathB)).toBeTruthy();
     click(pathA, { ctrlKey: true });
     click(pathB, { ctrlKey: true });
-    expect($('multi-count').textContent).toBe('2 selected');
+    expect($('multi-count').textContent).toBe('2');
 
     // Right-click one of them: the menu must offer a bulk move
     await menuAction(pathB, 'Move 2 notes…');
@@ -1123,7 +1123,7 @@ describe('sidebar multi-select', () => {
 
     click('starred/move-a.md', { ctrlKey: true });
     click('round2/move-a.md', { ctrlKey: true });
-    expect($('multi-count').textContent).toBe('2 selected');
+    expect($('multi-count').textContent).toBe('2');
     const before = requests.filter((r) => r.startsWith('PATCH /n/nb/note')).length;
 
     // Destination: notebook root (the select's default). Both would become
@@ -1141,7 +1141,7 @@ describe('sidebar multi-select', () => {
     [...qa('.dialog .btn')].find((b) => b.textContent === 'Cancel').click();
     await until(() => !q('.dialog'), 'dialog cancelled');
     click('starred/move-a.md', { ctrlKey: true }); // toggle off
-    expect($('multi-count').textContent).toBe('1 selected');
+    expect($('multi-count').textContent).toBe('1');
     $('multi-move').click();
     await until(() => q('.dialog'), 'move dialog reopened');
     q('.dialog .btn[type="submit"]').click();

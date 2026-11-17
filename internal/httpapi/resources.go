@@ -179,7 +179,14 @@ func (s *Server) uploadResource(w http.ResponseWriter, r *http.Request) {
 		}
 		size = r.ContentLength
 		mime = r.Header.Get("Content-Type")
-		if mime == "" {
+		// The client sends file.type verbatim, which browsers leave ""
+		// (not "application/octet-stream") when they don't recognize an
+		// extension — but app.js's uploadResource() substitutes
+		// "application/octet-stream" client-side for that empty case,
+		// so both must fall back to sniffing by extension here, same as
+		// the multipart branch above, or audio/video files land with no
+		// MIME a player (or the image lightbox) can recognize.
+		if mime == "" || mime == "application/octet-stream" {
 			mime = resources.SniffMIME(filename)
 		}
 		maxSize := policy.MaxSize

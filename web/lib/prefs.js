@@ -247,6 +247,7 @@ export function setHomepage(slug, path, storage = defaultStorage()) {
 export const SETTINGS = {
   fontSize: { key: 'nr.fontSize', choices: ['small', 'medium', 'large'], fallback: 'medium' },
   readingWidth: { key: 'nr.readingWidth', choices: ['narrow', 'normal', 'wide'], fallback: 'normal' },
+  headingArrowSize: { key: 'nr.headingArrowSize', choices: ['small', 'medium', 'large'], fallback: 'medium' },
   autosave: { key: 'nr.autosave', choices: ['1000', '2000', '5000', '10000', '0'], fallback: '2000' },
   tabKey: { key: 'nr.tabKey', choices: ['focus', '2', '4', 'tab'], fallback: '4' },
   spellcheck: { key: 'nr.spellcheck', choices: ['on', 'off'], fallback: 'off' },
@@ -399,6 +400,22 @@ export function getTagsCollapsed(storage = defaultStorage()) {
 
 export function setTagsCollapsed(collapsed, storage = defaultStorage()) {
   writeRaw(K_TAGS_COLLAPSED, collapsed ? '1' : '0', storage);
+  return Boolean(collapsed);
+}
+
+const K_DAILY_COLLAPSED = 'nr.dailyNotesCollapsed';
+
+/** Whether the sidebar Daily Notes section is folded away (open by default). */
+export function getDailyNotesCollapsed(storage = defaultStorage()) {
+  try {
+    return storage?.getItem(K_DAILY_COLLAPSED) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setDailyNotesCollapsed(collapsed, storage = defaultStorage()) {
+  writeRaw(K_DAILY_COLLAPSED, collapsed ? '1' : '0', storage);
   return Boolean(collapsed);
 }
 

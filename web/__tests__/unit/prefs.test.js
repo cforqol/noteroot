@@ -8,7 +8,7 @@ import {
   STATUS_FIELDS, getStatusFields, setStatusField,
   isHelpSeen, markHelpSeen, resetPreferences, listDrafts, clearDrafts,
   exportPreferences, importPreferences,
-  getTagsCollapsed, setTagsCollapsed, getVimrc, setVimrc,
+  getTagsCollapsed, setTagsCollapsed, getDailyNotesCollapsed, setDailyNotesCollapsed, getVimrc, setVimrc,
   getBookmarks, addBookmark, removeBookmark, toggleBookmark,
   DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, getKeybindings, setKeybinding,
   resetKeybindings, matchesBinding,
@@ -467,6 +467,21 @@ describe('tags section state', () => {
     const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
     expect(getTagsCollapsed(broken)).toBe(false);
     expect(setTagsCollapsed(true, broken)).toBe(true);
+  });
+});
+
+describe('daily notes section state (#96: same behaviour as Tags, not just the same look)', () => {
+  test('open by default; the fold is remembered', () => {
+    expect(getDailyNotesCollapsed()).toBe(false);
+    expect(setDailyNotesCollapsed(true)).toBe(true);
+    expect(getDailyNotesCollapsed()).toBe(true);
+    setDailyNotesCollapsed(false);
+    expect(getDailyNotesCollapsed()).toBe(false);
+  });
+  test('inaccessible storage reads as open', () => {
+    const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    expect(getDailyNotesCollapsed(broken)).toBe(false);
+    expect(setDailyNotesCollapsed(true, broken)).toBe(true);
   });
 });
 

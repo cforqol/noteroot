@@ -10,17 +10,41 @@ const LONG_PRESS_MS = 450;
 const MOVE_THRESHOLD_PX = 10;
 
 // Touch has neither a modifier-key click (desktop's multi-select) nor
-// native HTML5 drag-and-drop, so a long press stands in for both:
-// held still, it toggles multi-select; dragged, it moves the note,
-// exactly like the existing mouse-drag path. Wires touchstart/move/end
-// on `main` (the note row's button) without touching any existing
-// mouse/click/dragstart listeners, so desktop behaviour is untouched.
+// native HTML5 drag-and-drop, so a long press stands in for both: held
+// still, it toggles multi-select; dragged, it (also) moves the note,
+// exactly like the existing mouse-drag path.
+//
+// Desktop gets the "held still" half too (#84 follow-up: "on desktop/
+// mouse - left-click and hold for a duration"), since mouse already has
+// its own native drag-and-drop for the "dragged" half — nothing to add
+// there. A plain quick click, and a modifier-key click (ctrl/shift for
+// the existing desktop multi-select), both release well under
+// LONG_PRESS_MS and are untouched.
+//
+// Multi-select toggles the moment LONG_PRESS_MS elapses, while the
+// button/finger is still down (#84 follow-up: "should activate ... on
+// holding ... down ... instead of on left mouse button up") — not
+// deferred to release. A redraw (toggling multi-select repaints the
+// whole tree) mid-gesture does not break anything still in flight: the
+// touch listeners stay bound to their now-detached original element
+// (per the touch event spec) and mouse tracking lives on `doc`, not
+// `main`, so both keep receiving events; a subsequent drag continues
+// against freshly-queried drop targets regardless.
+//
+// Whichever pointer type fires it, the press that toggled multi-select
+// must not *also* open the note: a browser dispatches a `click` right
+// after the mouseup/touchend that ended it, same as any other click.
+// The guard below swallows exactly that one click. It is registered on
+// `main` before build() adds the open-note click listener, so — same
+// target, same phase, so order is registration order — it runs first
+// and can stop the other with stopImmediatePropagation().
 function attachLongPress(doc, main, row, node, onDropNote, onLongPress) {
   let timer = null;
   let start = null;
   let longPressed = false;
   let dragging = false;
   let target = null;
+  let suppressNextClick = false;
 
   const clearTarget = () => {
     if (target) target.row.classList.remove('drop-target');
@@ -54,6 +78,8 @@ function attachLongPress(doc, main, row, node, onDropNote, onLongPress) {
     timer = setTimeout(() => {
       longPressed = true;
       main.classList.add('long-pressed');
+      onLongPress(node.path);
+      suppressNextClick = true;
     }, LONG_PRESS_MS);
   }, { passive: true });
 
@@ -80,15 +106,72 @@ function attachLongPress(doc, main, row, node, onDropNote, onLongPress) {
   }, { passive: false });
 
   main.addEventListener('touchend', () => {
-    if (dragging) {
-      if (target) onDropNote(node.path, target.path);
-    } else if (longPressed) {
-      onLongPress(node.path);
-    }
+    // onLongPress already fired (if it was going to) when the timer
+    // elapsed, above — not deferred to here.
+    if (dragging && target) onDropNote(node.path, target.path);
     main.classList.remove('long-pressed');
     reset();
   });
   main.addEventListener('touchcancel', () => { main.classList.remove('long-pressed'); reset(); });
+
+  // --- mouse: left-click and hold, held still (the dragged half is
+  // already native HTML5 drag-and-drop, wired separately in build()) ---
+  const stopTrackingMouse = () => {
+    doc.removeEventListener('mousemove', onMouseMove);
+    doc.removeEventListener('mouseup', onMouseUp);
+  };
+  // Tracked on `doc`, not `main`: once the button is down, mousemove/up
+  // target whatever is under the pointer, which need not still be
+  // `main` — unlike touchmove/touchend, which stay pinned to the
+  // element that received touchstart regardless of where the finger is.
+  function onMouseMove(e) {
+    if (!start || longPressed) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) > MOVE_THRESHOLD_PX) {
+      // Moved enough for native drag-and-drop to take over (dragstart
+      // below also guards this, but a fast gesture can get here first).
+      clearTimeout(timer);
+      start = null;
+      stopTrackingMouse();
+    }
+  }
+  function onMouseUp() {
+    // onLongPress already fired (if it was going to) when the timer
+    // elapsed, above — not deferred to here.
+    main.classList.remove('long-pressed');
+    reset();
+    stopTrackingMouse();
+  }
+  main.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return; // left button only
+    start = { x: e.clientX, y: e.clientY };
+    longPressed = false;
+    doc.addEventListener('mousemove', onMouseMove);
+    doc.addEventListener('mouseup', onMouseUp);
+    timer = setTimeout(() => {
+      longPressed = true;
+      main.classList.add('long-pressed');
+      onLongPress(node.path);
+      suppressNextClick = true;
+    }, LONG_PRESS_MS);
+  });
+  // A real drag starting means the mouseup that ends it is not a plain
+  // click of this element (it is a drop elsewhere, handled by the
+  // existing dragstart/dragend/drop wiring in build()): stop tracking
+  // so a stale timer or document listener can't outlive it.
+  main.addEventListener('dragstart', () => {
+    main.classList.remove('long-pressed');
+    reset();
+    stopTrackingMouse();
+  });
+
+  main.addEventListener('click', (e) => {
+    if (!suppressNextClick) return;
+    suppressNextClick = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  });
 }
 
 function buildRootDropZone(doc, onDropNote) {
@@ -245,7 +328,6 @@ export function renderTree(container, root, ctx = {}, doc = document) {
         } else {
           main.append(caret, label);
         }
-        main.addEventListener('click', (e) => onOpen(node.path, main, e));
         if (onDropNote && !node.locked) {
           main.draggable = true;
           main.addEventListener('dragstart', (e) => {
@@ -254,8 +336,13 @@ export function renderTree(container, root, ctx = {}, doc = document) {
             main.classList.add('dragging');
           });
           main.addEventListener('dragend', () => main.classList.remove('dragging'));
+          // Must come before the open-note click listener below: its
+          // click-suppressing guard (swallows the click that follows a
+          // long-press release) relies on running first. See the
+          // comment on attachLongPress.
           if (onLongPress) attachLongPress(doc, main, row, node, onDropNote, onLongPress);
         }
+        main.addEventListener('click', (e) => onOpen(node.path, main, e));
         row.append(main, menuButton(node));
         frag.append(row);
       }

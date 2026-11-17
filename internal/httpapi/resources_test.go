@@ -87,6 +87,44 @@ func TestUpload_rawBody(t *testing.T) {
 	}
 }
 
+// A raw-body upload with no Content-Type at all already fell back to
+// sniffing by extension before this fix; the gap was specifically a
+// non-empty-but-generic Content-Type, which is what app.js's
+// uploadResource() actually sends (file.type || "application/octet-stream")
+// when a browser doesn't recognize the extension itself. Without the
+// fallback here too, the file is stored as application/octet-stream
+// forever — embedMedia() then renders it as a dead download link
+// instead of an <audio>/<video> player, or the image lightbox never
+// gets a kind to match.
+func TestUpload_rawBody_genericContentTypeSniffsExtension(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	rec := postResource(t, srv, "work", "clip.mp3", "application/octet-stream", []byte("not really mp3 bytes"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["mime"] != "audio/mpeg" {
+		t.Errorf("mime = %v, want audio/mpeg (sniffed from .mp3, not left as the generic Content-Type)", raw["mime"])
+	}
+}
+
+// A genuinely ambiguous extension still ends up as octet-stream: the
+// fallback must only kick in for the generic/empty cases, never
+// override a real Content-Type the client already sent correctly.
+func TestUpload_rawBody_realMIMEIsNeverOverridden(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	rec := postResource(t, srv, "work", "clip.mp3", "audio/x-custom-codec", []byte("x"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["mime"] != "audio/x-custom-codec" {
+		t.Errorf("mime = %v, want the client's own audio/x-custom-codec untouched", raw["mime"])
+	}
+}
+
 func TestUpload_multipart(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
 	content := []byte("multipart blob")

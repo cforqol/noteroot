@@ -56,7 +56,7 @@ import {
   isHelpSeen, markHelpSeen, resetPreferences, clearDrafts,
   exportPreferences, importPreferences,
   getBookmarks, toggleBookmark, removeBookmark,
-  getTagsCollapsed, setTagsCollapsed, getVimrc, setVimrc,
+  getTagsCollapsed, setTagsCollapsed, getDailyNotesCollapsed, setDailyNotesCollapsed, getVimrc, setVimrc,
   getKeybindings, setKeybinding, resetKeybindings, DEFAULT_KEYBINDINGS,
   KEYBINDING_LABELS, matchesBinding,
 } from '/lib/prefs.js';
@@ -402,6 +402,9 @@ async function refreshDailyNotes() {
   // Sort by date (newest first)
   notes.sort((a, b) => b.path.localeCompare(a.path));
 
+  $("daily-notes-label").textContent = `Daily Notes - ${folder}`;
+  $("daily-notes-count").textContent = `(${notes.length})`;
+
   list.replaceChildren();
   if (!notes.length) {
     const p = document.createElement("p");
@@ -422,13 +425,22 @@ async function refreshDailyNotes() {
     list.append(item);
   }
   section.hidden = false;
+  drawDailyNotesCollapsed();
+}
+
+// Mirrors drawTagsCollapsed() (#96: "exactly displayed as how Tags
+// section is") — same persisted-across-reload fold state, not just the
+// same look.
+function drawDailyNotesCollapsed() {
+  const on = getDailyNotesCollapsed();
+  $("daily-notes-list").hidden = on;
+  $("daily-notes-caret").textContent = on ? "▸" : "▾";
+  $("daily-notes-toggle").setAttribute("aria-expanded", String(!on));
 }
 
 $("daily-notes-toggle")?.addEventListener("click", () => {
-  const on = $("daily-notes-list").hidden;
-  $("daily-notes-list").hidden = !on;
-  $("daily-notes-caret").textContent = on ? "▸" : "▾";
-  $("daily-notes-toggle").setAttribute("aria-expanded", String(on));
+  setDailyNotesCollapsed(!getDailyNotesCollapsed());
+  drawDailyNotesCollapsed();
 });
 
 // --- sidebar multi-select (Ctrl/Cmd-click, Shift-click for a range) ---
@@ -450,7 +462,12 @@ function updateMultiBar() {
   if (!bar) return;
   const n = multiSelected.size;
   bar.hidden = n === 0;
-  $("multi-count").textContent = `${n} selected`;
+  // Icons, not words (#84 follow-up): the bar must always fit the
+  // sidebar's fixed width, which "N selected" / "Move…" / "Download" /
+  // "Delete" as text could not guarantee once N grew past one digit.
+  const count = $("multi-count");
+  count.textContent = String(n);
+  count.setAttribute("aria-label", `${n} selected`);
   const names = [...multiSelected];
   bar.title = names.slice(0, 10).join("\n") + (names.length > 10 ? "\n…" : "");
 }
@@ -662,6 +679,7 @@ function drawTree() {
     wasLockHidden = true;
     if (treeLocked) treeLocked.hidden = false;
     if (treeEl) treeEl.hidden = true;
+    $("tree-tools")?.setAttribute("hidden", "");
     $("bookmarks-section")?.setAttribute("hidden", "");
     $("daily-notes-section")?.setAttribute("hidden", "");
     $("tags-section")?.setAttribute("hidden", "");
@@ -669,6 +687,7 @@ function drawTree() {
   }
   if (treeLocked) treeLocked.hidden = true;
   if (treeEl) treeEl.hidden = false;
+  $("tree-tools")?.removeAttribute("hidden");
   if (wasLockHidden) {
     // Just unlocked: the sections above were force-hidden and need
     // their content fetched again, not just un-hidden.
@@ -807,11 +826,12 @@ function showNoNotebooks() {
 }
 
 function showNoSelection() {
+  const locked = notebookLock.locked && !notebookLock.unlocked;
   $("note").replaceChildren(emptyState({
     icon: "🗒",
     title: "Nothing open",
-    body: "Pick a note from the list, or start a new one.",
-    action: actionButton("New note", () => actionNewNote()),
+    body: locked ? "Pick a note from the list." : "Pick a note from the list, or start a new one.",
+    action: locked ? null : actionButton("New note", () => actionNewNote()),
   }));
   setView("empty");
 }
@@ -4526,6 +4546,10 @@ function syncLockSettings() {
   syncNotebookLockBtn();
   // Redraw tree so the locked placeholder toggles
   if (treeData) drawTree();
+  // The notebook-switch flow shows the empty state before the lock
+  // status resolves, defaulting to unlocked: redraw it so a locked
+  // notebook's "New note" button disappears once the real status is in.
+  if (view === "empty" && !current) showNoSelection();
 }
 
 // --- Templates settings ---
@@ -4827,7 +4851,11 @@ async function importMarkdown(files) {
   const r = await formDialog({
     title: files.length === 1 ? "Import note" : `Import ${files.length} notes`,
     message: "Choose where the notes should go. Existing names are kept.",
-    fields: [{ name: "dest", label: "Folder", type: "select", options: choices, value: contextDir() }],
+    // Defaults to the notebook root (#95), unlike New note's contextDir():
+    // the reporter called this out explicitly, since "Import file…" is
+    // reached from the top toolbar, not a folder's own menu, so there is
+    // no folder context to inherit from in the first place.
+    fields: [{ name: "dest", label: "Folder", type: "select", options: choices, value: "" }],
     okLabel: "Import",
   });
   if (!r) return;
@@ -4968,6 +4996,7 @@ function applyPreferences() {
   const s = getSettings();
   document.body.dataset.font = s.fontSize;
   document.body.dataset.width = s.readingWidth;
+  document.body.dataset.arrowSize = s.headingArrowSize;
   document.body.dataset.counts = s.treeCounts;
   $("statusbar").hidden = s.statusBar !== "on";
   applyStatusFields();
@@ -5982,6 +6011,10 @@ function renderAttachmentsManager(items) {
     card.append(thumb, meta, acts);
     grid.append(card);
   }
+  // Click an image thumbnail for the same full-size lightbox a note's
+  // own inline images use — this grid otherwise had no way to see a
+  // thumbnail at its real size short of the separate "Open" button.
+  attachImgLightbox(grid);
 }
 
 document.addEventListener("click", (e) => {

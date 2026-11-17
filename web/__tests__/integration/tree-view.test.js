@@ -186,9 +186,12 @@ describe('touch long-press (#84): neither modifier-click nor native drag exist o
     note.dispatchEvent(touch(100, 100));
     jest.advanceTimersByTime(500);
     expect(note.classList.contains('long-pressed')).toBe(true);
+    // Fires the moment the hold elapses, finger still down (#84
+    // follow-up), not deferred to touchend.
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
     note.dispatchEvent(new Event('touchend'));
 
-    expect(onLongPress).toHaveBeenCalledWith('top.md');
+    expect(onLongPress).toHaveBeenCalledTimes(1); // not fired again on release
     expect(onDropNote).not.toHaveBeenCalled();
     expect(note.classList.contains('long-pressed')).toBe(false);
   });
@@ -208,7 +211,7 @@ describe('touch long-press (#84): neither modifier-click nor native drag exist o
     expect(onDropNote).not.toHaveBeenCalled();
   });
 
-  test('long-press then drag onto a folder calls onDropNote with that folder, and clears the highlight', () => {
+  test('long-press then drag onto a folder calls onDropNote with that folder; onLongPress already fired when the hold elapsed', () => {
     const onLongPress = jest.fn();
     const onDropNote = jest.fn();
     renderTree(el, tree(), { onDropNote, onLongPress });
@@ -219,13 +222,16 @@ describe('touch long-press (#84): neither modifier-click nor native drag exist o
     document.elementFromPoint = jest.fn().mockReturnValue(folder);
     note.dispatchEvent(touch(100, 100));
     jest.advanceTimersByTime(500);
+    // Multi-select toggles the moment the hold elapses (#84 follow-up),
+    // not deferred to release — already fired here, before any drag.
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
     note.dispatchEvent(move(100, 300));
     expect(note.classList.contains('touch-dragging')).toBe(true);
     expect(folderRow.classList.contains('drop-target')).toBe(true);
 
     note.dispatchEvent(new Event('touchend'));
     expect(onDropNote).toHaveBeenCalledWith('top.md', 'empty');
-    expect(onLongPress).not.toHaveBeenCalled();
+    expect(onLongPress).toHaveBeenCalledTimes(1); // not fired again on release
     expect(folderRow.classList.contains('drop-target')).toBe(false);
     expect(note.classList.contains('touch-dragging')).toBe(false);
   });
@@ -262,6 +268,137 @@ describe('touch long-press (#84): neither modifier-click nor native drag exist o
     const note = el.querySelector('[data-path="top.md"]');
     expect(note.draggable).toBe(true);
     note.dispatchEvent(touch(0, 0));
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('a long-press release is followed by a click (as a real browser would dispatch); onOpen must not fire', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    const onOpen = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress, onOpen });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(touch(100, 100));
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(new Event('touchend'));
+    // A real touchend is typically followed by a synthetic click.
+    note.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+});
+
+describe('mouse long-press (#84 follow-up): "left-click and hold" is the desktop equivalent of a touch long-press', () => {
+  const down = (x, y, button = 0) => new MouseEvent('mousedown', { clientX: x, clientY: y, button, bubbles: true });
+  const move = (x, y) => new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true });
+  const up = () => new MouseEvent('mouseup', { bubbles: true });
+  const click = () => new MouseEvent('click', { bubbles: true, cancelable: true });
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  test('held still past the threshold calls onLongPress and suppresses the click that follows, not onOpen', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    const onOpen = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress, onOpen });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100));
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(true);
+    // Fires the moment the hold elapses, button still down (#84
+    // follow-up), not deferred to mouseup.
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
+    note.dispatchEvent(up());
+    expect(note.classList.contains('long-pressed')).toBe(false);
+    note.dispatchEvent(click()); // the browser's own click, right after mouseup
+
+    expect(onLongPress).toHaveBeenCalledTimes(1); // not fired again on release
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  test('a plain quick click (released well under the threshold) opens the note as before', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    const onOpen = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress, onOpen });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100));
+    jest.advanceTimersByTime(100);
+    note.dispatchEvent(up());
+    note.dispatchEvent(click());
+
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(onOpen).toHaveBeenCalledWith('top.md', note, expect.anything());
+  });
+
+  test('moving the mouse before the threshold fires cancels the timer; no onLongPress even if the mouse is released later', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100));
+    document.dispatchEvent(move(100, 160)); // past the 10px threshold
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(up());
+
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('a release anywhere in the document is tracked, not just on the row (unlike touch, mouseup is not pinned to mousedown\'s target)', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100));
+    jest.advanceTimersByTime(500);
+    document.body.dispatchEvent(up()); // released after moving off the row
+
+    expect(onLongPress).toHaveBeenCalledWith('top.md');
+  });
+
+  test('a native dragstart cancels the pending long-press (the move was a real drag, not a held-still press)', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100));
+    const dragstart = new Event('dragstart');
+    dragstart.dataTransfer = { setData() {} }; // jsdom's Event has no real DataTransfer
+    note.dispatchEvent(dragstart);
+    jest.advanceTimersByTime(500);
+    note.dispatchEvent(up());
+
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('right/middle mousedown is ignored', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="top.md"]');
+
+    note.dispatchEvent(down(100, 100, 2)); // right button
+    jest.advanceTimersByTime(500);
+    expect(note.classList.contains('long-pressed')).toBe(false);
+  });
+
+  test('a locked note gets no mouse long-press wiring either', () => {
+    const onLongPress = jest.fn();
+    const onDropNote = jest.fn();
+    renderTree(el, { isDir: true, children: [{ name: 'v.md', path: 'v.md', locked: true }] }, { onDropNote, onLongPress });
+    const note = el.querySelector('[data-path="v.md"]');
+
+    note.dispatchEvent(down(0, 0));
     jest.advanceTimersByTime(500);
     expect(note.classList.contains('long-pressed')).toBe(false);
   });

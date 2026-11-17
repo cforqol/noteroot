@@ -678,6 +678,132 @@ test('read mode numbers its blocks in a gutter column, one per pane', async ({ p
   expect(Buffer.compare(before[3], after[3])).toBe(0);
 });
 
+test('folding a heading does not renumber the gutter for blocks that follow it (#98)', async ({ page }) => {
+  await put('fold-numbers.md',
+    '# Title\n\n## Section A\n\nFirst paragraph of A.\n\n## Section B\n\nFirst paragraph of B.\n');
+  await openApp(page);
+  await row(page, 'fold-numbers.md').click();
+  await expect(page.locator('#note')).toContainText('First paragraph of B.');
+
+  await page.locator('#note h2', { hasText: 'Section A' }).locator('.fold-caret').click();
+  const foldedP = page.locator('#note p', { hasText: 'First paragraph of A.' });
+  await expect(foldedP).toBeHidden();
+
+  // A display:none fold would drop the block from the readln counter
+  // flow, shifting every following block's gutter number down by one.
+  // Folding must instead keep it in the counted flow while collapsing
+  // it to nothing on screen.
+  const metrics = await foldedP.evaluate((el) => ({
+    display: getComputedStyle(el).display,
+    visibility: getComputedStyle(el).visibility,
+    counterIncrement: getComputedStyle(el).counterIncrement,
+    height: el.getBoundingClientRect().height,
+  }));
+  expect(metrics.display).not.toBe('none');
+  expect(metrics.visibility).toBe('hidden');
+  expect(metrics.counterIncrement).toContain('readln');
+  expect(metrics.height).toBe(0);
+
+  // Section B, which comes after the folded section, stays on screen
+  // and unaffected.
+  await expect(page.locator('#note h2', { hasText: 'Section B' })).toBeVisible();
+});
+
+test('heading arrow size is a Settings choice, applies live and persists (#97)', async ({ page }) => {
+  await put('arrow-size.md', '# Title\n\n## Section A\n\nBody.\n');
+  await openApp(page);
+  await row(page, 'arrow-size.md').click();
+  const h1Caret = page.locator('#note h1 .fold-caret').first();
+  const h2Caret = page.locator('#note h2 .fold-caret').first();
+  // Same size by default despite h1 and h2 having very different font
+  // sizes — the bug being fixed is an arrow that scaled with the heading.
+  await expect(h1Caret).toHaveCSS('font-size', '22px');
+  await expect(h2Caret).toHaveCSS('font-size', '22px');
+
+  await page.click('#settingsbtn');
+  const select = page.locator('[data-setting="headingArrowSize"]');
+  await expect(select).toHaveValue('medium');
+  await select.selectOption('large');
+  await page.keyboard.press('Escape');
+  await expect(h1Caret).toHaveCSS('font-size', '32px');
+  await expect(h2Caret).toHaveCSS('font-size', '32px');
+
+  // Persists across a reload.
+  await page.reload();
+  await page.waitForFunction(() => document.getElementById('notebooks')?.options.length > 0);
+  await row(page, 'arrow-size.md').click();
+  await expect(page.locator('#note h1 .fold-caret').first()).toHaveCSS('font-size', '32px');
+  await page.click('#settingsbtn');
+  await expect(page.locator('[data-setting="headingArrowSize"]')).toHaveValue('large');
+});
+
+test('desktop: left-click and hold on a note toggles multi-select without opening it (#84)', async ({ page }) => {
+  await put('press-hold.md', '# Press hold\n\nBody.\n');
+  await openApp(page);
+  const note = row(page, 'press-hold.md');
+  const box = await note.boundingBox();
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  // Activates the moment the hold elapses, button still down (#84
+  // follow-up: "should activate ... instead of on left mouse button
+  // up") — asserted before mouse.up(), not after.
+  await expect(note).toHaveClass(/multi/, { timeout: 2000 });
+  await expect(page.locator('#multi-bar')).toBeVisible();
+  await page.mouse.up();
+
+  // The note was not opened as a side effect of the click a real
+  // browser fires right after mouseup.
+  await expect(page.locator('#note')).not.toContainText('Body.');
+
+  // The multi-bar's icon buttons (#84 follow-up: words don't reliably
+  // fit the fixed-width sidebar) stay on one line, inside the sidebar.
+  const bar = page.locator('#multi-bar');
+  const barBox = await bar.boundingBox();
+  const sidebarBox = await page.locator('#sidebar').boundingBox();
+  expect(barBox.height).toBeLessThan(40); // one row, not wrapped
+  expect(barBox.x + barBox.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width + 0.5);
+  for (const id of ['multi-clear', 'multi-move', 'multi-download', 'multi-delete']) {
+    await expect(page.locator(`#${id}`)).toBeVisible();
+  }
+
+  // A plain quick click elsewhere still opens a note normally — this
+  // gesture did not break ordinary clicking.
+  await row(page, 'press-hold.md').click();
+  await expect(page.locator('#note')).toContainText('Body.');
+});
+
+test('import file… asks for a destination folder, defaulting to the notebook root (#95)', async ({ page }) => {
+  await put('elsewhere/placeholder.md', 'placeholder\n');
+  await openApp(page);
+  // Select a folder first: the dialog must still default to root, not
+  // to this selection, unlike New note's "default folder: <selected>".
+  await row(page, 'elsewhere').click();
+
+  await page.click('#new-more');
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.locator('.ctx-menu .ctx-item', { hasText: 'Import file…' }).click(),
+  ]);
+  await chooser.setFiles({ name: 'imported.md', mimeType: 'text/markdown', buffer: Buffer.from('# Imported\n\nvia file picker.\n') });
+
+  const dlg = page.locator('.dialog');
+  await expect(dlg).toBeVisible();
+  const select = dlg.locator('select[name="dest"]');
+  await expect(select).toHaveValue(''); // notebook root, not "elsewhere"
+  await expect(select.locator('option[value=""]')).toHaveText('Notebook root');
+
+  // Change the destination to confirm the dropdown actually drives
+  // where the note lands, then import.
+  await select.selectOption('elsewhere');
+  await dlg.locator('button[type=submit]').click();
+  await expect(page.locator('#toast')).toContainText('Imported 1 note');
+  await expect(row(page, 'elsewhere/imported.md')).toBeVisible();
+  await expect(row(page, 'imported.md')).toHaveCount(0); // not at root
+});
+
 test('the folder icon picker scrolls inside its dialog instead of filling the screen', async ({ page }) => {
   await put('iconpicker/tmp.md', 'scratch\n');
   await openApp(page);
