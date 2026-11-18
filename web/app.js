@@ -160,7 +160,7 @@ function setupImgLightbox() {
   const box = $("img-lightbox");
   const img = $("img-lightbox-img");
   if (!box || !img) return;
-  const close = () => { box.hidden = true; img.src = ""; };
+  const close = () => { box.hidden = true; img.src = ""; img.onerror = null; };
   $("img-lightbox-close")?.addEventListener("click", close);
   box.addEventListener("click", (e) => { if (e.target === box || e.target === img) close(); });
   document.addEventListener("keydown", (e) => { if (!box.hidden && e.key === "Escape") close(); });
@@ -175,7 +175,18 @@ function attachImgLightbox(container) {
   container.querySelectorAll("img").forEach((img) => {
     img.addEventListener("click", () => {
       // Strip thumbnail parameters to load the original resource.
-      const full = img.src.replace(/\/thumb\?.*$/, "");
+      const thumb = img.src;
+      const full = thumb.replace(/\/thumb\?.*$/, "");
+      // thumbResource serves a cached thumbnail even once its source
+      // blob is gone (old sweep, a vault restored without its store),
+      // so the original can 404 for a picture that still renders fine
+      // inline. Fall back to the thumbnail already on screen rather
+      // than a broken image.
+      lbImg.onerror = full === thumb ? null : () => {
+        lbImg.onerror = null;
+        lbImg.src = thumb;
+        toast("Original image is no longer available; showing the saved thumbnail.", true);
+      };
       lbImg.src = full;
       lbImg.alt = img.alt || "";
       box.hidden = false;
