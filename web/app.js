@@ -2406,7 +2406,11 @@ async function openVimEditor(content, { draft = true } = {}) {
       }).catch((err) => toast(err.message, true));
     }
   };
-  $("vim-input")?.removeEventListener("keydown", editing.vimClipboardHandler);
+  // removeEventListener must repeat { capture: true } to match the add
+  // below — the capture flag is part of a listener's identity, so a
+  // plain removeEventListener(type, fn) call here would silently no-op
+  // and leave the previous session's listener stacked.
+  $("vim-input")?.removeEventListener("keydown", editing.vimClipboardHandler, { capture: true });
   $("vim-input")?.addEventListener("keydown", vimClipboard, { capture: true });
   editing.vimClipboardHandler = vimClipboard;
   if (!editing || editing.editor !== editor) return;
@@ -2864,6 +2868,12 @@ function closeEditorNow() {
   clearTimeout(padTimer);
   releaseLock(ed.path, false);
   if (ed.mode === "vim" && ed.editor) ed.editor.close();
+  // The vim clipboard listener lives on #vim-input (a persistent element,
+  // not recreated per session): without this, each vim session would
+  // leave behind a stale keydown listener that the next session's
+  // remove-first guard in openVimEditor can no longer find, since it
+  // only knows about the (now-replaced) `editing` object's own handler.
+  if (ed.vimClipboardHandler) $("vim-input")?.removeEventListener("keydown", ed.vimClipboardHandler, { capture: true });
   editing = null;
   currentEditorMode = null;
   syncModeSwitch();
