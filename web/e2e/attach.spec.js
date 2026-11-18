@@ -391,6 +391,76 @@ test('an image thumbnail in the Attachments manager also opens the lightbox', as
   await expect(page.locator('#img-lightbox')).toBeVisible();
 });
 
+
+// Extra coverage for #79/#102 (clicking an image shows only its alt
+// text / filename instead of the full-size picture): the split pane,
+// multiple images in one note, and a fresh page load all exercise
+// paths not covered by the single-image main-pane test above.
+test('the image lightbox also works in the split pane, after a reload, and with several images in one note', async ({ page }) => {
+  await put('gallery2.md', '# Gallery 2\n\nOne:\n\nTwo:\n');
+  await openNote(page, 'gallery2.md', 'One:');
+  await editAtEnd(page);
+  for (const name of ['big.png', 'small.png']) {
+    const data = Buffer.from(
+      name === 'big.png'
+        ? 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+        : 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfz0AEYBxVSF+FABJQ308ixENBAAAAAElFTkSuQmCC',
+      'base64',
+    );
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      attachMenu(page, 'Upload file'),
+    ]);
+    await chooser.setFiles({ name, mimeType: 'image/png', buffer: data });
+    await expect(page.locator('#editbody')).toHaveValue(new RegExp(name.replace('.', '\\.')), { timeout: 15000 });
+    await page.locator('#editbody').press('Control+End');
+  }
+  await page.click('#savebtn');
+  await expect(page.locator('#savestate')).toHaveText('Saved.', { timeout: 15000 });
+  await page.click('#closebtn');
+
+  const checkFullyLoads = async (img) => img.evaluate((el) => new Promise((resolve) => {
+    const check = () => resolve({ naturalWidth: el.naturalWidth, complete: el.complete });
+    if (el.complete) check();
+    else { el.addEventListener('load', check); el.addEventListener('error', check); setTimeout(check, 5000); }
+  }));
+
+  // Several images in the same note: each click opens its own full-size
+  // image, not a stale reference to a previously-clicked one.
+  const imgs = page.locator('#note img');
+  await expect(imgs).toHaveCount(2, { timeout: 15000 });
+  for (let i = 0; i < 2; i += 1) {
+    await imgs.nth(i).click();
+    await expect(page.locator('#img-lightbox')).toBeVisible();
+    const result = await checkFullyLoads(page.locator('#img-lightbox-img'));
+    expect(result.naturalWidth).toBeGreaterThan(0); // not a broken-image placeholder
+    await page.locator('#img-lightbox-close').click();
+    await expect(page.locator('#img-lightbox')).toBeHidden();
+  }
+
+  // A fresh page load (closer to "open a note that already has an
+  // image in it" than upload-then-immediately-click) behaves the same.
+  await page.reload();
+  await page.waitForFunction(() => document.getElementById('notebooks')?.options.length > 0);
+  await page.selectOption('#notebooks', SLUG);
+  await page.waitForFunction(() => document.getElementById('tree-status')?.textContent !== '');
+  await page.locator('#tree [data-path="gallery2.md"]').click();
+  await expect(imgs.first()).toBeVisible({ timeout: 15000 });
+  await imgs.first().click();
+  await expect(page.locator('#img-lightbox')).toBeVisible();
+  expect((await checkFullyLoads(page.locator('#img-lightbox-img'))).naturalWidth).toBeGreaterThan(0);
+  await page.keyboard.press('Escape');
+
+  // The split pane gets its own working lightbox too.
+  await page.locator('#tree [data-path="gallery2.md"]').click({ button: 'right' });
+  await page.locator('.ctx-menu .ctx-item', { hasText: 'Open in split pane' }).click();
+  const splitImg = page.locator('#split-note img').first();
+  await expect(splitImg).toBeVisible({ timeout: 15000 });
+  await splitImg.click();
+  await expect(page.locator('#img-lightbox')).toBeVisible();
+  expect((await checkFullyLoads(page.locator('#img-lightbox-img'))).naturalWidth).toBeGreaterThan(0);
+});
+
 test('Vim: an attached link lands in the buffer and the keys go back to Vim', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('nr.editorPref', 'vim'));
   await openNote(page, 'vim.md', 'Vim note');

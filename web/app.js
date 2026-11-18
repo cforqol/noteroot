@@ -715,6 +715,16 @@ function drawTree() {
         selectMultiRange(multiAnchor, path);
         return;
       }
+      // Once multi-select is active (long-press, or ctrl/shift-click),
+      // a plain click/tap adds/removes notes from the selection for a
+      // subsequent bulk action — it must not silently exit multi-select
+      // by opening the note instead. Only "Clear" (clearMultiNotes)
+      // leaves multi-select mode (#84 follow-up).
+      if (multiSelected.size > 0) {
+        if (ev) ev.preventDefault();
+        toggleMultiNote(path);
+        return;
+      }
       selectedFolder = null;
       clearMultiNotes();
       openNote(path, el);

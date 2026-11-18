@@ -739,6 +739,7 @@ test('heading arrow size is a Settings choice, applies live and persists (#97)',
 
 test('desktop: left-click and hold on a note toggles multi-select without opening it (#84)', async ({ page }) => {
   await put('press-hold.md', '# Press hold\n\nBody.\n');
+  await put('press-hold-2.md', '# Press hold 2\n\nOther body.\n');
   await openApp(page);
   const note = row(page, 'press-hold.md');
   const box = await note.boundingBox();
@@ -769,8 +770,17 @@ test('desktop: left-click and hold on a note toggles multi-select without openin
     await expect(page.locator(`#${id}`)).toBeVisible();
   }
 
-  // A plain quick click elsewhere still opens a note normally — this
-  // gesture did not break ordinary clicking.
+  // While still active, a plain click on a different note adds it to
+  // the selection instead of opening it (#84 follow-up: only "Clear"
+  // may exit multi-select — a plain click used to do it silently).
+  await row(page, 'press-hold-2.md').click();
+  await expect(page.locator('#multi-bar')).toBeVisible();
+  await expect(row(page, 'press-hold-2.md')).toHaveClass(/multi/);
+  await expect(page.locator('#note')).not.toContainText('Other body.');
+
+  // Clear exits multi-select; a plain click afterwards opens normally.
+  await page.click('#multi-clear');
+  await expect(page.locator('#multi-bar')).toBeHidden();
   await row(page, 'press-hold.md').click();
   await expect(page.locator('#note')).toContainText('Body.');
 });

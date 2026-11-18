@@ -982,8 +982,7 @@ describe('sidebar multi-select', () => {
     const picks = () => [...qa('#tree .node.multi')].map((n) => n.dataset.path);
     expect($('multi-bar').hidden).toBe(true);
 
-    // Pick two existing notes: plain clicking elsewhere clears the picks
-    // without opening anything.
+    // Pick two existing notes via ctrl-click.
     const [a, b] = [...qa('#tree .node:not(.dir)')].slice(0, 2).map((n) => n.dataset.path);
     click(a, { ctrlKey: true });
     expect($('multi-bar').hidden).toBe(false);
