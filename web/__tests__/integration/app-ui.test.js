@@ -482,7 +482,7 @@ describe('CRUD', () => {
 });
 
 describe('theme', () => {
-  test('header button cycles auto → light → dark → auto and persists', () => {
+  test('header button cycles auto → light → dark → solarized-light → solarized-dark → auto and persists', () => {
     const root = document.documentElement;
     expect($('themebtn').getAttribute('aria-label')).toBe('Theme: auto');
     $('themebtn').click();
@@ -491,6 +491,11 @@ describe('theme', () => {
     expect(root.dataset.theme).toBe('dark');
     expect(localStorage.getItem('nr.theme')).toBe('dark');
     expect($('themebtn').getAttribute('aria-label')).toBe('Theme: dark');
+    $('themebtn').click();
+    expect(root.dataset.theme).toBe('solarized-light');
+    $('themebtn').click();
+    expect(root.dataset.theme).toBe('solarized-dark');
+    expect(localStorage.getItem('nr.theme')).toBe('solarized-dark');
     $('themebtn').click();
     expect(root.dataset.theme).toBeUndefined();
     expect(localStorage.getItem('nr.theme')).toBe('auto');

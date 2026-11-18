@@ -26,6 +26,7 @@ import {
 } from '/lib/frontmatter.js';
 import { formatPipeTables } from '/lib/tables.js';
 import { indentEdit } from '/lib/textedit.js';
+import { trimTrailingSpaces, splitLineForWhitespace, softTabBackspaceRange } from '/lib/whitespace.js';
 import {
   formatTreeStatus, folderPaths, parentDir, joinPath, ancestors, isWithin,
   cleanRelPath, resolveChild, newNoteContent, baseName,
@@ -2740,6 +2741,10 @@ async function saveNoteContent(content, manual) {
     const tables = formatPipeTables(sent);
     if (tables.changed) { sent = tables.content; fixed = true; }
   }
+  if (getSetting("trimTrailingSpaces") !== "off") {
+    const trimmed = trimTrailingSpaces(sent);
+    if (trimmed.changed) { sent = trimmed.content; fixed = true; }
+  }
   if (fixed) await applyFixedContent(ed, sent);
   try {
     const res = await notesApi.saveNote(slug, ed.path, sent, { baseSha: ed.baseSha });
@@ -2908,11 +2913,46 @@ $("editbody")?.addEventListener("keydown",
 $("split-body")?.addEventListener("keydown",
   onTabKey($("split-body"), () => Boolean(splitSession), () => markSplitDirty()));
 
+// A soft-tab's width, or null when Tab doesn't insert spaces (so
+// Backspace has no indent to collapse).
+function softTabWidth() {
+  const t = getSetting("tabKey");
+  return t === "2" ? 2 : t === "4" ? 4 : null;
+}
+
+// Backspace right after a soft-tab indent removes the whole indent.
+function onBackspaceDedent(ta, active, dirty) {
+  return (e) => {
+    if (e.key !== "Backspace" || !active() || getSetting("backspaceDedent") === "off") return;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const width = softTabWidth();
+    if (!width) return;
+    const range = softTabBackspaceRange(ta.value, ta.selectionStart, width);
+    if (!range) return;
+    e.preventDefault();
+    ta.setRangeText("", range.start, range.end, "preserve");
+    ta.setSelectionRange(range.start, range.start);
+    dirty();
+  };
+}
+$("editbody")?.addEventListener("keydown",
+  onBackspaceDedent($("editbody"), () => editing && editing.mode === "textarea", () => markDirty()));
+$("split-body")?.addEventListener("keydown",
+  onBackspaceDedent($("split-body"), () => Boolean(splitSession), () => markSplitDirty()));
+
 // Keep line-number gutters in sync with their textareas.
 $("editbody")?.addEventListener("input",  () => updateLineGutter($("editbody"),   $("editgutter"),   $("editmirror")));
-$("editbody")?.addEventListener("scroll", () => { if ($("editgutter")) $("editgutter").scrollTop = $("editbody").scrollTop; });
+$("editbody")?.addEventListener("scroll", () => {
+  if ($("editgutter")) $("editgutter").scrollTop = $("editbody").scrollTop;
+  const ov = $("editbody").closest(".editor-wrap")?.querySelector(".ws-overlay");
+  if (ov) { ov.scrollTop = $("editbody").scrollTop; ov.scrollLeft = $("editbody").scrollLeft; }
+});
 $("split-body")?.addEventListener("input",  () => updateLineGutter($("split-body"), $("splitgutter"), $("splitmirror")));
-$("split-body")?.addEventListener("scroll", () => { if ($("splitgutter")) $("splitgutter").scrollTop = $("split-body").scrollTop; });
+$("split-body")?.addEventListener("scroll", () => {
+  if ($("splitgutter")) $("splitgutter").scrollTop = $("split-body").scrollTop;
+  const ov = $("split-body").closest(".editor-wrap")?.querySelector(".ws-overlay");
+  if (ov) { ov.scrollTop = $("split-body").scrollTop; ov.scrollLeft = $("split-body").scrollLeft; }
+});
 window.addEventListener("resize", () => {
   if ($("editbody") && !$("editbody").hidden) {
     updateLineGutter($("editbody"), $("editgutter"), $("editmirror"));
@@ -2992,6 +3032,54 @@ function updateLineGutter(ta, gutter, mirror) {
   }
 
   gutter.scrollTop = ta.scrollTop;
+  updateWhitespaceOverlay(ta);
+}
+
+/* Show-whitespace overlay (#100): a transparent copy of the textarea's
+   text, sitting on top of it, where each run of spaces is replaced by
+   a colored glyph and each line ending gets one too. The non-space runs
+   are rendered in the same positions (color: transparent) purely to
+   keep white-space:pre-wrap breaking lines at the same points as the
+   real textarea below it, so the glyphs land exactly over real spaces. */
+function updateWhitespaceOverlay(ta) {
+  const overlay = ta?.closest(".editor-wrap")?.querySelector(".ws-overlay");
+  if (!overlay) return;
+  const on = getSetting("showWhitespace") === "on";
+  overlay.hidden = !on;
+  if (!on) return;
+
+  const wrapEl = ta.closest(".editor-wrap");
+  const wr = wrapEl.getBoundingClientRect();
+  const tr = ta.getBoundingClientRect();
+  overlay.style.left = `${tr.left - wr.left}px`;
+  overlay.style.top = `${tr.top - wr.top}px`;
+  overlay.style.width = `${ta.clientWidth}px`;
+  overlay.style.height = `${ta.clientHeight}px`;
+  overlay.style.whiteSpace = getComputedStyle(ta).whiteSpace;
+
+  const spaceChar = getSetting("spaceChar") || "\u00b7";
+  const spaceColor = getSetting("spaceColor");
+  const eolChar = getSetting("eolChar") || "\u00b0";
+  const eolColor = getSetting("eolColor");
+  const lines = ta.value.split("\n");
+  const frag = document.createDocumentFragment();
+  lines.forEach((line, i) => {
+    for (const run of splitLineForWhitespace(line)) {
+      const span = document.createElement("span");
+      span.textContent = run.space ? spaceChar.repeat(run.text.length) : run.text;
+      span.style.color = run.space ? spaceColor : "transparent";
+      frag.append(span);
+    }
+    if (i < lines.length - 1) {
+      const eol = document.createElement("span");
+      eol.textContent = eolChar;
+      eol.style.color = eolColor;
+      frag.append(eol, "\n");
+    }
+  });
+  overlay.replaceChildren(frag);
+  overlay.scrollTop = ta.scrollTop;
+  overlay.scrollLeft = ta.scrollLeft;
 }
 
 function insertAtCursor(text) {
@@ -4949,7 +5037,7 @@ setupTreeDropZone();
 
 // --- theme, tree placement, phone drawer ---
 
-const THEME_ICON = { auto: "◐", light: "☀", dark: "☾" };
+const THEME_ICON = { auto: "◐", light: "☀", dark: "☾", "solarized-light": "☼", "solarized-dark": "☽" };
 
 function syncThemeUI() {
   const t = getTheme();

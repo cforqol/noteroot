@@ -7,7 +7,7 @@
  * privacy mode and corrupt JSON degrade to defaults, never throw.
  */
 
-export const THEMES = ['auto', 'light', 'dark'];
+export const THEMES = ['auto', 'light', 'dark', 'solarized-light', 'solarized-dark'];
 export const PLACEMENTS = ['left', 'right', 'hidden'];
 
 const K_THEME = 'nr.theme';
@@ -81,7 +81,7 @@ export function nextTheme(theme) {
  */
 export function applyTheme(theme, doc = document) {
   const root = doc.documentElement;
-  if (theme === 'light' || theme === 'dark') {
+  if (theme !== 'auto' && THEMES.includes(theme)) {
     root.dataset.theme = theme;
   } else {
     delete root.dataset.theme;
@@ -271,6 +271,19 @@ export const SETTINGS = {
   // Re-align pipe tables (pad cells, normalize the delimiter row) on
   // every save, same as the frontmatter stamp already does unconditionally.
   formatTables: { key: 'nr.formatTables', choices: ['on', 'off'], fallback: 'on' },
+  // Off by default: two trailing spaces are a Markdown hard line break,
+  // so trimming them on every save could silently remove one.
+  trimTrailingSpaces: { key: 'nr.trimTrailingSpaces', choices: ['on', 'off'], fallback: 'off' },
+  // Plain-text editor only (a textarea can't style individual characters
+  // in Vim's canvas-rendered buffer).
+  showWhitespace: { key: 'nr.showWhitespace', choices: ['on', 'off'], fallback: 'off' },
+  eolChar: { key: 'nr.eolChar', choices: [], fallback: '°' },
+  eolColor: { key: 'nr.eolColor', choices: [], fallback: '#9ca3af' },
+  spaceChar: { key: 'nr.spaceChar', choices: [], fallback: '·' },
+  spaceColor: { key: 'nr.spaceColor', choices: [], fallback: '#9ca3af' },
+  // Backspace right after a soft-tab indent (tabKey: "2" or "4") removes
+  // the whole indent instead of one space.
+  backspaceDedent: { key: 'nr.backspaceDedent', choices: ['on', 'off'], fallback: 'on' },
 };
 
 /** Current value of a registered setting (its default when unset or invalid). */

@@ -75,6 +75,35 @@
   --backdrop: rgba(15, 17, 21, 0.45);
   color-scheme: light;
 }
+/* Solarized (Ethan Schoonover): base03/02 darkest, base3/2 lightest,
+   base01/00/0/1 the two content-tone pairs used for fg/muted. */
+:root[data-theme="solarized-light"] {
+  --bg: #fdf6e3; --fg: #586e75; --muted: #93a1a1;
+  --line: #eee8d5; --accent: #268bd2; --hover: #eee8d5;
+  --on-accent: #fdf6e3; --danger: #dc322f;
+  --surface: #fdf6e3; --subtle: #eee8d5; --line-strong: #93a1a1;
+  --panel-bg: #eee8d5;
+  --accent-soft: rgba(38, 139, 210, 0.12);
+  --warn: #b58900; --warn-bg: #eee8d5; --ok: #859900; --ok-bg: #eee8d5; --danger-bg: #eee8d5;
+  --ring: 0 0 0 3px rgba(38, 139, 210, 0.30);
+  --shadow: 0 8px 24px rgba(88, 110, 117, 0.16); --shadow-lg: 0 24px 60px rgba(88, 110, 117, 0.26);
+  --backdrop: rgba(7, 54, 66, 0.45);
+  color-scheme: light;
+}
+:root[data-theme="solarized-dark"] {
+  --bg: #002b36; --fg: #839496; --muted: #586e75;
+  --line: #073642; --accent: #268bd2; --hover: #073642;
+  --on-accent: #002b36; --danger: #dc322f;
+  --surface: #073642; --subtle: #00212b; --line-strong: #586e75;
+  --panel-bg: #073642;
+  --accent-soft: rgba(38, 139, 210, 0.16);
+  --warn: #b58900; --warn-bg: rgba(181, 137, 0, 0.1); --ok: #859900; --ok-bg: rgba(133, 153, 0, 0.1);
+  --danger-bg: rgba(220, 50, 47, 0.12);
+  --ring: 0 0 0 3px rgba(38, 139, 210, 0.35);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.45); --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
 
 /* Preferences (Settings → Appearance / Tree) */
 body[data-font="small"] { --fs: 14px; --fs-editor: 13px; }
@@ -645,6 +674,18 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 #editmirror  { font-size: var(--fs-editor); line-height: 1.65; padding: 16px 18px; }
 #splitmirror { font-size: var(--fs-editor); line-height: 1.6; padding: 12px 14px; }
 
+/* Show-whitespace overlay (#100): sits on top of the textarea, positioned
+   and sized to match it exactly (see updateWhitespaceOverlay in app.js).
+   overflow:hidden still allows the scrollTop/scrollLeft sync that keeps
+   it aligned while the textarea scrolls. */
+.ws-overlay {
+  position: absolute; overflow: hidden; pointer-events: none; z-index: 1;
+  box-sizing: border-box; overflow-wrap: break-word; tab-size: 4;
+  font-family: var(--mono);
+}
+#editws  { font-size: var(--fs-editor); line-height: 1.65; padding: 16px 18px; }
+#splitws { font-size: var(--fs-editor); line-height: 1.6; padding: 12px 14px; }
+
 #editbody {
   flex: 1; resize: none; padding: 16px 18px;
   font: var(--fs-editor)/1.65 var(--mono); tab-size: 4;
@@ -834,6 +875,9 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .setting-label small { font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .setting > select { min-width: 200px; }
 .setting > input[type="text"] { min-width: 200px; }
+.ws-char-controls { display: flex; align-items: center; gap: 8px; flex: none; }
+.ws-char-input { width: 44px; text-align: center; }
+.ws-char-controls input[type="color"] { width: 32px; height: 28px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; }
 /* Switch: a checkbox styled as a toggle */
 .setting.switch { cursor: pointer; }
 .setting.switch input[type="checkbox"] {

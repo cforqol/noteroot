@@ -98,6 +98,24 @@ a note is open for editing. It swaps the live buffer between Vim (vim.wasm) and
 the plain textarea without saving or losing content. If Vim is not yet enabled
 in Settings → Editor, the button is disabled with a tooltip pointing there.
 
+## Plain-text editor: automatic formatting
+
+Settings → *Editor* has a few toggles specific to the plain-text editor
+(Vim mode is configured through the user's own vimrc instead):
+
+- **Format pipe tables on save** (default on) and **Remove trailing spaces on
+  save** (default off — two trailing spaces are a Markdown hard line break,
+  so this isn't safe to force on) both run once, on save, the same way the
+  frontmatter `updated` stamp does; the visible buffer is corrected in place.
+- **Backspace removes a whole indent** (default on): when the cursor sits
+  right after a run of spaces inserted by Tab, at a tab-stop column, Backspace
+  removes the whole run instead of one space. Has no effect when Tab key is
+  set to "Moves focus" or "Inserts a tab".
+- **Show whitespace** (default off, plain-text editor only — Vim's canvas
+  can't be styled this way) draws a light, user-changeable character and
+  color over every space and line ending. It's purely visual and never
+  changes the note's text.
+
 ## Plugins
 
 Settings → **Plugins** has two sections:
@@ -136,9 +154,9 @@ per notebook in the browser (`nr.homepage`).
 
 ## Appearance and layout
 
-- **Theme**: the ◐/☀/☾ button cycles *auto → light → dark*; settings has the
-  same choice. *Auto* follows the OS (or a theme plugin); an explicit choice
-  overrides both.
+- **Theme**: the header button cycles *auto → light → dark → Solarized Light →
+  Solarized Dark*; settings has the same choices. *Auto* follows the OS (or a
+  theme plugin); an explicit choice overrides both.
 - **Sidebar placement** (settings): left, right, or hidden. ☰ hides the sidebar and
   brings it back on the side it was on.
 - **Phones (≤ 720 px)**: the sidebar is a slide-in drawer (from the side chosen in
@@ -150,7 +168,7 @@ per notebook in the browser (`nr.homepage`).
 
 | Key | Content |
 |---|---|
-| `nr.theme` | `auto` / `light` / `dark` |
+| `nr.theme` | `auto` / `light` / `dark` / `solarized-light` / `solarized-dark` |
 | `nr.treePlacement`, `nr.treeLast` | `left` / `right` / `hidden`, and the last visible side |
 | `nr.folderDeco` | `{notebook: {folder: {emoji, color}}}` |
 | `nr.treeCollapsed` | `{notebook: [collapsed folders]}` |

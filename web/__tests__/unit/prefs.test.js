@@ -29,8 +29,10 @@ describe('theme', () => {
     localStorage.setItem('nr.theme', 'garbage');
     expect(getTheme()).toBe('auto');
   });
-  test('nextTheme cycles auto > light > dark', () => {
-    expect(THEMES.map((t) => nextTheme(t))).toEqual(['light', 'dark', 'auto']);
+  test('nextTheme cycles auto > light > dark > solarized-light > solarized-dark > auto', () => {
+    expect(THEMES.map((t) => nextTheme(t))).toEqual([
+      'light', 'dark', 'solarized-light', 'solarized-dark', 'auto',
+    ]);
     expect(nextTheme('bogus')).toBe('auto');
   });
   test('applyTheme sets/removes data-theme', () => {
@@ -39,6 +41,10 @@ describe('theme', () => {
     expect(document.documentElement.dataset.userTheme).toBe('dark');
     applyTheme('light');
     expect(document.documentElement.dataset.theme).toBe('light');
+    applyTheme('solarized-light');
+    expect(document.documentElement.dataset.theme).toBe('solarized-light');
+    applyTheme('solarized-dark');
+    expect(document.documentElement.dataset.theme).toBe('solarized-dark');
     applyTheme('auto');
     expect(document.documentElement.dataset.theme).toBeUndefined();
     expect(document.documentElement.dataset.userTheme).toBe('auto');

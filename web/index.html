@@ -119,6 +119,7 @@
         <div class="line-gutter" id="editgutter" aria-hidden="true"></div>
         <textarea id="editbody" spellcheck="false" aria-label="Note source"></textarea>
         <div class="line-mirror" id="editmirror" aria-hidden="true"></div>
+        <div class="ws-overlay" id="editws" aria-hidden="true" hidden></div>
       </div>
     </section>
     <section id="split-pane" hidden aria-label="Second pane">
@@ -134,6 +135,7 @@
         <div class="line-gutter" id="splitgutter" aria-hidden="true"></div>
         <textarea id="split-body" hidden spellcheck="false" aria-label="Second pane note source"></textarea>
         <div class="line-mirror" id="splitmirror" aria-hidden="true"></div>
+        <div class="ws-overlay" id="splitws" aria-hidden="true" hidden></div>
       </div>
       <div class="split-foot">
         <span id="split-savestate" class="savestate" aria-live="polite"></span>
@@ -264,6 +266,8 @@
               <label><input type="radio" name="theme" value="auto" checked><span>Auto (follow system)</span></label>
               <label><input type="radio" name="theme" value="light"><span>Light</span></label>
               <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+              <label><input type="radio" name="theme" value="solarized-light"><span>Solarized Light</span></label>
+              <label><input type="radio" name="theme" value="solarized-dark"><span>Solarized Dark</span></label>
             </div>
           </div>
           <label class="setting">
@@ -361,6 +365,32 @@
             <span class="setting-label">Format pipe tables on save<small>Pads cells to their column's widest cell and normalizes the delimiter row. Off leaves tables exactly as typed.</small></span>
             <input type="checkbox" data-setting="formatTables">
           </label>
+          <label class="setting switch">
+            <span class="setting-label">Remove trailing spaces on save<small>Two trailing spaces are a Markdown hard line break, so this is off by default.</small></span>
+            <input type="checkbox" data-setting="trimTrailingSpaces">
+          </label>
+          <label class="setting switch">
+            <span class="setting-label">Backspace removes a whole indent<small>When the cursor sits right after spaces inserted by Tab, at a tab-stop column. Plain-text editor.</small></span>
+            <input type="checkbox" data-setting="backspaceDedent">
+          </label>
+          <label class="setting switch">
+            <span class="setting-label">Show whitespace<small>A light character for spaces and line endings. Plain-text editor only.</small></span>
+            <input type="checkbox" data-setting="showWhitespace">
+          </label>
+          <div class="setting">
+            <span class="setting-label">End-of-line marker<small>Shown when "Show whitespace" is on.</small></span>
+            <span class="ws-char-controls">
+              <input type="text" class="ws-char-input" data-setting="eolChar" maxlength="4" aria-label="End-of-line character">
+              <input type="color" data-setting="eolColor" aria-label="End-of-line color">
+            </span>
+          </div>
+          <div class="setting">
+            <span class="setting-label">Space marker<small>Shown when "Show whitespace" is on.</small></span>
+            <span class="ws-char-controls">
+              <input type="text" class="ws-char-input" data-setting="spaceChar" maxlength="4" aria-label="Space character">
+              <input type="color" data-setting="spaceColor" aria-label="Space color">
+            </span>
+          </div>
           <div class="setting">
             <div class="setting-label">Vim configuration (vimrc)<small id="vimrc-info">No vimrc set.</small></div>
             <button id="edit-vimrc" class="btn">Edit vimrc…</button>
