@@ -42,6 +42,7 @@ import * as notesApi from '/lib/notes-api.js';
 import { fetchIntegrationStatus, resetIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
 import {
   isArchive, isMarkdown, exportFileName, selectionFileName, summarizeImport, describeImport, uniquePath, downloadBlob,
+  downloadUrl,
 } from '/lib/transfer.js';
 import { renderHelp, isTypingTarget, shortcutFor } from '/lib/help.js';
 import {
@@ -4896,12 +4897,17 @@ $("trash-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", cl
 
 // --- import / export ---
 
+// Builds the export server-side and hands the finished archive straight
+// to the browser's own download manager (Range-resumable, streams to
+// disk) rather than fetching it into a JS Blob — the point for a
+// notebook with many GB of resources is that nothing here has to hold
+// one HTTP connection, or the whole archive, open for the duration.
 async function actionExportNotebook() {
   if (!slug) return;
   await guarded(async () => {
-    const blob = await notesApi.exportNotebook(slug);
-    downloadBlob(blob, exportFileName(slug));
-    toast("Export downloaded");
+    const { url } = await notesApi.exportNotebookReady(slug);
+    downloadUrl(url, exportFileName(slug));
+    toast("Export ready, download starting");
   });
 }
 
@@ -4937,8 +4943,15 @@ function planNode(entries) {
   return box;
 }
 
+// Uploads the archive once, in chunks, through a resumable server-side
+// job (see notesApi.uploadImportArchive) instead of one single-shot
+// multipart POST, so a dropped connection partway through a large
+// notebook costs at most the in-flight chunk rather than the whole
+// upload. The dry-run preview and the real apply both run against that
+// same uploaded job — reviewing the plan never re-uploads the archive.
 async function importArchive(file) {
-  const dry = await notesApi.importNotebook(slug, file, { dryRun: true });
+  const jobId = await notesApi.uploadImportArchive(slug, file);
+  const dry = await notesApi.completeImportJob(slug, jobId, { dryRun: true });
   const entries = dry.entries || [];
   entries.__dryRun = true;
   const r = await formDialog({
@@ -4948,9 +4961,12 @@ async function importArchive(file) {
     okLabel: "Import",
     wide: true,
   });
-  if (!r) return;
+  if (!r) {
+    await notesApi.cancelImportJob(slug, jobId).catch(() => {});
+    return;
+  }
   await guarded(async () => {
-    const res = await notesApi.importNotebook(slug, file, {});
+    const res = await notesApi.completeImportJob(slug, jobId, { dryRun: false });
     await refreshTree();
     await infoDialog({
       title: "Import complete",

@@ -8,6 +8,9 @@ import {
   createNotebook, renameNotebook, deleteNotebook,
   listResources, deleteResource, listTags, listKarakeepBookmarks,
   lockStatus, setLock, removeLock, unlock, relock,
+  createExportJob, exportJobStatus, exportJobDownloadUrl, cancelExportJob, exportNotebookReady,
+  createImportJob, importJobStatus, cancelImportJob, importNotebookResumable,
+  uploadImportArchive, completeImportJob,
 } from '../../lib/notes-api.js';
 
 function mockFetch(responses) {
@@ -15,6 +18,7 @@ function mockFetch(responses) {
   const f = jest.fn(async (url, init) => {
     calls.push({ url, init });
     const next = responses.shift() ?? { status: 200, body: {} };
+    if (next.throwError) throw next.throwError;
     return {
       ok: next.status >= 200 && next.status < 300,
       status: next.status,
@@ -494,5 +498,169 @@ describe('content locks', () => {
     expect(f.calls[0].url).toBe('/n/nb/contentlock/lock');
     expect(f.calls[0].init.method).toBe('POST');
     expect(JSON.parse(f.calls[0].init.body)).toEqual({ path: '', kind: 'notebook' });
+  });
+});
+
+describe('resumable export/import jobs', () => {
+  test('createExportJob POSTs and returns the job', async () => {
+    const f = mockFetch([{ status: 202, body: { id: 'abc', status: 'building' } }]);
+    expect(await createExportJob('nb', f)).toEqual({ id: 'abc', status: 'building' });
+    expect(f.calls[0]).toMatchObject({ url: '/n/nb/export/jobs', init: { method: 'POST' } });
+  });
+
+  test('exportJobStatus GETs the job', async () => {
+    const f = mockFetch([{ status: 200, body: { status: 'done', size: 10 } }]);
+    expect(await exportJobStatus('nb', 'abc', f)).toEqual({ status: 'done', size: 10 });
+    expect(f.calls[0].url).toBe('/n/nb/export/jobs/abc');
+  });
+
+  test('exportJobDownloadUrl encodes slug and id', () => {
+    expect(exportJobDownloadUrl('my nb', 'abc')).toBe('/n/my%20nb/export/jobs/abc/download');
+  });
+
+  test('cancelExportJob DELETEs the job', async () => {
+    const f = mockFetch([{ status: 200, body: { deleted: true } }]);
+    await cancelExportJob('nb', 'abc', f);
+    expect(f.calls[0]).toMatchObject({ url: '/n/nb/export/jobs/abc', init: { method: 'DELETE' } });
+  });
+
+  test('exportNotebookReady polls until done and resolves with the download url', async () => {
+    const f = mockFetch([
+      { status: 202, body: { id: 'abc', status: 'building' } },
+      { status: 200, body: { status: 'building' } },
+      { status: 200, body: { status: 'done', size: 42 } },
+    ]);
+    const result = await exportNotebookReady('nb', f, { intervalMs: 1 });
+    expect(result).toEqual({ id: 'abc', url: '/n/nb/export/jobs/abc/download', size: 42 });
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  test('exportNotebookReady rejects when the build fails', async () => {
+    const f = mockFetch([
+      { status: 202, body: { id: 'abc', status: 'building' } },
+      { status: 200, body: { status: 'error', error: 'disk full' } },
+    ]);
+    await expect(exportNotebookReady('nb', f, { intervalMs: 1 })).rejects.toThrow('disk full');
+  });
+
+  test('createImportJob / importJobStatus / cancelImportJob', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 200, body: { id: 'job1', offset: 5 } },
+      { status: 200, body: { deleted: true } },
+    ]);
+    expect(await createImportJob('nb', f)).toEqual({ id: 'job1', offset: 0 });
+    expect(await importJobStatus('nb', 'job1', f)).toEqual({ id: 'job1', offset: 5 });
+    await cancelImportJob('nb', 'job1', f);
+    expect(f.calls[0]).toMatchObject({ url: '/n/nb/import/jobs', init: { method: 'POST' } });
+    expect(f.calls[1].url).toBe('/n/nb/import/jobs/job1');
+    expect(f.calls[2]).toMatchObject({ url: '/n/nb/import/jobs/job1', init: { method: 'DELETE' } });
+  });
+
+  function fakeFile(size) {
+    return {
+      size,
+      slice(start, end) { return { start, end: Math.min(end, size) }; },
+    };
+  }
+
+  test('importNotebookResumable uploads in chunks and completes', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 200, body: { offset: 10 } },
+      { status: 200, body: { offset: 18 } },
+      { status: 200, body: { dryRun: false, entries: [{ path: 'a.md', status: 'created' }] } },
+    ]);
+    const file = fakeFile(18);
+    const res = await importNotebookResumable('nb', file, { chunkSize: 10 }, f);
+    expect(res.entries).toEqual([{ path: 'a.md', status: 'created' }]);
+    expect(f.calls[1]).toMatchObject({
+      url: '/n/nb/import/jobs/job1',
+      init: { method: 'PATCH', headers: expect.objectContaining({ 'X-Noteroot-Offset': '0' }) },
+    });
+    expect(f.calls[1].init.body).toEqual({ start: 0, end: 10 });
+    expect(f.calls[2].init.headers['X-Noteroot-Offset']).toBe('10');
+    expect(f.calls[3]).toMatchObject({ url: '/n/nb/import/jobs/job1/complete', init: { method: 'POST' } });
+  });
+
+  test('importNotebookResumable passes dry_run through to complete', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 200, body: { offset: 4 } },
+      { status: 200, body: { dryRun: true, entries: [] } },
+    ]);
+    await importNotebookResumable('nb', fakeFile(4), { dryRun: true }, f);
+    expect(f.calls[2].url).toBe('/n/nb/import/jobs/job1/complete?dry_run=true');
+  });
+
+  test('importNotebookResumable resyncs to the server offset on a 409', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 409, body: { error: 'offset mismatch', offset: 4 } }, // client thought it was at 0
+      { status: 200, body: { offset: 8 } }, // retried from offset 4, chunk covers 4..8
+      { status: 200, body: { dryRun: false, entries: [] } },
+    ]);
+    await importNotebookResumable('nb', fakeFile(8), { chunkSize: 10 }, f);
+    expect(f.calls[1].init.headers['X-Noteroot-Offset']).toBe('0');
+    expect(f.calls[2].init.headers['X-Noteroot-Offset']).toBe('4');
+    expect(f.calls[2].init.body).toEqual({ start: 4, end: 8 });
+  });
+
+  test('importNotebookResumable resyncs via a status fetch after a network error', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { throwError: new TypeError('network error') },
+      { status: 200, body: { id: 'job1', offset: 5 } }, // status fetch after the failure
+      { status: 200, body: { offset: 9 } }, // retried PATCH from the resynced offset
+      { status: 200, body: { dryRun: false, entries: [] } },
+    ]);
+    await importNotebookResumable('nb', fakeFile(9), { chunkSize: 10 }, f);
+    expect(f.calls[3].init.headers['X-Noteroot-Offset']).toBe('5');
+  });
+
+  test('importNotebookResumable gives up after maxRetries consecutive failures', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { throwError: new Error('boom 1') },
+      { status: 200, body: { id: 'job1', offset: 0 } },
+      { throwError: new Error('boom 2') },
+    ]);
+    await expect(importNotebookResumable('nb', fakeFile(5), { chunkSize: 10, maxRetries: 1 }, f))
+      .rejects.toThrow('boom 2');
+  });
+
+  test('uploadImportArchive uploads and resolves the job id without completing it', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 200, body: { offset: 4 } },
+    ]);
+    const id = await uploadImportArchive('nb', fakeFile(4), {}, f);
+    expect(id).toBe('job1');
+    expect(f).toHaveBeenCalledTimes(2); // create + one chunk, no /complete call
+  });
+
+  test('completeImportJob posts dry_run and the real apply to the same job', async () => {
+    const f = mockFetch([
+      { status: 200, body: { dryRun: true, entries: [] } },
+      { status: 200, body: { dryRun: false, entries: [{ path: 'a.md', status: 'created' }] } },
+    ]);
+    const dry = await completeImportJob('nb', 'job1', { dryRun: true }, f);
+    expect(dry.dryRun).toBe(true);
+    expect(f.calls[0].url).toBe('/n/nb/import/jobs/job1/complete?dry_run=true');
+
+    const real = await completeImportJob('nb', 'job1', { dryRun: false }, f);
+    expect(real.entries).toEqual([{ path: 'a.md', status: 'created' }]);
+    expect(f.calls[1].url).toBe('/n/nb/import/jobs/job1/complete');
+  });
+
+  test('appendImportChunk surfaces a non-409 error status through failure()', async () => {
+    const f = mockFetch([
+      { status: 201, body: { id: 'job1', offset: 0 } },
+      { status: 500, body: { error: 'write failed' } },
+      { status: 200, body: { id: 'job1', offset: 0 } },
+      { status: 500, body: { error: 'write failed' } },
+    ]);
+    await expect(importNotebookResumable('nb', fakeFile(5), { chunkSize: 10, maxRetries: 1 }, f))
+      .rejects.toMatchObject({ status: 500, message: 'write failed' });
   });
 });

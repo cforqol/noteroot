@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -46,15 +47,12 @@ type resourceMeta struct {
 	Size     int64  `json:"size"`
 }
 
-// exportResources writes the notebook's committed attachments into tw.
+// exportResourcesTo writes the notebook's committed attachments into tw.
 // Trouble here is logged and skipped: the notes already written must
 // still come out as a valid archive.
-func (s *Server) exportResources(r *http.Request, slug string, tw *tar.Writer) {
-	nb, ok := s.reg.Get(slug)
-	if !ok {
-		return
-	}
-	store, journal, cleanup, err := s.openResources(r.Context(), nb)
+func (s *Server) exportResourcesTo(nb *notebooks.Notebook, tw *tar.Writer) {
+	slug := nb.Manifest.Slug
+	store, journal, cleanup, err := s.openResources(context.Background(), nb)
 	if err != nil {
 		s.log.Warn("export: resources unavailable", "notebook", slug, "err", err)
 		return
@@ -601,11 +599,24 @@ func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
 		`attachment; filename="`+safeFilename(nb.Manifest.Slug)+`.tar.gz"`)
 	w.WriteHeader(http.StatusOK)
 
-	gz := gzip.NewWriter(w)
+	includeHistory := r.URL.Query().Get("include_history") != "false"
+	_ = s.buildExportArchive(nb, w, includeHistory)
+}
+
+// buildExportArchive writes the notebook's export .tar.gz (notes,
+// attachments, notebook.toml and, unless suppressed, git history) to out.
+// Shared by the synchronous exportNotebook handler, which streams
+// straight to the response and discards this error (nothing useful to do
+// once bytes are already on the wire), and the export job builder
+// (transfer.go), which streams to a file on disk and reports a write
+// failure — e.g. disk full — as the job's error state instead of
+// silently producing a truncated archive.
+func (s *Server) buildExportArchive(nb *notebooks.Notebook, out io.Writer, includeHistory bool) error {
+	gz := gzip.NewWriter(out)
 	tw := tar.NewWriter(gz)
 
 	vaultRoot := nb.Layout.Vault()
-	_ = filepath.WalkDir(vaultRoot, func(p string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(vaultRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -628,8 +639,11 @@ func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
 		_, writeErr := tw.Write(content)
 		return writeErr
 	})
+	if walkErr != nil {
+		return walkErr
+	}
 
-	s.exportResources(r, nb.Manifest.Slug, tw)
+	s.exportResourcesTo(nb, tw)
 
 	// Include notebook.toml.
 	if mf, readErr := os.ReadFile(nb.Layout.Manifest()); readErr == nil {
@@ -639,13 +653,14 @@ func (s *Server) exportNotebook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Include git history unless explicitly disabled.
-	if r.URL.Query().Get("include_history") != "false" {
+	if includeHistory {
 		s.exportHistoryBundle(nb.Layout.Vault(), tw)
 	}
 
-	_ = tw.Close()
-	_ = gz.Close()
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return gz.Close()
 }
 
 // exportHistoryBundle writes the git history as a bundle entry into tw.
@@ -706,10 +721,20 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 		archiveReader = r.Body
 	}
 
+	s.importArchiveStream(w, r, nb, archiveReader, dryRun)
+}
+
+// importArchiveStream parses archiveReader as a notebook import .tar.gz and
+// writes the JSON response, applying the same validate-all → (dry run) plan
+// → apply flow as importNotebook's doc comment describes. It reports ok=true
+// when it wrote a 200 (vs an error status), so a caller holding archiveReader
+// open against other state — the import job's staged upload file, in
+// transfer.go — knows whether the archive was actually consumed.
+func (s *Server) importArchiveStream(w http.ResponseWriter, r *http.Request, nb *notebooks.Notebook, archiveReader io.Reader, dryRun bool) (ok bool) {
 	gz, err := gzip.NewReader(archiveReader)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not a gzip archive: " + err.Error()})
-		return
+		return false
 	}
 	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
@@ -767,7 +792,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 		}
 		if nextErr != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corrupt archive: " + nextErr.Error()})
-			return
+			return false
 		}
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != 0 {
 			continue
@@ -875,7 +900,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"dryRun": true, "entries": results})
-		return
+		return true
 	}
 
 	// Apply.
@@ -919,6 +944,7 @@ func (s *Server) importNotebook(w http.ResponseWriter, r *http.Request) {
 	s.emit(r, nb, "notebook.import", "", map[string]any{"entries": len(results)})
 
 	writeJSON(w, http.StatusOK, map[string]any{"dryRun": false, "entries": results})
+	return true
 }
 
 // applyHistoryBundle writes a git bundle to a temp file and unbundles it

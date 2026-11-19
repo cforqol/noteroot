@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import {
   isArchive, isMarkdown, exportFileName, selectionFileName, summarizeImport, describeImport,
-  uniquePath, downloadBlob,
+  uniquePath, downloadBlob, downloadUrl,
 } from '../../lib/transfer.js';
 
 describe('file-type checks', () => {
@@ -116,6 +116,27 @@ describe('downloadBlob', () => {
       jest.useRealTimers();
       URL.createObjectURL = realCreate;
       URL.revokeObjectURL = realRevoke;
+      click.mockRestore();
+    }
+  });
+});
+
+describe('downloadUrl', () => {
+  test('wires a temporary link straight to the given URL, no object URL involved', () => {
+    const seen = [];
+    const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function clickImpl() {
+      seen.push({ download: this.download, href: this.href, hidden: this.hidden, inDoc: document.contains(this) });
+    });
+    try {
+      downloadUrl('/n/nb/export/jobs/abc/download', 'nb.tar.gz');
+      expect(seen).toEqual([{
+        download: 'nb.tar.gz',
+        href: `${location.origin}/n/nb/export/jobs/abc/download`,
+        hidden: true,
+        inDoc: true,
+      }]);
+      expect(document.querySelector('a[download="nb.tar.gz"]')).toBeNull(); // removed again
+    } finally {
       click.mockRestore();
     }
   });

@@ -107,11 +107,13 @@ func (s *Server) runGCSweep() {
 		journalN, _ := journal.GC(gcGrace)
 		blobN := s.sweepBlobs(nb, store, journal)
 		cleanup()
-		if journalN > 0 || blobN > 0 {
+		transfersN := s.sweepTransfers(nb)
+		if journalN > 0 || blobN > 0 || transfersN > 0 {
 			s.log.Info("gc sweep",
 				"notebook", nb.Manifest.Slug,
 				"journal_entries_removed", journalN,
 				"blobs_removed", blobN,
+				"transfer_jobs_removed", transfersN,
 			)
 		}
 	}

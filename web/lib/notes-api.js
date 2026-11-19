@@ -221,6 +221,150 @@ export function importNotebook(slug, file, { dryRun = false } = {}, f) {
   return request('POST', `/n/${enc(slug)}/import${dryRun ? '?dry_run=true' : ''}`, { body: form }, f);
 }
 
+// --- resumable notebook import/export (large notebooks) ---
+//
+// Export builds the archive server-side and resolves once it is ready
+// to download; the download itself is left to the browser (a multi-GB
+// archive has no business living in a JS Blob), whose own download
+// manager already resumes a dropped connection over Range, which the
+// download endpoint supports. Import uploads the archive in
+// offset-fenced chunks, so a dropped connection or a page left idle
+// mid-upload costs at most the in-flight chunk, never the bytes already
+// accepted — the same shape as the server's job model in transfer.go.
+
+/** Start a server-side export build: {id, status: "building"}. */
+export function createExportJob(slug, f) {
+  return request('POST', `/n/${enc(slug)}/export/jobs`, { headers: JSON_TYPE }, f);
+}
+
+/** One export job's state: {status, size?, error?}. */
+export function exportJobStatus(slug, id, f) {
+  return request('GET', `/n/${enc(slug)}/export/jobs/${enc(id)}`, {}, f);
+}
+
+/** The browser-downloadable URL for a finished export job. */
+export function exportJobDownloadUrl(slug, id) {
+  return `/n/${enc(slug)}/export/jobs/${enc(id)}/download`;
+}
+
+/** Cancel a build in progress, or discard a finished job's archive. */
+export function cancelExportJob(slug, id, f) {
+  return request('DELETE', `/n/${enc(slug)}/export/jobs/${enc(id)}`, { headers: JSON_TYPE }, f);
+}
+
+async function pollExportJob(slug, id, f, intervalMs) {
+  for (;;) {
+    const info = await exportJobStatus(slug, id, f);
+    if (info.status === 'done') return info;
+    if (info.status === 'error') throw new Error(info.error || 'export failed');
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+/**
+ * Build a notebook export and resolve once it is ready: {id, url, size}.
+ * `url` is a direct link the caller can hand to the browser (anchor
+ * click, `window.open`, drop into a download manager) to stream the
+ * finished archive without ever holding it in page memory.
+ */
+export async function exportNotebookReady(slug, f = globalThis.fetch, { intervalMs = 300 } = {}) {
+  const created = await createExportJob(slug, f);
+  const info = await pollExportJob(slug, created.id, f, intervalMs);
+  return { id: created.id, url: exportJobDownloadUrl(slug, created.id), size: info.size };
+}
+
+/** Start a resumable import upload session: {id, offset: 0}. */
+export function createImportJob(slug, f) {
+  return request('POST', `/n/${enc(slug)}/import/jobs`, { headers: JSON_TYPE }, f);
+}
+
+/** The offset a resuming upload should continue from: {id, offset}. */
+export function importJobStatus(slug, id, f) {
+  return request('GET', `/n/${enc(slug)}/import/jobs/${enc(id)}`, {}, f);
+}
+
+/** Cancel an upload in progress and discard its staged bytes. */
+export function cancelImportJob(slug, id, f) {
+  return request('DELETE', `/n/${enc(slug)}/import/jobs/${enc(id)}`, { headers: JSON_TYPE }, f);
+}
+
+/**
+ * Upload one chunk at `offset`. A 409 (the server disagrees with the
+ * caller's offset) resolves as `{conflict: true, offset}` instead of
+ * throwing, so importNotebookResumable can resync and retry without
+ * treating a stale offset as a hard failure.
+ */
+async function appendImportChunk(slug, id, offset, chunk, f) {
+  const r = await f(`/n/${enc(slug)}/import/jobs/${enc(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Noteroot-Offset': String(offset) },
+    body: chunk,
+  });
+  if (r.status === 409) {
+    let data = {};
+    try { data = await r.json(); } catch { /* empty or non-JSON body */ }
+    return { conflict: true, offset: Number(data.offset) || 0 };
+  }
+  if (!r.ok) throw await failure(r);
+  const data = await r.json();
+  return { conflict: false, offset: Number(data.offset) };
+}
+
+/**
+ * Upload `file` as a notebook import archive in chunks of `chunkSize`
+ * bytes, surviving transient failures by resyncing to whatever offset
+ * the server reports — via the chunk response on a 409, or a status
+ * fetch after any other failure — rather than assuming the client's own
+ * count is still correct. Up to `maxRetries` consecutive failures are
+ * tolerated per chunk before giving up. Resolves to the job id, not yet
+ * applied or even validated — call completeImportJob next.
+ */
+export async function uploadImportArchive(
+  slug, file, { chunkSize = 8 << 20, maxRetries = 5 } = {}, f = globalThis.fetch,
+) {
+  const { id } = await createImportJob(slug, f);
+  let offset = 0;
+  let retries = 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + chunkSize, file.size);
+    try {
+      const result = await appendImportChunk(slug, id, offset, file.slice(offset, end), f);
+      offset = result.offset;
+      retries = 0;
+    } catch (err) {
+      retries += 1;
+      if (retries > maxRetries) throw err;
+      const status = await importJobStatus(slug, id, f);
+      offset = status.offset;
+    }
+  }
+  return id;
+}
+
+/**
+ * Validate (dry run) or apply an uploaded import job: {dryRun, entries},
+ * the same shape as importNotebook. A dry run leaves the job in place —
+ * the bytes are already on the server, so confirming afterward calls
+ * this again with dryRun: false on the same id, never re-uploading.
+ */
+export function completeImportJob(slug, id, { dryRun = false } = {}, f) {
+  const q = dryRun ? '?dry_run=true' : '';
+  return request('POST', `/n/${enc(slug)}/import/jobs/${enc(id)}/complete${q}`, { headers: JSON_TYPE }, f);
+}
+
+/**
+ * Upload `file` and apply (or dry-run) it in one call: the shape most
+ * callers want when there is no separate review step between the
+ * upload and the decision to apply it. Resolves to the same {dryRun,
+ * entries} shape as importNotebook.
+ */
+export async function importNotebookResumable(
+  slug, file, { dryRun = false, chunkSize = 8 << 20, maxRetries = 5 } = {}, f = globalThis.fetch,
+) {
+  const id = await uploadImportArchive(slug, file, { chunkSize, maxRetries }, f);
+  return completeImportJob(slug, id, { dryRun }, f);
+}
+
 /** Server-side backup (git bundle + state snapshot): the backup manifest. */
 export function createBackup(slug, f) {
   return request('POST', `/n/${enc(slug)}/backup`, { headers: JSON_TYPE }, f);

@@ -137,6 +137,20 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/export/selection", auth(s.exportSelection))
 	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
 	mux.Handle("POST /n/{slug}/note/import", Chain(http.HandlerFunc(s.importNoteArchive), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+
+	// Resumable import/export jobs: large notebooks (many GB of
+	// resources) transfer without holding one HTTP connection open for
+	// the whole duration — export builds to a file and downloads with
+	// Range support, import accepts the archive in offset-fenced chunks.
+	mux.Handle("POST /n/{slug}/export/jobs", mutating(s.createExportJob))
+	mux.Handle("GET /n/{slug}/export/jobs/{id}", auth(s.exportJobStatus))
+	mux.Handle("GET /n/{slug}/export/jobs/{id}/download", auth(s.downloadExportJob))
+	mux.Handle("DELETE /n/{slug}/export/jobs/{id}", mutating(s.deleteExportJob))
+	mux.Handle("POST /n/{slug}/import/jobs", mutating(s.createImportJob))
+	mux.Handle("PATCH /n/{slug}/import/jobs/{id}", mutating(s.appendImportJob))
+	mux.Handle("GET /n/{slug}/import/jobs/{id}", auth(s.importJobStatus))
+	mux.Handle("POST /n/{slug}/import/jobs/{id}/complete", mutating(s.completeImportJob))
+	mux.Handle("DELETE /n/{slug}/import/jobs/{id}", mutating(s.deleteImportJob))
 	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
 	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
 	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
@@ -196,6 +210,10 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("DELETE /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "write", qsha, s.deleteResource))
 	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
 	mux.Handle("GET /api/v1/n/{slug}/note/export/archive", s.bearer("export", "read", qpath, s.exportNoteArchive))
+	mux.Handle("POST /api/v1/n/{slug}/export/jobs", s.bearer("export", "read", qnone, s.createExportJob))
+	mux.Handle("GET /api/v1/n/{slug}/export/jobs/{id}", s.bearer("export", "read", qnone, s.exportJobStatus))
+	mux.Handle("GET /api/v1/n/{slug}/export/jobs/{id}/download", s.bearer("export", "read", qnone, s.downloadExportJob))
+	mux.Handle("DELETE /api/v1/n/{slug}/export/jobs/{id}", s.bearer("export", "read", qnone, s.deleteExportJob))
 	mux.Handle("POST /api/v1/n/{slug}/backup", s.bearer("backup", "write", qnone, s.createBackup))
 
 	// External integration proxies — no per-notebook scope, auth only.

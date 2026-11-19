@@ -89,3 +89,21 @@ export function downloadBlob(blob, filename, doc = document) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/**
+ * Trigger the browser's native download of a server URL through a
+ * temporary link, same as downloadBlob but for a URL rather than a
+ * Blob already in memory. Used for finished export jobs: a multi-GB
+ * archive streams straight to disk through the browser's own download
+ * manager (which resumes over Range on its own) instead of ever living
+ * in a JS Blob.
+ */
+export function downloadUrl(url, filename, doc = document) {
+  const a = doc.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.hidden = true;
+  doc.body.append(a);
+  a.click();
+  a.remove();
+}
