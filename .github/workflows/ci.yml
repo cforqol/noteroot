@@ -4,6 +4,11 @@ on:
   push:
     tags: ["**"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag override. Leave empty for <branch>-dev. 'latest' is rejected."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -17,6 +22,7 @@ jobs:
     name: Go
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: ${{ !github.event.deleted }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -30,6 +36,7 @@ jobs:
     name: Web
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: ${{ !github.event.deleted }}
     defaults:
       run:
         working-directory: web
@@ -40,12 +47,26 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - run: node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --runInBand
+      - name: Jest unit and integration tests
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --runInBand 2>&1 | tee "$RUNNER_TEMP/jest.out"
+          status=$?
+          {
+            echo '### Jest failures'
+            echo '```'
+            grep -E '(^FAIL|●)' -A 15 "$RUNNER_TEMP/jest.out" | head -c 60000 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   dockerfile:
     name: Dockerfile lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: ${{ !github.event.deleted }}
     steps:
       - uses: actions/checkout@v4
       - uses: hadolint/hadolint-action@v3.1.0
@@ -70,6 +91,26 @@ jobs:
         if: github.ref_type == 'branch'
         run: test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$GITHUB_SHA"
 
+      - name: Resolve image tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag="${INPUT_TAG:-}"
+          if [ -z "$tag" ]; then
+            tag=$(printf '%s' "${GITHUB_REF_NAME}-dev" | tr '/' '-')
+          fi
+          if [ "$tag" = "latest" ]; then
+            echo "::error::'latest' is reserved for tag builds"
+            exit 1
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'; then
+            echo "::error::invalid image tag: $tag"
+            exit 1
+          fi
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Image names
@@ -86,8 +127,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=tag
-            type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=raw,value=${{ env.IMAGE_TAG }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=sha
 
       - name: Version
@@ -109,7 +150,7 @@ jobs:
       - name: Smoke test
         run: |
           set -eu
-          trap 'docker rm -f auth app >/dev/null 2>&1 || true' EXIT
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then docker logs auth 2>/dev/null || true; docker logs app 2>/dev/null || true; fi; docker rm -f auth app >/dev/null 2>&1 || true' EXIT
 
           for v in PUID PGID NOTEROOT_DATA_DIR NOTEROOT_LISTEN NOTEROOT_AUTH_MODE \
                    NOTEROOT_LOG_LEVEL NOTEROOT_GC_INTERVAL NOTEROOT_QUOTA_BYTES \
@@ -128,6 +169,7 @@ jobs:
           curl -fsS http://127.0.0.1:18080/ | grep -qi noteroot
 
           hc=$(docker inspect -f '{{index .Config.Healthcheck.Test 1}}' "$LOCAL_IMAGE")
+          [ -n "$hc" ]
           docker exec auth sh -c "$hc"
 
           docker run --rm "$LOCAL_IMAGE" --version | grep -F -- "$BUILD_VERSION"
@@ -144,6 +186,7 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -eu
+          [ -n "$TAGS" ]
           while IFS= read -r t; do
             [ -n "$t" ] || continue
             docker tag "$LOCAL_IMAGE" "$t"
