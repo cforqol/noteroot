@@ -4,8 +4,6 @@ Plain markdown notes on your own server. Real vim. Nothing you can't `grep`.
 
 `noteroot` is a self-hosted notebook for one person who wants their notes to be *files* — readable, portable, versioned, and never locked inside a database you can't open.
 
-> **Status:** stage 9 complete — plugins and integrations on a Lua sandbox (scoped tokens, signed webhooks, depth-limited bus, three proof plugins). Built-in UI plugin system ships three first-party widgets (HTML renderer, calendar, Pomodoro timer). Stages 0–8 before it: vault, search, write path, vim mode, resources, transforms, S3, dedup/quota/backups/import-export.
-
 ---
 
 ## Table of contents
@@ -429,11 +427,7 @@ Full reference: `docs/architecture.md`. Also `docs/threat-model.md` and `docs/sc
 
 ## Contributing
 
-Single-maintainer project, but issues and patches are welcome. Before opening a PR:
-
-```bash
-make check
-```
+Single-maintainer project.
 
 Expect strict review on two things in particular: **atomic writes** and **failure containment**. Those are the properties the whole design rests on.
 
