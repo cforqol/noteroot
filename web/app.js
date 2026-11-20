@@ -21,7 +21,7 @@ function shouldUseVim() {
 }
 import { VimEditor } from '/lib/vim-editor.js';
 import {
-  normalizeNote, changedRange, readFrontmatter, deriveTitle, localDate, localDateTime, isValidId,
+  normalizeNote, changedRange, readFrontmatter, deriveTitle, firstH1, localDate, localDateTime, isValidId,
   splitFrontmatter, replaceH1, ensureH1, setFrontmatterTitle,
 } from '/lib/frontmatter.js';
 import { formatPipeTables } from '/lib/tables.js';
@@ -2312,6 +2312,7 @@ async function openEditor() {
 
   const useVim = shouldUseVim();
   const fm = readFrontmatter(src.text);
+  const sp0 = splitFrontmatter(src.text);
   editing = {
     path,
     mode: useVim ? "vim" : "textarea",
@@ -2322,6 +2323,12 @@ async function openEditor() {
     noteId: fm.id || lastNote.id || "",
     created: fm.created || "",
     updated: fm.updated || "",
+    // Baseline for the title/H1/filename consistency check on manual
+    // save or close (see maybeSyncTitleAndRename): whichever of these
+    // two the user edits away from its opening value drives a rename
+    // prompt; autosave never checks this.
+    baselineTitle: fm.title || "",
+    baselineH1: firstH1(sp0.ok ? sp0.body : src.text),
     saveTimer: 0,
     lockTimer: 0,
   };
@@ -2575,7 +2582,11 @@ async function readEditorContent() {
  * note, switching notebooks, closing) so nothing is lost. A Vim buffer
  * that cannot be read falls back to a local draft.
  */
-async function flushEditor() {
+// checkRename is true only for an explicit "close this note" call
+// (saveAndCloseEditor): every other caller (navigating to a different
+// note, switching notebooks, the autosave timer itself) is a courtesy
+// flush, not the deliberate finish a rename prompt should wait for.
+async function flushEditor(checkRename = false) {
   if (!editing) return true;
   clearTimeout(editing.saveTimer);
   let content;
@@ -2589,7 +2600,7 @@ async function flushEditor() {
     clearPad(editing.path);
     return true;
   }
-  return enqueueSave(content, false);
+  return enqueueSave(content, false, checkRename);
 }
 
 // The server's slugRe: lowercase letters, digits and dashes, 1–64
@@ -2714,10 +2725,10 @@ async function actionDeleteNotebook() {
 
 // Saves run one at a time, so a second edit never races the first one's
 // base sha (which would 412 needlessly).
-function enqueueSave(content, manual) {
+function enqueueSave(content, manual, checkRename = manual) {
   const run = saveChain.then(
-    () => saveNoteContent(content, manual),
-    () => saveNoteContent(content, manual),
+    () => saveNoteContent(content, manual, checkRename),
+    () => saveNoteContent(content, manual, checkRename),
   );
   saveChain = run.then(() => {}, () => {});
   return run;
@@ -2734,13 +2745,95 @@ async function saveNote(manual) {
   await enqueueSave(content, manual);
 }
 
-async function saveNoteContent(content, manual) {
+// Checks whether a manual save or close moved the H1 heading or the
+// frontmatter title away from what they were when the editor opened
+// and, if so, syncs the other of the two to match and offers to rename
+// the file as well — the direction syncTitleToPath doesn't cover
+// (that one flows a sidebar rename down into title+H1; this flows an
+// in-editor title/H1 edit back out to the filename). Autosave ticks
+// never call this: checkRename is only true for an explicit save or
+// close, so a rename prompt never interrupts mid-sentence typing.
+//
+// The heading wins when both changed in the same session, matching
+// deriveTitle's own precedence elsewhere in this file. A title edit
+// only touches the H1 when one already existed — a note that never
+// had a heading does not get one forced in just because its title
+// field changed; that stays ensureFrontmatter's job on open.
+//
+// Returns the content to save (synced regardless of the rename
+// decision) and, only when the user confirms, the path to move to
+// once the save itself has succeeded.
+async function maybeSyncTitleAndRename(ed, content) {
+  const sp = splitFrontmatter(content);
+  const body = sp.ok ? sp.body : content;
+  const curTitle = readFrontmatter(content).title;
+  const curH1 = firstH1(body);
+  const h1Changed = curH1 !== "" && curH1 !== ed.baselineH1;
+  const titleChanged = curTitle !== "" && curTitle !== ed.baselineTitle;
+  if (!h1Changed && !titleChanged) return { content, renamePath: null };
+
+  const newTitle = h1Changed ? curH1 : curTitle;
+  let synced = sp.ok ? setFrontmatterTitle(content, newTitle) : content;
+  if (!h1Changed && ed.baselineH1) {
+    const sp2 = splitFrontmatter(synced);
+    const newBody = replaceH1(sp2.ok ? sp2.body : synced, newTitle);
+    synced = sp2.ok ? `${sp2.head}${sp2.block}${sp2.close}${newBody}` : newBody;
+  }
+  ed.baselineTitle = newTitle;
+  if (h1Changed || ed.baselineH1) ed.baselineH1 = newTitle;
+
+  const t = renameTarget(ed.path, newTitle, false);
+  if (!t.ok || t.same) return { content: synced, renamePath: null };
+  const confirmed = await confirmDialog({
+    title: "Rename to match the new title?",
+    message: `“${baseName(ed.path)}” → “${baseName(t.path)}”`,
+    okLabel: "Rename",
+  });
+  return { content: synced, renamePath: confirmed ? t.path : null };
+}
+
+// Moves the just-saved note to renamePath, carries the open editor's
+// lock and tracking (current/lastNote/editing) across, and refreshes
+// the tree. Failures (most likely a 409 collision) are reported but
+// never roll back the content save that already succeeded.
+async function renameOpenNote(ed, renamePath) {
+  const oldPath = ed.path;
+  try {
+    await notesApi.moveNote(slug, oldPath, renamePath);
+  } catch (e) {
+    toast(`Saved, but could not rename the file: ${e.message}`, true);
+    return;
+  }
+  clearInterval(ed.lockTimer);
+  releaseLock(oldPath);
+  ed.path = renamePath;
+  takeLock(ed.path);
+  ed.lockTimer = setInterval(() => takeLock(ed.path), 60000);
+  followMove(oldPath, ed.path, false);
+  if (lastNote && lastNote.path === ed.path) {
+    lastNote.title = ed.baselineTitle;
+    document.title = lastNote.title + " — noteroot";
+  }
+  ensureExpanded(parentDir(ed.path));
+  await refreshTree();
+  toast(`Renamed to “${ed.path}”.`);
+}
+
+async function saveNoteContent(content, manual, checkRename = manual) {
   const ed = editing;
   if (!ed) return false;
   clearTimeout(ed.saveTimer);
   if (content === ed.lastSaved) {
     if (manual) setSaveState("No changes.", "");
     return true;
+  }
+  let renamePath = null;
+  let titleSynced = false;
+  if (checkRename) {
+    const sync = await maybeSyncTitleAndRename(ed, content);
+    titleSynced = sync.content !== content;
+    content = sync.content;
+    renamePath = sync.renamePath;
   }
   setSaveState("Saving…", "dirty");
   // Keep the header truthful: stamp `updated` (adds a block if missing).
@@ -2752,7 +2845,9 @@ async function saveNoteContent(content, manual) {
     touch: true,
   });
   let sent = norm.changed ? norm.content : content;
-  let fixed = norm.changed;
+  // titleSynced must still push to the live buffer even when normalizeNote
+  // itself found nothing left to touch (e.g. `updated` already matched).
+  let fixed = norm.changed || titleSynced;
   if (getSetting("formatTables") !== "off") {
     const tables = formatPipeTables(sent);
     if (tables.changed) { sent = tables.content; fixed = true; }
@@ -2778,6 +2873,7 @@ async function saveNoteContent(content, manual) {
     setTimeout(() => refreshPluginPanels(slug), 900);
     refreshSplitRead(ed.path);
     scheduleTags();
+    if (renamePath) await renameOpenNote(ed, renamePath);
     return true;
   } catch (e) {
     if (e.status === 412) {
@@ -3474,8 +3570,11 @@ $("edit-pastebtn")?.addEventListener("click", async () => {
 });
 /** Save the open editor and return to the rendered note. */
 async function saveAndCloseEditor() {
+  // Path is read after the flush, not before: a confirmed rename
+  // during it changes editing.path, and closing should reopen
+  // wherever the note actually ended up.
+  await flushEditor(true);
   const path = editing && editing.path;
-  await flushEditor();
   await closeEditor();
   if (path && slug) await openNote(path, null);
 }
@@ -4680,18 +4779,30 @@ async function syncTemplatesSettings() {
 
   createBtn.onclick = async () => {
     if (!slug) return;
-    const { getTemplates } = await import('/lib/prefs.js');
-    const templates = getTemplates(slug);
-    const name = prompt("Template name:", "meeting-notes");
-    if (!name) return;
-    if (templates[name]) {
-      toast("A template with that name already exists.", true);
-      return;
-    }
+    const { getTemplates, saveTemplate } = await import('/lib/prefs.js');
     const { defaultNoteContent } = await import('/lib/templates.js');
-    const content = defaultNoteContent("meeting-notes.md");
-    const { saveTemplate } = await import('/lib/prefs.js');
-    saveTemplate(slug, name, { content });
+    const templates = getTemplates(slug);
+    const r = await formDialog({
+      title: "Create template",
+      message: "{{title}}, {{date}}, {{time}}, {{datetime}}, {{id}}, {{path}} and {{folder}} are filled in when the template is used.",
+      fields: [
+        { name: "name", label: "Name", value: "meeting-notes", hint: "Shown in the template picker." },
+        {
+          name: "content", label: "Content", type: "textarea", monospace: true, rows: 12,
+          value: defaultNoteContent("meeting-notes.md"),
+        },
+      ],
+      okLabel: "Create",
+      wide: true,
+      validate: (v) => {
+        if (!v.name.trim()) return "Enter a name.";
+        if (templates[v.name.trim()]) return "A template with that name already exists.";
+        return null;
+      },
+    });
+    if (!r) return;
+    const name = r.name.trim();
+    saveTemplate(slug, name, { content: r.content });
     syncTemplatesSettings();
     toast(`Template "${name}" created.`);
   };
@@ -4725,10 +4836,15 @@ async function syncTemplatesSettings() {
     });
     row.querySelector('[data-action="edit"]')?.addEventListener('click', async () => {
       if (!slug) return;
-      const { saveTemplate, getTemplates } = await import('/lib/prefs.js');
-      const newContent = prompt(`Edit template "${name}":`, t.content);
-      if (newContent === null) return;
-      saveTemplate(slug, name, { content: newContent, variables: t.variables || {}, isDefault: t.isDefault });
+      const r = await formDialog({
+        title: `Edit template "${name}"`,
+        fields: [{ name: "content", label: "Content", type: "textarea", monospace: true, rows: 14, value: t.content }],
+        okLabel: "Save",
+        wide: true,
+      });
+      if (!r) return;
+      const { saveTemplate } = await import('/lib/prefs.js');
+      saveTemplate(slug, name, { content: r.content, variables: t.variables || {}, isDefault: t.isDefault });
       syncTemplatesSettings();
       toast(`Template "${name}" updated.`);
     });

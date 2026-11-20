@@ -158,28 +158,6 @@ export function readFrontmatter(src) {
   return { ok: true, id: v('id'), title: v('title'), created: v('created'), updated: v('updated') };
 }
 
-/**
- * Title for a note without one: its first ATX heading outside code
- * fences, else its file name.
- */
-export function deriveTitle(text, path = '') {
-  let fence = '';
-  for (const raw of String(text ?? '').split('\n')) {
-    const line = raw.replace(/\r$/, '');
-    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (f) {
-      if (!fence) fence = f[1][0];
-      else if (f[1][0] === fence) fence = '';
-      continue;
-    }
-    if (fence) continue;
-    const m = /^ {0,3}#[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
-    if (m && m[1].trim()) return m[1].trim().slice(0, 200);
-  }
-  const p = String(path ?? '');
-  return p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/i, '') || 'Untitled';
-}
-
 // The 0-based line index of the body's first ATX H1 outside code
 // fences (deriveTitle's heading rule, exposed for setH1/ensureH1); -1
 // when there is none.
@@ -199,6 +177,27 @@ function firstH1Line(text) {
     if (m && m[1].trim()) return i;
   }
   return -1;
+}
+
+/** The body's first top-level heading text, or '' when it has none. */
+export function firstH1(text) {
+  const s = String(text ?? '');
+  const i = firstH1Line(s);
+  if (i < 0) return '';
+  const line = s.split('\n')[i].replace(/\r$/, '');
+  const m = /^ {0,3}#[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+  return m[1].trim().slice(0, 200);
+}
+
+/**
+ * Title for a note without one: its first ATX heading outside code
+ * fences, else its file name.
+ */
+export function deriveTitle(text, path = '') {
+  const h1 = firstH1(text);
+  if (h1) return h1;
+  const p = String(path ?? '');
+  return p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/i, '') || 'Untitled';
 }
 
 /**

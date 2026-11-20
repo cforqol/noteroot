@@ -26,6 +26,17 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
+// jsdom has no ResizeObserver (the topbar's search-compact layout uses
+// one). A no-op stub is enough: layout tests that care about the
+// compact breakpoint drive it through other means (resize events).
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // localStorage is provided by jsdom, but ensure it's a clean object
 beforeEach(() => {
   if (globalThis.localStorage) {

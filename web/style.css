@@ -756,10 +756,12 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .dialog-form { display: flex; flex-direction: column; }
 .dialog-message { margin-top: 0; }
 .dialog-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; font-size: 13px; font-weight: 500; }
-.dialog-field input, .dialog-field select { font-weight: 400; }
+.dialog-field input, .dialog-field select, .dialog-field textarea { font-weight: 400; }
 .dialog-field.dialog-check { flex-direction: row; align-items: center; gap: 8px; }
 .dialog-field.dialog-check input { width: auto; min-height: 0; }
 .dialog-field input[type="color"] { padding: 2px; height: 34px; width: 80px; }
+.dialog-field textarea { padding: 8px 10px; resize: vertical; min-height: 80px; }
+.dialog-field textarea.dialog-textarea-mono { font-family: var(--mono); font-size: 13px; }
 .dialog-field .help-text { font-weight: 400; margin: 0; }
 .dialog-preview {
   margin: -4px 0 14px; padding: 8px 10px; font: 13px/1.4 var(--mono); color: var(--muted);

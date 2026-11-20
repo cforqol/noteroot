@@ -128,6 +128,39 @@ describe('formDialog', () => {
     expect(await p).toEqual({ dep: 'a' });
   });
 
+  test('renders a textarea field, preserves its multi-line value untrimmed, and includes it in Tab order', async () => {
+    const p = formDialog({
+      title: 't',
+      fields: [
+        {
+          name: 'content', label: 'Content', type: 'textarea', value: '  line one  \nline two\n',
+          rows: 6, monospace: true, placeholder: 'ph',
+        },
+        { name: 'after', label: 'After' },
+      ],
+    });
+    const ta = $q('[name=content]');
+    expect(ta.tagName).toBe('TEXTAREA');
+    expect(ta.rows).toBe(6);
+    expect(ta.classList.contains('dialog-textarea-mono')).toBe(true);
+    expect(ta.placeholder).toBe('ph');
+    expect(ta.value).toBe('  line one  \nline two\n');
+    // Tab from the textarea must reach the next field, not skip it.
+    ta.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+    expect(document.activeElement).toBe($q('[name=after]'));
+    ta.value = 'edited\nmultiline  ';
+    $q('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(await p).toEqual({ content: 'edited\nmultiline  ', after: '' });
+  });
+
+  test('a textarea field with no value defaults to empty', async () => {
+    const p = formDialog({ title: 't', fields: [{ name: 'content', label: 'C', type: 'textarea' }] });
+    expect($q('[name=content]').value).toBe('');
+    $q('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(await p).toEqual({ content: '' });
+  });
+
   test('preview text updates live and hides when empty', async () => {
     const p = formDialog({
       title: 'p',

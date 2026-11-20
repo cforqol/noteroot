@@ -23,6 +23,14 @@ function buildInput(doc, f) {
     if (f.value !== undefined) select.value = f.value;
     return select;
   }
+  if (f.type === 'textarea') {
+    const textarea = doc.createElement('textarea');
+    textarea.value = f.value ?? '';
+    if (f.placeholder) textarea.placeholder = f.placeholder;
+    textarea.rows = f.rows || 10;
+    if (f.monospace) textarea.classList.add('dialog-textarea-mono');
+    return textarea;
+  }
   const input = doc.createElement('input');
   input.type = f.type || 'text';
   input.autocomplete = 'off';
@@ -51,8 +59,10 @@ function readValues(inputs) {
  * @param {string} o.title
  * @param {string} [o.message]
  * @param {Node} [o.extra]             custom content under the message
- * @param {{name:string,label:string,type?:string,value?:string|boolean,placeholder?:string,hint?:string,options?:{value:string,label:string,disabled?:boolean}[]}[]} [o.fields]
- *   type "checkbox" yields a boolean; type "select" takes options
+ * @param {{name:string,label:string,type?:string,value?:string|boolean,placeholder?:string,hint?:string,rows?:number,monospace?:boolean,options?:{value:string,label:string,disabled?:boolean}[]}[]} [o.fields]
+ *   type "checkbox" yields a boolean; type "select" takes options; type
+ *   "textarea" yields multi-line text (rows, monospace style) for content
+ *   too long for a single-line input
  * @param {(values:object)=>string|null} [o.preview]  live line under the fields
  * @param {string} [o.okLabel]
  * @param {string|null} [o.cancelLabel] null drops the Cancel button
@@ -164,7 +174,7 @@ export function formDialog(o, doc = document) {
         finish(null);
       } else if (e.key === 'Tab') {
         // Keep keyboard focus inside the dialog.
-        const stops = [...content.querySelectorAll('input, select, button')].filter((x) => !x.disabled);
+        const stops = [...content.querySelectorAll('input, select, textarea, button')].filter((x) => !x.disabled);
         const i = stops.indexOf(doc.activeElement);
         const next = e.shiftKey ? (i <= 0 ? stops.length - 1 : i - 1) : (i === stops.length - 1 ? 0 : i + 1);
         e.preventDefault();

@@ -981,6 +981,142 @@ describe('homepage', () => {
   });
 });
 
+describe('templates settings', () => {
+  test('create, edit, make default and delete all go through in-app dialogs, never window.prompt', async () => {
+    const realPrompt = window.prompt;
+    let promptCalls = 0;
+    window.prompt = () => { promptCalls += 1; return null; };
+    $('settingsbtn').click();
+    const nav = q('#settings-modal .settings-nav button[data-target="set-templates"]');
+    expect(nav).toBeTruthy();
+    nav.click();
+    await until(() => $('templates-list').textContent.includes('No templates yet'), 'empty templates list');
+
+    // Create: a dialog with a name field and a multi-line content field,
+    // not a single-line window.prompt.
+    $('create-template').click();
+    await until(() => q('.dialog [name="content"]'), 'create dialog');
+    expect(q('.dialog [name="content"]').tagName).toBe('TEXTAREA');
+    await submitDialog({ name: 'meeting', content: '# {{title}}\n\nAttendees:\n' });
+    await until(() => $('templates-list').textContent.includes('meeting'), 'template row');
+    expect(JSON.parse(localStorage.getItem('nr.templates')).nb.meeting.content).toBe('# {{title}}\n\nAttendees:\n');
+
+    // A duplicate name is rejected without creating a second one.
+    $('create-template').click();
+    await until(() => q('.dialog [name="content"]'), 'create dialog again');
+    await submitDialog({ name: 'meeting', content: 'x' });
+    await until(() => q('.dialog-error:not([hidden])'), 'duplicate name error');
+    expect(q('.dialog-error').textContent).toMatch(/already exists/);
+    q('.dialog .btn').click(); // Cancel (first button)
+
+    // Edit: another dialog, pre-filled with the stored content. Each
+    // action re-renders #templates-list from scratch, so the row is
+    // re-queried fresh before every click rather than reused.
+    const templateRow = () => [...qa('.template-row')].find((r) => r.textContent.includes('meeting'));
+    templateRow().querySelector('[data-action="edit"]').click();
+    await until(() => q('.dialog [name="content"]'), 'edit dialog');
+    expect(q('.dialog [name="content"]').value).toBe('# {{title}}\n\nAttendees:\n');
+    await submitDialog({ content: '# {{title}}\n\nAttendees:\n\nNotes:\n' });
+    await until(
+      () => JSON.parse(localStorage.getItem('nr.templates')).nb.meeting.content.includes('Notes:'),
+      'edited content persisted',
+    );
+
+    // Make default.
+    templateRow().querySelector('[data-action="set-default"]').click();
+    await until(() => templateRow().querySelector('.badge.default'), 'default badge');
+    expect(JSON.parse(localStorage.getItem('nr.templates')).nb.meeting.isDefault).toBe(true);
+
+    // Delete, behind the existing confirm dialog.
+    templateRow().querySelector('[data-action="delete"]').click();
+    await submitDialog();
+    await until(() => $('templates-list').textContent.includes('No templates yet'), 'list empty again');
+    expect(JSON.parse(localStorage.getItem('nr.templates')).nb).toEqual({});
+
+    expect(promptCalls).toBe(0);
+    window.prompt = realPrompt;
+    $('settings-close').click();
+  });
+});
+
+describe('editor title/H1 rename sync', () => {
+  test('editing the H1 syncs the frontmatter title and, once confirmed, renames the file', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'rename-sync-demo' });
+    await until(() => notes.has('rename-sync-demo.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    await until(() => /title: rename-sync-demo/.test($('editbody').value), 'frontmatter settled');
+
+    const ta = $('editbody');
+    ta.value = ta.value.replace('# rename-sync-demo', '# Renamed Title');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    $('savebtn').click();
+
+    await until(() => q('.dialog'), 'rename confirmation');
+    expect(q('.dialog h2').textContent).toMatch(/Rename/);
+    expect(q('.dialog-message').textContent).toContain('rename-sync-demo.md');
+    expect(q('.dialog-message').textContent).toContain('Renamed Title.md');
+    await submitDialog();
+
+    await until(() => notes.has('Renamed Title.md'), 'file renamed');
+    expect(notes.has('rename-sync-demo.md')).toBe(false);
+    const saved = notes.get('Renamed Title.md');
+    expect(saved).toMatch(/title: Renamed Title/);
+    expect(saved).toMatch(/# Renamed Title/);
+    await until(() => labels().includes('Renamed Title'), 'tree shows the new name');
+
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('editing only the frontmatter title syncs the H1; declining the rename keeps the filename', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'decline-rename-demo' });
+    await until(() => notes.has('decline-rename-demo.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    await until(() => /title: decline-rename-demo/.test($('editbody').value), 'frontmatter settled');
+
+    const ta = $('editbody');
+    ta.value = ta.value.replace('title: decline-rename-demo', 'title: Different Title');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    $('savebtn').click();
+
+    await until(() => q('.dialog'), 'rename confirmation');
+    [...qa('.dialog .dialog-buttons .btn')].find((b) => b.textContent === 'Cancel').click();
+
+    await until(() => /# Different Title/.test(notes.get('decline-rename-demo.md') || ''), 'H1 synced in place');
+    expect(notes.has('decline-rename-demo.md')).toBe(true); // filename unchanged
+    expect(notes.get('decline-rename-demo.md')).toMatch(/title: Different Title/);
+
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('autosave never offers a rename, even when the H1 changed', async () => {
+    localStorage.setItem('nr.autosave', '1000'); // smallest valid choice; real timer, not mocked
+    $('new-note').click();
+    await submitDialog({ name: 'autosave-no-rename-demo' });
+    await until(() => notes.has('autosave-no-rename-demo.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    await until(() => /title: autosave-no-rename-demo/.test($('editbody').value), 'frontmatter settled');
+
+    const ta = $('editbody');
+    ta.value = ta.value.replace('# autosave-no-rename-demo', '# Autosave Should Not Rename');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(1050); // past the autosave debounce above
+    await until(
+      () => /# Autosave Should Not Rename/.test(notes.get('autosave-no-rename-demo.md') || ''),
+      'autosaved',
+    );
+    localStorage.removeItem('nr.autosave'); // back to the 2s fallback every other test runs under
+    expect(q('.dialog')).toBeNull();
+    expect(notes.has('autosave-no-rename-demo.md')).toBe(true); // never renamed
+
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+});
+
 describe('sidebar multi-select', () => {
   test('Ctrl-click picks notes and the bar deletes the picked ones', async () => {
     const click = (path, opts = {}) => node(path).dispatchEvent(new MouseEvent('click', { bubbles: true, ...opts }));

@@ -1,6 +1,6 @@
 import {
   ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, localDateTime, splitFrontmatter,
-  readFrontmatter, deriveTitle, yamlString, normalizeNote, changedRange,
+  readFrontmatter, deriveTitle, firstH1, yamlString, normalizeNote, changedRange,
   replaceH1, ensureH1, setFrontmatterTitle,
 } from '../../lib/frontmatter.js';
 
@@ -94,6 +94,16 @@ describe('readFrontmatter', () => {
     expect(readFrontmatter('---\ntitle: "open\n---\n').title).toBe('open');
     expect(readFrontmatter('---\nnokey\n---\n').ok).toBe(true);
     expect(readFrontmatter('plain').ok).toBe(false);
+  });
+});
+
+describe('firstH1', () => {
+  test('the first ATX heading outside code fences, or empty when there is none', () => {
+    expect(firstH1('intro\n```\n# not this\n```\n~~~\n# nor\n~~~\n  # Real title ##\n# second')).toBe('Real title');
+    expect(firstH1('#nospace\n## h2 only\n#\n')).toBe('');
+    expect(firstH1('')).toBe('');
+    expect(firstH1(null)).toBe('');
+    expect(firstH1(`# ${'x'.repeat(300)}`)).toHaveLength(200);
   });
 });
 
