@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -379,7 +380,24 @@ func (s *Server) resolveWikilink(nb *notebooks.Notebook, target string) (string,
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.V})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.V, "timezone": serverTimezone()})
+}
+
+// serverTimezone reports the IANA zone name the server itself runs in, so
+// the client's timezone preference can offer "server default" as a real,
+// named option rather than a silent guess. TZ, when set, is already that
+// name; otherwise time.Local resolves it from the container's zoneinfo
+// (the image ships tzdata for exactly this). "Local" is what Go reports
+// when it cannot name the zone at all (no TZ, no zoneinfo) — fall back to
+// UTC rather than surface that internal placeholder to users.
+func serverTimezone() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
+	}
+	if name := time.Local.String(); name != "" && name != "Local" {
+		return name
+	}
+	return "UTC"
 }
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {

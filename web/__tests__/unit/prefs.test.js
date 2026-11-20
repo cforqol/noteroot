@@ -12,6 +12,7 @@ import {
   getBookmarks, addBookmark, removeBookmark, toggleBookmark,
   DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, getKeybindings, setKeybinding,
   resetKeybindings, matchesBinding,
+  formatDateTime, formatTime,
 } from '../../lib/prefs.js';
 
 const broken = {
@@ -213,10 +214,41 @@ describe('settings registry', () => {
     expect(all.fontSize).toBe(getSetting('fontSize'));
   });
 
+  test('timezone is free-text with "" (server default) as its own fallback', () => {
+    expect(getSetting('timezone')).toBe('');
+    setSetting('timezone', 'America/New_York');
+    expect(getSetting('timezone')).toBe('America/New_York');
+    setSetting('timezone', ''); // explicitly back to "server default"
+    expect(getSetting('timezone')).toBe('');
+  });
+
+  test('language only accepts its registered choices (just "en" for now)', () => {
+    expect(getSetting('language')).toBe('en');
+    setSetting('language', 'fr'); // not translated yet: rejected, falls back
+    expect(getSetting('language')).toBe('en');
+  });
+
   test('a throwing storage degrades to defaults', () => {
     expect(getSetting('fontSize', broken)).toBe('medium');
     expect(setSetting('fontSize', 'large', broken)).toBe('large');
     expect(getSettings(broken)).toEqual(getSettings(null));
+  });
+});
+
+describe('formatDateTime / formatTime', () => {
+  const d = new Date('2026-06-15T12:34:56Z');
+
+  test('without a timezone, defers to the environment default (no timeZone option)', () => {
+    expect(formatDateTime(d)).toBe(d.toLocaleString());
+    expect(formatTime(d)).toBe(d.toLocaleTimeString());
+  });
+
+  test('an explicit IANA zone is passed through and changes the output', () => {
+    const utc = formatDateTime(d, 'UTC');
+    const tokyo = formatDateTime(d, 'Asia/Tokyo'); // UTC+9: a different hour
+    expect(utc).toBe(d.toLocaleString(undefined, { timeZone: 'UTC' }));
+    expect(utc).not.toBe(tokyo);
+    expect(formatTime(d, 'UTC')).toBe(d.toLocaleTimeString(undefined, { timeZone: 'UTC' }));
   });
 });
 

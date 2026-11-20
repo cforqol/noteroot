@@ -176,7 +176,7 @@ async function fakeFetch(url, init = {}) {
       });
     }
     case 'GET /healthz':
-      return respond(200, { status: 'ok', version: '1.2.3-test' });
+      return respond(200, { status: 'ok', version: '1.2.3-test', timezone: 'UTC' });
     case 'GET /n/nb/resources/stats':
       return respond(200, {
         backend: 'local',
@@ -1114,6 +1114,72 @@ describe('editor title/H1 rename sync', () => {
 
     $('closebtn').click();
     await until(() => $('editor').hidden, 'editor closed');
+  });
+});
+
+describe('localization settings', () => {
+  test('a timezone preference changes how dates are displayed, server default shown first', async () => {
+    // A throwaway note, trashed so it lands on the fake server's fixed
+    // deletedAt (1700000000) to compare formatted output against.
+    $('new-note').click();
+    await submitDialog({ name: 'tz-demo' });
+    await until(() => notes.has('tz-demo.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+    await until(() => node('tz-demo.md'), 'note visible in tree');
+    await menuAction('tz-demo.md', 'Delete note…');
+    await submitDialog();
+    await until(() => !node('tz-demo.md'), 'note removed from tree');
+
+    // The formatted date is the .trash-when span's own first text node;
+    // a later test may have set a retention, which appends a sibling
+    // "· due for deletion" tag that's irrelevant here.
+    const trashRow = () => [...qa('#trash-list li')].find((li) => li.querySelector('.trash-path')?.textContent === 'tz-demo.md');
+    const whenText = () => trashRow().querySelector('.trash-when').firstChild.textContent;
+    $('trash-btn').click();
+    await until(() => trashRow(), 'trash entry');
+    const utcText = whenText();
+    expect(utcText).toBe(new Date(1700000000 * 1000).toLocaleString(undefined, { timeZone: 'UTC' })); // the fake server's reported default
+    $('trash-close').click();
+
+    $('settingsbtn').click();
+    const nav = q('#settings-modal .settings-nav button[data-target="set-localization"]');
+    expect(nav).toBeTruthy();
+    nav.click();
+    const sel = $('timezone-select');
+    await until(() => sel.options.length > 1, 'timezone options populated');
+    expect(sel.options[0].value).toBe('');
+    expect(sel.options[0].textContent).toBe('Server default (UTC)');
+    expect([...sel.options].some((o) => o.value === 'America/New_York')).toBe(true);
+    sel.value = 'America/New_York';
+    sel.dispatchEvent(new Event('change', { bubbles: true })); // the data-setting handler is delegated on document
+    expect(localStorage.getItem('nr.timezone')).toBe('America/New_York');
+    $('settings-close').click();
+
+    $('trash-btn').click();
+    await until(() => trashRow(), 'trash entry still there');
+    const nyText = whenText();
+    expect(nyText).toBe(new Date(1700000000 * 1000).toLocaleString(undefined, { timeZone: 'America/New_York' }));
+    expect(nyText).not.toBe(utcText);
+
+    // Clean up: back to server default, and permanently remove the
+    // throwaway trash entry so later trash-count assertions stay exact.
+    localStorage.removeItem('nr.timezone');
+    trashRow().querySelectorAll('button')[1].click(); // Delete (permanent)
+    await submitDialog();
+    await until(() => !trashRow(), 'trash entry gone');
+    $('trash-close').click();
+  });
+
+  test('language only offers English today and still sets <html lang>', async () => {
+    $('settingsbtn').click();
+    q('#settings-modal .settings-nav button[data-target="set-localization"]').click();
+    const sel = q('#set-localization [data-setting="language"]');
+    expect([...sel.options].map((o) => o.value)).toEqual(['en']);
+    expect(sel.value).toBe('en');
+    expect(document.documentElement.lang).toBe('en');
+    $('settings-close').click();
   });
 });
 

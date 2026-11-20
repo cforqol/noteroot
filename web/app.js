@@ -55,6 +55,7 @@ import {
   moveFolderPrefs, removeFolderPrefs,
   getHomepage, setHomepage,
   getSetting, setSetting, getSettings, STATUS_FIELDS, getStatusFields, setStatusField,
+  formatDateTime, formatTime,
   isHelpSeen, markHelpSeen, resetPreferences, clearDrafts,
   exportPreferences, importPreferences,
   getBookmarks, toggleBookmark, removeBookmark,
@@ -115,6 +116,7 @@ let view = "empty"; // "empty" | "read" | "edit" — see setView
 let slug = null;
 let lastNote = null; // {path, sha, id, title, ready: Promise}
 let openSeq = 0; // invalidates stale async work after navigation
+let serverTimezone = ""; // IANA zone from /healthz, read once at boot (fetchVersion)
 
 // --- syntax highlighting (lazy-loaded highlight.js) ---
 
@@ -1716,7 +1718,7 @@ async function loadHistoryCommits() {
       const li = document.createElement("li");
       li.className = "history-item";
       li.dataset.index = String(index);
-      const date = new Date(c.date * 1000).toLocaleString();
+      const date = formatDateTime(new Date(c.date * 1000), effectiveTimezone());
       li.innerHTML = `
         <span class="history-hash" title="${esc(c.hash)}">${esc(c.shortHash)}</span>
         <span class="history-date">${esc(date)}</span>
@@ -1870,6 +1872,7 @@ async function fetchVersion() {
     const res = await fetch("/healthz", { cache: "no-store" });
     if (!res.ok) return;
     const data = await res.json();
+    serverTimezone = typeof data?.timezone === "string" ? data.timezone.trim() : "";
     const v = typeof data?.version === "string" ? data.version.trim() : "";
     if (!v) return;
     const badge = $("app-version");
@@ -1883,6 +1886,13 @@ async function fetchVersion() {
   } catch {
     /* offline or old server: keep the placeholders */
   }
+}
+
+/** The timezone date/time display should use: the user's explicit
+ * choice, else the server's reported default, else '' (the browser's
+ * own zone — today's behavior, when neither is known yet). */
+function effectiveTimezone() {
+  return getSetting("timezone") || serverTimezone;
 }
 
 async function boot() {
@@ -2278,7 +2288,7 @@ async function takeLock(path) {
     }
     const b = await r.json().catch(() => ({}));
     $("lockstate").textContent = b.holder
-      ? `Locked by another tab until ${new Date(b.expiresAt * 1000).toLocaleTimeString()} — edits may conflict`
+      ? `Locked by another tab until ${formatTime(new Date(b.expiresAt * 1000), effectiveTimezone())} — edits may conflict`
       : "Lock unavailable — edits may conflict";
   } catch {
     $("lockstate").textContent = "";
@@ -2544,7 +2554,7 @@ $("modeswitch")?.addEventListener("click", switchEditorMode);
 function offerDraft(base, apply) {
   const pad = readPad(editing.path);
   if (!pad || typeof pad.content !== "string" || pad.content === base) return;
-  const when = pad.savedAt ? new Date(pad.savedAt).toLocaleString() : "unknown time";
+  const when = pad.savedAt ? formatDateTime(new Date(pad.savedAt), effectiveTimezone()) : "unknown time";
   setBanner(`<div class="warn">Unsaved changes from ${esc(when)}.` +
     ` <button class="btn" id="padrestore">Restore</button>` +
     ` <button class="btn" id="paddiscard">Discard</button></div>`);
@@ -4604,7 +4614,7 @@ function trashRow(en) {
   path.textContent = en.origPath || en.name;
   const when = document.createElement("span");
   when.className = "trash-when";
-  when.textContent = new Date(en.deletedAt * 1000).toLocaleString();
+  when.textContent = formatDateTime(new Date(en.deletedAt * 1000), effectiveTimezone());
   const due = describeExpiry(en.expiresAt);
   if (due) {
     const tag = document.createElement("span");
@@ -5249,6 +5259,7 @@ function applyPreferences() {
   document.body.dataset.width = s.readingWidth;
   document.body.dataset.arrowSize = s.headingArrowSize;
   document.body.dataset.counts = s.treeCounts;
+  document.documentElement.lang = s.language;
   $("statusbar").hidden = s.statusBar !== "on";
   applyStatusFields();
   applyReadPane();
@@ -5275,7 +5286,34 @@ function applyStatusFields() {
 const NO_STARTPAGE = "_blank";
 
 // Bind every control carrying a data-setting attribute to the registry.
+// Rebuilt on every settings open (cheap, and keeps the "Server default"
+// label fresh if /healthz's fetch finishes after the modal's first
+// open). Options come from the runtime's own IANA database rather than
+// a hardcoded list; older browsers without Intl.supportedValuesOf fall
+// back to just the browser's own detected zone.
+function populateTimezoneSelect() {
+  const sel = $("timezone-select");
+  if (!sel) return;
+  const current = getSetting("timezone");
+  const zones = typeof Intl.supportedValuesOf === "function"
+    ? Intl.supportedValuesOf("timeZone")
+    : [Intl.DateTimeFormat().resolvedOptions().timeZone].filter(Boolean);
+  sel.replaceChildren();
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = serverTimezone ? `Server default (${serverTimezone})` : "Server default";
+  sel.append(def);
+  for (const z of zones) {
+    const o = document.createElement("option");
+    o.value = z;
+    o.textContent = z;
+    sel.append(o);
+  }
+  sel.value = current;
+}
+
 function syncSettingsForm() {
+  populateTimezoneSelect();
   for (const key of SETTING_KEYS) {
     const el = q(`[data-setting="${key}"]`);
     if (!el) continue;
@@ -5316,7 +5354,7 @@ function updateVimStatus() {
   st.textContent = state.enabled ? "Enabled" : "Disabled";
   st.className = state.enabled ? "status-value enabled" : "status-value disabled";
   $("cb-failures").textContent = String(state.failures);
-  $("cb-lastfail").textContent = state.lastFailure ? new Date(state.lastFailure).toLocaleString() : "Never";
+  $("cb-lastfail").textContent = state.lastFailure ? formatDateTime(new Date(state.lastFailure), effectiveTimezone()) : "Never";
 }
 
 async function updateServerInfo() {
@@ -5598,7 +5636,7 @@ $("create-backup")?.addEventListener("click", () => guarded(async () => {
   const m = await notesApi.createBackup(slug);
   const box = document.createElement("div");
   const rows = [
-    ["Created", m.createdAt ? new Date(m.createdAt).toLocaleString() : "—"],
+    ["Created", m.createdAt ? formatDateTime(new Date(m.createdAt), effectiveTimezone()) : "—"],
     ["Bundle", m.bundlePath || "—"],
     ["State", m.statePath || "—"],
   ];

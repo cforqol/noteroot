@@ -241,6 +241,7 @@
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <button type="button" data-target="set-appearance">Appearance</button>
+        <button type="button" data-target="set-localization">Localization</button>
         <button type="button" data-target="set-editor">Editor</button>
         <button type="button" data-target="set-keybindings">Shortcuts</button>
         <button type="button" data-target="set-tree">Sidebar</button>
@@ -315,6 +316,21 @@
               <option value="left">Left</option>
             </select>
           </label>
+        </section>
+
+        <section class="settings-section" id="set-localization">
+          <h3>Localization</h3>
+          <label class="setting">
+            <span class="setting-label">Timezone<small>Used for every date and time this app displays.</small></span>
+            <select id="timezone-select" data-setting="timezone"></select>
+          </label>
+          <label class="setting">
+            <span class="setting-label">Language</span>
+            <select data-setting="language">
+              <option value="en">English</option>
+            </select>
+          </label>
+          <p class="help-text small">More languages are planned; only English is available today.</p>
         </section>
 
         <section class="settings-section" id="set-editor">

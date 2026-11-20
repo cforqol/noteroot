@@ -284,6 +284,15 @@ export const SETTINGS = {
   // Backspace right after a soft-tab indent (tabKey: "2" or "4") removes
   // the whole indent instead of one space.
   backspaceDedent: { key: 'nr.backspaceDedent', choices: ['on', 'off'], fallback: 'on' },
+  // '' = server default (reported once at boot via /healthz); any other
+  // value is an IANA zone name the user picked explicitly. Free-text:
+  // the option list comes from Intl.supportedValuesOf at render time,
+  // not a hardcoded choice list here.
+  timezone: { key: 'nr.timezone', choices: [], fallback: '' },
+  // Infrastructure only for now (issue #104): the setting persists and
+  // sets <html lang>, but no UI strings are translated yet — English is
+  // the only real choice until translations exist.
+  language: { key: 'nr.language', choices: ['en'], fallback: 'en' },
 };
 
 /** Current value of a registered setting (its default when unset or invalid). */
@@ -307,6 +316,24 @@ export function setSetting(name, value, storage = defaultStorage()) {
 /** {name: value} for every registered setting. */
 export function getSettings(storage = defaultStorage()) {
   return Object.fromEntries(Object.keys(SETTINGS).map((n) => [n, getSetting(n, storage)]));
+}
+
+// --- timezone-aware display formatting ----------------------------------
+//
+// These wrap the plain toLocaleString()/toLocaleTimeString() calls the UI
+// uses to show git history, lock expiry, trash entries and the like;
+// `timezone` is the effective IANA zone (the user's explicit choice, or
+// the server's reported default) — '' means "no override", which keeps
+// today's behavior of the browser's own zone.
+
+/** Full date+time for display, honoring an explicit IANA timezone. */
+export function formatDateTime(date, timezone = '') {
+  return date.toLocaleString(undefined, timezone ? { timeZone: timezone } : undefined);
+}
+
+/** Time-only for display, honoring an explicit IANA timezone. */
+export function formatTime(date, timezone = '') {
+  return date.toLocaleTimeString(undefined, timezone ? { timeZone: timezone } : undefined);
 }
 
 // --- status-bar fields -------------------------------------------------

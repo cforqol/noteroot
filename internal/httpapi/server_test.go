@@ -95,6 +95,44 @@ func TestHealthAndReady_reportVersion(t *testing.T) {
 	}
 }
 
+// The client's timezone preference offers "server default" as a named
+// option, read once from /healthz at boot.
+func TestHealthz_reportsTimezone(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, nil)
+	rec := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	tz, _ := resp["timezone"].(string)
+	if tz == "" {
+		t.Error("timezone missing or empty")
+	}
+	if tz == "Local" {
+		t.Error(`timezone must never be the unresolvable "Local" placeholder`)
+	}
+}
+
+func TestServerTimezone_prefersTZEnvVar(t *testing.T) {
+	old, hadOld := os.LookupEnv("TZ")
+	t.Cleanup(func() {
+		if hadOld {
+			_ = os.Setenv("TZ", old)
+		} else {
+			_ = os.Unsetenv("TZ")
+		}
+	})
+
+	_ = os.Setenv("TZ", "America/New_York")
+	if got := serverTimezone(); got != "America/New_York" {
+		t.Errorf("serverTimezone() = %q, want %q", got, "America/New_York")
+	}
+
+	_ = os.Unsetenv("TZ")
+	if got := serverTimezone(); got == "" || got == "Local" {
+		t.Errorf("serverTimezone() with no TZ = %q, want a real zone name (e.g. UTC)", got)
+	}
+}
+
 // --- /readyz ---
 
 func TestReady_returnsOK(t *testing.T) {

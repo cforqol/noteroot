@@ -103,6 +103,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 
 - Web UI: notebook picker, sidebar, rendered note view
 - Workspace UI ([guide](docs/ui-guide.md)): create, rename/move and delete notes **and folders** from the sidebar (right-click or the ⋯ button), a trash panel with restore, collapsible folders with `[note count]` badges and a notes/folders total at the foot of the sidebar, per-folder emoji and name color (kept in the browser), sidebar on the left, right or hidden, dark/light/auto theme, a status bar (mode, line:column, total and selected words, characters, paragraphs, reading time, file size), and a phone layout with a slide-in sidebar drawer
+- Settings → Localization: a timezone override (any IANA zone, defaulting to the server's own, reported once over `/healthz`) applied to every date/time the UI displays; a language preference (English today, saved like every other setting, ready for translations later)
 - Settings → Plugins lists both built-in UI plugins (with per-notebook toggles) and the notebook's Lua plugins (with status and a Reload button)
 
 ### Plugins and integrations
