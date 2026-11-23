@@ -22,7 +22,8 @@ function shouldUseVim() {
 import { VimEditor } from '/lib/vim-editor.js';
 import {
   normalizeNote, changedRange, readFrontmatter, deriveTitle, firstH1, localDate, localDateTime, isValidId,
-  splitFrontmatter, replaceH1, ensureH1, setFrontmatterTitle,
+  splitFrontmatter, replaceH1, ensureH1, setFrontmatterTitle, setFrontmatterField, removeFrontmatterField,
+  yamlString,
 } from '/lib/frontmatter.js';
 import { formatPipeTables } from '/lib/tables.js';
 import { indentEdit } from '/lib/textedit.js';
@@ -1157,6 +1158,8 @@ function clearReadPane() {
   if (!pane) return;
   for (const sec of pane.querySelectorAll(".rp-sec")) sec.hidden = true;
   for (const list of pane.querySelectorAll(".rp-toc, .rp-tags, .rp-list, .rp-frontmatter")) list.replaceChildren();
+  const link = pane.querySelector(".rp-source-link");
+  if (link) { link.textContent = ""; link.removeAttribute("href"); }
   const empty = pane.querySelector(".rp-empty");
   if (empty) empty.hidden = false;
 }
@@ -1170,6 +1173,13 @@ function renderReadPane(n) {
     return;
   }
   const art = $("note");
+
+  // Source — the note's url: frontmatter field, if any, as a direct link.
+  const sourceSec = pane.querySelector("#rp-source");
+  const sourceLink = sourceSec.querySelector(".rp-source-link");
+  sourceLink.href = n.url || "";
+  sourceLink.textContent = n.url || "";
+  sourceSec.hidden = !n.url;
 
   // Contents — every heading in the rendered note, indented by level.
   const tocSec = pane.querySelector("#rp-toc");
@@ -1225,7 +1235,7 @@ function renderReadPane(n) {
   fmSec.hidden = fmEntries.length === 0;
 
   const empty = pane.querySelector(".rp-empty");
-  if (empty) empty.hidden = ![tocSec, tagsSec, outSec, backSec, fmSec].every((s) => s.hidden);
+  if (empty) empty.hidden = ![sourceSec, tocSec, tagsSec, outSec, backSec, fmSec].every((s) => s.hidden);
 }
 
 /** Render an arbitrary YAML frontmatter value as a short display string. */
@@ -3852,6 +3862,99 @@ async function actionNewNoteFromTemplate(dir = contextDir()) {
   });
 }
 
+// Frontmatter + body for a new note built from a URL: id/created/updated
+// come from normalizeNote (same as every other note), title and url are
+// given directly so normalizeNote only fills in what's missing. `link`
+// is the single reference line under the heading — either the plain
+// URL or, once Karakeep has archived it, the same "url ([archived](…))"
+// text the paste-to-archive flow writes (karakeepArchivedRe in
+// internal/httpapi/karakeep_bookmarks.go matches it either way).
+function urlNoteContent(url, title, link) {
+  const draft = [
+    "---",
+    `title: ${yamlString(title)}`,
+    `url: ${yamlString(url)}`,
+    "---",
+    "",
+    `# ${title}`,
+    "",
+    link,
+    "",
+  ].join("\n");
+  return normalizeNote(draft, {}).content;
+}
+
+/** Prompt for a URL (and, with Karakeep configured, whether to archive
+ * it) and create a note referencing it via frontmatter `url:`. */
+async function actionNewNoteFromUrl(dir = contextDir()) {
+  if (!slug) { toast("Create or import a notebook first.", true); return; }
+  const integ = await fetchIntegrationStatus();
+  const folders = treeData ? folderChoices(treeData) : [{ value: "", label: "Notebook root", depth: 0 }];
+  const fields = [
+    { name: "url", label: "URL", placeholder: "https://example.com/article" },
+    { name: "name", label: "Note name", placeholder: "article-title", hint: "Subfolders are created as needed; .md is added for you." },
+    { name: "folder", label: "Folder", type: "select", options: folders, value: dir || "" },
+  ];
+  if (integ.karakeep) {
+    fields.push({ name: "archive", label: "Archive this page via Karakeep", type: "checkbox", value: wantsKarakeepForUrls() });
+  }
+  const r = await formDialog({
+    title: "New note from URL",
+    message: dir ? `In folder “${dir}”.` : "At the notebook root.",
+    fields,
+    okLabel: "Create",
+    validate: (v) => {
+      if (!isHttpUrl(v.url)) return "Enter a valid http(s) URL.";
+      if (!v.name) return "Please enter a name.";
+      const c = resolveChild(dir, v.name, { asNote: true });
+      return c.ok ? null : c.error;
+    },
+  });
+  if (!r) return;
+
+  await guarded(async () => {
+    const { path } = resolveChild(dir, r.name, { asNote: true });
+    const title = displayName(path, false);
+    let link = `<${r.url}>`;
+    if (r.archive) {
+      try {
+        const archiveUrl = await karakeepArchive(r.url);
+        if (archiveUrl) link = `${r.url} ([archived](${archiveUrl}))`;
+      } catch {
+        /* best-effort: the note still gets written with a plain link */
+      }
+    }
+    await notesApi.createNote(slug, path, urlNoteContent(r.url, title, link));
+    ensureExpanded(parentDir(path));
+    await refreshTree();
+    await openNote(path, null);
+    if (lastNote && lastNote.path === path) await openEditor();
+  });
+}
+
+/** Set, change or clear a note's `url:` frontmatter field. */
+async function actionSetSourceUrl(node) {
+  if (editorBlocks(node.path, node.isDir)) return;
+  const src = await notesApi.getSource(slug, node.path);
+  const currentUrl = readFrontmatter(src.text).url;
+  const r = await formDialog({
+    title: "Set source URL",
+    message: "Shown in the note panel as a reference link. Leave empty to remove it.",
+    fields: [{ name: "url", label: "URL", value: currentUrl, placeholder: "https://example.com/article" }],
+    okLabel: "Save",
+    validate: (v) => (!v.url || isHttpUrl(v.url) ? null : "Enter a valid http(s) URL, or leave it empty to remove."),
+  });
+  if (!r) return;
+  const next = r.url.trim();
+  if (next === currentUrl) return;
+  await guarded(async () => {
+    const content = next ? setFrontmatterField(src.text, "url", next) : removeFrontmatterField(src.text, "url");
+    await notesApi.saveNote(slug, node.path, content, { baseSha: src.sha });
+    if (current === node.path) await openNote(node.path, null);
+    toast(next ? "Source URL set." : "Source URL removed.");
+  });
+}
+
 async function actionNewFolder(dir = contextDir()) {
   if (!slug) { toast("Create or import a notebook first.", true); return; }
   const r = await formDialog({
@@ -4251,6 +4354,7 @@ function showNodeMenu(node, x, y) {
     ? [
       { label: "New note here", onSelect: () => actionNewNote(node.path) },
       { label: "New note from template…", onSelect: () => actionNewNoteFromTemplate(node.path) },
+      { label: "New note from URL…", onSelect: () => actionNewNoteFromUrl(node.path) },
       { label: "New folder here", onSelect: () => actionNewFolder(node.path) },
       { separator: true },
       { label: "Rename…", onSelect: () => actionRename(node) },
@@ -4271,6 +4375,7 @@ function showNodeMenu(node, x, y) {
         { label: pinned ? "Remove pin" : "Pin", onSelect: () => { toggleBookmark(slug, node.path); drawBookmarks(); } },
         { label: "Rename…", onSelect: () => actionRename(node) },
         { label: bulk ? `Move ${bulkN} notes…` : "Move…", onSelect: () => (bulk ? moveMultiNotes() : actionMove(node)) },
+        { label: "Set source URL…", onSelect: () => actionSetSourceUrl(node) },
         { label: "Download .md", onSelect: () => actionDownloadNote(node) },
         {
           label: bulk ? `Download ${bulkN} notes…` : "Download as zip…",
@@ -4491,6 +4596,7 @@ $("new-more")?.addEventListener("click", (e) => {
   showMenu(r.left, Math.min(r.bottom + 4, window.innerHeight - 120), [
     { label: "New note", onSelect: run(() => actionNewNote()) },
     { label: "New note from template…", onSelect: run(() => actionNewNoteFromTemplate()) },
+    { label: "New note from URL…", onSelect: run(() => actionNewNoteFromUrl()) },
     { label: "New folder", onSelect: run(() => actionNewFolder()) },
     { label: "Import file…", onSelect: run(() => importNoteFromFile()) },
   ]);

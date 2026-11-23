@@ -56,16 +56,23 @@ func TestSplit_oversizedBlockTreatedAsBody(t *testing.T) {
 }
 
 func TestParse_valid(t *testing.T) {
-	src := "---\nid: " + validID + "\ntitle: Hello\ntags: [a, b]\n---\nbody"
+	src := "---\nid: " + validID + "\ntitle: Hello\ntags: [a, b]\nurl: https://example.com/article\n---\nbody"
 	d := Parse([]byte(src))
 	if d.Err != nil {
 		t.Fatalf("Err = %v", d.Err)
 	}
-	if d.ID != validID || d.Title != "Hello" || string(d.Body) != "body" {
+	if d.ID != validID || d.Title != "Hello" || d.URL != "https://example.com/article" || string(d.Body) != "body" {
 		t.Errorf("doc = %+v", d)
 	}
 	if got := Strings(d.Meta, "tags"); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Errorf("tags = %v", got)
+	}
+}
+
+func TestParse_urlDefaultsEmpty(t *testing.T) {
+	d := Parse([]byte("---\nid: " + validID + "\ntitle: Hello\n---\nbody"))
+	if d.URL != "" {
+		t.Errorf("URL = %q, want empty when the note has none", d.URL)
 	}
 }
 

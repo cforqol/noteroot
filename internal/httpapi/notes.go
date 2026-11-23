@@ -20,12 +20,12 @@ import (
 
 // extraFrontmatter returns the note's frontmatter fields the note panel
 // has not already surfaced through dedicated response keys (id, title,
-// tags). nil when nothing is left to show.
+// tags, url). nil when nothing is left to show.
 func extraFrontmatter(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil
 	}
-	skip := map[string]bool{"id": true, "title": true, "tags": true}
+	skip := map[string]bool{"id": true, "title": true, "tags": true, "url": true}
 	out := make(map[string]any, len(meta))
 	for k, v := range meta {
 		if skip[k] {
@@ -169,6 +169,7 @@ func (s *Server) note(w http.ResponseWriter, r *http.Request) {
 		"id":    doc.ID,
 		"title": doc.Title,
 		"tags":  frontmatter.Strings(doc.Meta, "tags"),
+		"url":   doc.URL,
 		"sha":   etagOf(src),
 	}
 	if doc.Err != nil {

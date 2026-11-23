@@ -1,7 +1,7 @@
 import {
   ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, localDateTime, splitFrontmatter,
   readFrontmatter, deriveTitle, firstH1, yamlString, normalizeNote, changedRange,
-  replaceH1, ensureH1, setFrontmatterTitle,
+  replaceH1, ensureH1, setFrontmatterTitle, setFrontmatterField, removeFrontmatterField,
 } from '../../lib/frontmatter.js';
 
 const ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV00';
@@ -78,6 +78,7 @@ describe('readFrontmatter', () => {
       `id: "${ID}" # identity`,
       "title: 'Quoted # not a comment'",
       'created: 2024-01-02 # a comment',
+      'url: https://example.com/article',
       'meta:',
       '  updated: nested',
       '- stray',
@@ -86,7 +87,9 @@ describe('readFrontmatter', () => {
       '---',
       'body',
     ].join('\n'));
-    expect(fm).toEqual({ ok: true, id: ID, title: 'Quoted # not a comment', created: '2024-01-02', updated: '' });
+    expect(fm).toEqual({
+      ok: true, id: ID, title: 'Quoted # not a comment', created: '2024-01-02', updated: '', url: 'https://example.com/article',
+    });
   });
 
   test('a key with an indented or sequence value is present; unterminated quotes tolerated', () => {
@@ -94,6 +97,7 @@ describe('readFrontmatter', () => {
     expect(readFrontmatter('---\ntitle: "open\n---\n').title).toBe('open');
     expect(readFrontmatter('---\nnokey\n---\n').ok).toBe(true);
     expect(readFrontmatter('plain').ok).toBe(false);
+    expect(readFrontmatter('plain').url).toBe('');
   });
 });
 
@@ -257,5 +261,39 @@ describe('setFrontmatterTitle', () => {
   });
   test('is a no-op without a frontmatter block', () => {
     expect(setFrontmatterTitle('no frontmatter here', 'New')).toBe('no frontmatter here');
+  });
+});
+
+describe('setFrontmatterField / removeFrontmatterField', () => {
+  test('setFrontmatterField adds a new key, keeping the rest byte-for-byte', () => {
+    // A URL's ":" and "/" fall outside yamlString's plain-scalar set, so
+    // it always comes back quoted.
+    const src = `---\nid: ${ID}\ntitle: Old\n---\nbody`;
+    expect(setFrontmatterField(src, 'url', 'https://example.com')).toBe(
+      `---\nid: ${ID}\ntitle: Old\nurl: "https://example.com"\n---\nbody`,
+    );
+  });
+  test('setFrontmatterField overwrites an existing key in place', () => {
+    const src = `---\nid: ${ID}\nurl: "https://old.example"\ntitle: Old\n---\nbody`;
+    expect(setFrontmatterField(src, 'url', 'https://new.example')).toBe(
+      `---\nid: ${ID}\nurl: "https://new.example"\ntitle: Old\n---\nbody`,
+    );
+  });
+  test('setFrontmatterField is a no-op without a frontmatter block', () => {
+    expect(setFrontmatterField('plain text', 'url', 'https://example.com')).toBe('plain text');
+  });
+  test('removeFrontmatterField drops the line and nothing else', () => {
+    const src = `---\nid: ${ID}\nurl: https://example.com\ntitle: Old\n---\nbody`;
+    expect(removeFrontmatterField(src, 'url')).toBe(`---\nid: ${ID}\ntitle: Old\n---\nbody`);
+  });
+  test('removeFrontmatterField is a no-op when the key is already absent', () => {
+    const src = `---\nid: ${ID}\ntitle: Old\n---\nbody`;
+    expect(removeFrontmatterField(src, 'url')).toBe(src);
+  });
+  test('removeFrontmatterField is a no-op without a frontmatter block', () => {
+    expect(removeFrontmatterField('plain text', 'url')).toBe('plain text');
+  });
+  test('removing the only key leaves an empty block', () => {
+    expect(removeFrontmatterField('---\nurl: https://example.com\n---\nbody', 'url')).toBe('---\n---\nbody');
   });
 });

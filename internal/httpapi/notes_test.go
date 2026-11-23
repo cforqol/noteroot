@@ -115,10 +115,42 @@ func TestNote_frontmatterFieldExposesExtraKeys(t *testing.T) {
 	if body.Frontmatter["author"] != "Ada" || body.Frontmatter["status"] != "draft" {
 		t.Errorf("frontmatter = %+v", body.Frontmatter)
 	}
-	for _, skip := range []string{"id", "title", "tags"} {
+	for _, skip := range []string{"id", "title", "tags", "url"} {
 		if _, ok := body.Frontmatter[skip]; ok {
 			t.Errorf("frontmatter must not repeat %q (already a top-level field)", skip)
 		}
+	}
+}
+
+func TestNote_urlField(t *testing.T) {
+	src := "---\ntitle: Hi\nurl: https://example.com/article\n---\nbody\n"
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": src}))
+	rec := get(t, srv, notePath("n.md"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.URL != "https://example.com/article" {
+		t.Errorf("url = %q", body.URL)
+	}
+}
+
+func TestNote_urlFieldDefaultsEmptyString(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, notesFixture(t, map[string]string{"n.md": "no frontmatter"}))
+	rec := get(t, srv, notePath("n.md"), nil)
+	var body struct {
+		URL *string `json:"url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.URL == nil || *body.URL != "" {
+		t.Errorf("url = %v, want present and empty", body.URL)
 	}
 }
 

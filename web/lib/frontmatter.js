@@ -152,10 +152,10 @@ function topLevel(lines) {
 /** The recognised keys of a note's frontmatter (textual, never throws). */
 export function readFrontmatter(src) {
   const sp = splitFrontmatter(src);
-  if (!sp.ok) return { ok: false, id: '', title: '', created: '', updated: '' };
+  if (!sp.ok) return { ok: false, id: '', title: '', created: '', updated: '', url: '' };
   const keys = topLevel(sp.block.split('\n'));
   const v = (k) => (keys.get(k)?.present ? keys.get(k).value : '');
-  return { ok: true, id: v('id'), title: v('title'), created: v('created'), updated: v('updated') };
+  return { ok: true, id: v('id'), title: v('title'), created: v('created'), updated: v('updated'), url: v('url') };
 }
 
 // The 0-based line index of the body's first ATX H1 outside code
@@ -229,29 +229,52 @@ export function ensureH1(body, title) {
 }
 
 /**
- * Force the frontmatter `title` field to `title`, overwriting an
+ * Force a top-level frontmatter `key` to `value`, overwriting an
  * existing value (normalizeNote only fills a missing one). A no-op on
  * notes without a frontmatter block — those get one from normalizeNote
  * on next open instead of a bespoke partial header here.
  */
-export function setFrontmatterTitle(src, title) {
+export function setFrontmatterField(src, key, value) {
   const s = String(src ?? '');
   const sp = splitFrontmatter(s);
   if (!sp.ok) return s;
-  const value = yamlString(title);
+  const val = yamlString(value);
   const cr = sp.eol === '\r\n' ? '\r' : '';
   const lines = sp.block.split('\n');
   lines.pop();
   const keys = topLevel(lines);
-  const k = keys.get('title');
+  const k = keys.get(key);
   if (k) {
-    lines[k.index] = `title: ${value}${lines[k.index].endsWith('\r') ? '\r' : ''}`;
+    lines[k.index] = `${key}: ${val}${lines[k.index].endsWith('\r') ? '\r' : ''}`;
   } else {
     let i = lines.length;
     while (i > 0 && lines[i - 1].trim() === '') i -= 1;
-    lines.splice(i, 0, `title: ${value}${cr}`);
+    lines.splice(i, 0, `${key}: ${val}${cr}`);
   }
   return `${sp.head}${lines.join('\n')}\n${sp.close}${sp.body}`;
+}
+
+/** setFrontmatterField specialised to `title`, kept for callers that only ever touch it. */
+export function setFrontmatterTitle(src, title) {
+  return setFrontmatterField(src, 'title', title);
+}
+
+/**
+ * Drop a top-level frontmatter `key` entirely. A no-op when the key is
+ * already absent, or the note has no frontmatter block at all.
+ */
+export function removeFrontmatterField(src, key) {
+  const s = String(src ?? '');
+  const sp = splitFrontmatter(s);
+  if (!sp.ok) return s;
+  const lines = sp.block.split('\n');
+  lines.pop();
+  const keys = topLevel(lines);
+  const k = keys.get(key);
+  if (!k) return s;
+  lines.splice(k.index, 1);
+  const rest = lines.length ? `${lines.join('\n')}\n` : '';
+  return `${sp.head}${rest}${sp.close}${sp.body}`;
 }
 
 const RESERVED = /^(?:true|false|yes|no|on|off|null|y|n|~)$/i;

@@ -70,6 +70,9 @@ function addParents(path) {
 }
 
 const sha = (p) => `sha-${p}-${notes.get(p)?.length}`;
+// A tiny stand-in for the real server's frontmatter.Parse: enough to
+// pull the url: line back out of the stored markdown for GET /note.
+const urlOf = (p) => /^url: "?([^"\n]*)"?$/m.exec(notes.get(p) || '')?.[1] || '';
 const respond = (status, body) => ({
   ok: status >= 200 && status < 300,
   status,
@@ -100,6 +103,7 @@ async function fakeFetch(url, init = {}) {
         sha: sha(p),
         title: p,
         tags: p === 'welcome.md' ? ['alpha', '#beta'] : [],
+        url: urlOf(p),
         outgoing: p === 'welcome.md' ? [{ path: 'work/plan.md', label: 'the plan' }] : [],
         backlinks: p === 'welcome.md' ? [{ path: 'fresh-start.md', title: 'Fresh start' }] : [],
       });
@@ -1180,6 +1184,69 @@ describe('localization settings', () => {
     expect(sel.value).toBe('en');
     expect(document.documentElement.lang).toBe('en');
     $('settings-close').click();
+  });
+});
+
+describe('url frontmatter (#103)', () => {
+  test('New note from URL has no Karakeep checkbox when it is not configured, and writes a plain reference link', async () => {
+    $('new-more').click();
+    await until(() => q('.ctx-menu'), 'new-note menu');
+    const item = [...qa('.ctx-menu .ctx-item')].find((b) => b.textContent === 'New note from URL…');
+    expect(item).toBeTruthy();
+    item.click();
+    await until(() => q('.dialog [name="url"]'), 'dialog');
+    expect(q('.dialog [name="archive"]')).toBeNull(); // Karakeep isn't configured in this fixture
+
+    await submitDialog({ url: 'https://example.com/no-karakeep', name: 'no-karakeep-demo' });
+    await until(() => notes.has('no-karakeep-demo.md'), 'note created');
+    const content = notes.get('no-karakeep-demo.md');
+    expect(content).toMatch(/url: "https:\/\/example\.com\/no-karakeep"/);
+    expect(content).toContain('<https://example.com/no-karakeep>');
+
+    await until(() => !$('editor').hidden, 'editor opened');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('an invalid URL is rejected without creating anything', async () => {
+    const before = notes.size;
+    $('new-more').click();
+    await until(() => q('.ctx-menu'), 'new-note menu');
+    [...qa('.ctx-menu .ctx-item')].find((b) => b.textContent === 'New note from URL…').click();
+    await until(() => q('.dialog [name="url"]'), 'dialog');
+    await submitDialog({ url: 'not a url', name: 'bad-url-demo' });
+    expect(q('.dialog-error').hidden).toBe(false);
+    [...qa('.dialog-buttons .btn')].find((b) => b.textContent === 'Cancel').click();
+    expect(notes.size).toBe(before);
+  });
+
+  test('Set source URL… adds, changes and removes the url: field, and the note panel follows it', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'set-url-demo' });
+    await until(() => notes.has('set-url-demo.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+
+    await menuAction('set-url-demo.md', 'Set source URL…');
+    await submitDialog({ url: 'https://example.com/one' });
+    await until(() => /url: "https:\/\/example\.com\/one"/.test(notes.get('set-url-demo.md') || ''), 'url set');
+
+    node('set-url-demo.md').click();
+    await until(() => !q('#rp-source').hidden, 'source section shown');
+    expect(q('#rp-source .rp-source-link').textContent).toBe('https://example.com/one');
+
+    await menuAction('set-url-demo.md', 'Set source URL…');
+    await until(() => q('.dialog [name="url"]'), 'edit dialog');
+    expect(q('.dialog [name="url"]').value).toBe('https://example.com/one');
+    await submitDialog({ url: 'https://example.com/two' });
+    await until(() => /url: "https:\/\/example\.com\/two"/.test(notes.get('set-url-demo.md') || ''), 'url changed');
+    await until(() => q('#rp-source .rp-source-link').textContent === 'https://example.com/two', 'panel followed the change');
+
+    await menuAction('set-url-demo.md', 'Set source URL…');
+    await submitDialog({ url: '' });
+    await until(() => !/url:/.test(notes.get('set-url-demo.md') || ''), 'url removed');
+    await until(() => q('#rp-source').hidden, 'source section hidden again');
   });
 });
 

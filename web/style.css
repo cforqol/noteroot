@@ -304,6 +304,7 @@ article#split-note { padding: 16px 20px 28px; }
 .rp-frontmatter { margin: 0; font-size: 13px; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
 .rp-frontmatter dt { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .rp-frontmatter dd { margin: 0; overflow-wrap: anywhere; }
+.rp-source-link { display: block; font-size: 13px; overflow-wrap: anywhere; }
 
 /* --- sidebar & tree ---------------------------------------------------- */
 #sidebar {

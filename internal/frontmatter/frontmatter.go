@@ -35,6 +35,7 @@ type Doc struct {
 	Meta  map[string]any
 	ID    string
 	Title string
+	URL   string
 	Err   error
 }
 
@@ -108,6 +109,7 @@ func Parse(src []byte) Doc {
 		d.ID = "" // caller assigns one
 	}
 	d.Title = str(d.Meta["title"])
+	d.URL = str(d.Meta["url"])
 	return d
 }
 
