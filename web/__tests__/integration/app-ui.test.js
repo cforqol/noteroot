@@ -1250,6 +1250,81 @@ describe('url frontmatter (#103)', () => {
   });
 });
 
+describe('frontmatter from an imported note (#110)', () => {
+  // Import itself writes bytes verbatim (no normalization happens
+  // there, same as every other write path) — the fix-up runs the
+  // first time the note is opened, same mechanism that already adds a
+  // missing id/title. A note is created normally (so the tree already
+  // has the row) and its stored content is then swapped out directly,
+  // standing in for "this is what actually landed on disk from an
+  // import" — the test then opens it exactly like a user would.
+  test('created_at/updated_at are migrated and reformatted instead of losing the original moment', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'imported-1' });
+    await until(() => notes.has('imported-1.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    $('closebtn').click();
+    // closebtn's handler closes the editor and then re-opens the note
+    // in the read view as one continuous async chain; editor.hidden
+    // flips true partway through it, so wait for the chain's own end
+    // state (back on #note, no longer editing) before going further —
+    // otherwise its still-in-flight tail can race the content swap
+    // below and save over it.
+    await until(() => $('editor').hidden && $('note').textContent.includes('imported-1'), 'back on the read view');
+
+    notes.set('imported-1.md', [
+      '---',
+      'title: "test1"',
+      'created_at: 02-04-2025 10:00 PM',
+      'updated_at: 21-06-2025 11:08 AM',
+      'tags: ',
+      '  - tag1',
+      '  - tag2',
+      '---',
+      '# test1',
+    ].join('\n'));
+
+    node('imported-1.md').click();
+    await until(
+      () => /created: 2025-04-02T22:00:00/.test(notes.get('imported-1.md') || ''),
+      'created migrated and reformatted',
+    );
+    const saved = notes.get('imported-1.md');
+    expect(saved).toMatch(/updated: 2025-06-21T11:08:00/);
+    expect(saved).not.toContain('created_at');
+    expect(saved).not.toContain('updated_at');
+    expect(saved).toContain('tags: \n  - tag1\n  - tag2'); // untouched
+    expect(saved).toMatch(/^id: /m);
+  });
+
+  test('an already-canonical key with a non-canonical format (trailing Z) is reformatted on open', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'imported-2' });
+    await until(() => notes.has('imported-2.md'), 'note created');
+    await until(() => !$('editor').hidden, 'editor opened');
+    $('closebtn').click();
+    await until(() => $('editor').hidden && $('note').textContent.includes('imported-2'), 'back on the read view');
+
+    notes.set('imported-2.md', [
+      '---',
+      'created: 2024-04-23T12:22:40Z',
+      'title: "test2"',
+      'updated: 2024-04-23T12:23:01Z',
+      '---',
+      '# test2',
+    ].join('\n'));
+
+    node('imported-2.md').click();
+    // Checking for the absence of "Z" anywhere in the file is too broad:
+    // the minted id is Crockford base32, which legitimately includes "Z".
+    await until(() => !/^(created|updated): .*Z$/m.test(notes.get('imported-2.md') || ''), 'Z-suffixed dates reformatted');
+    const saved = notes.get('imported-2.md');
+    const { localDateTime } = await import('../../lib/frontmatter.js');
+    expect(saved).toContain(`created: ${localDateTime(new Date('2024-04-23T12:22:40Z'))}`);
+    expect(saved).toContain(`updated: ${localDateTime(new Date('2024-04-23T12:23:01Z'))}`);
+  });
+});
+
 describe('sidebar multi-select', () => {
   test('Ctrl-click picks notes and the bar deletes the picked ones', async () => {
     const click = (path, opts = {}) => node(path).dispatchEvent(new MouseEvent('click', { bubbles: true, ...opts }));

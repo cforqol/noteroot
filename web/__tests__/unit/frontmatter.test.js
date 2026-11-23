@@ -1,6 +1,6 @@
 import {
   ID_RE, isValidId, encodeULID, ulidChecksum, mintId, localDate, localDateTime, splitFrontmatter,
-  readFrontmatter, deriveTitle, firstH1, yamlString, normalizeNote, changedRange,
+  readFrontmatter, deriveTitle, firstH1, yamlString, normalizeNote, changedRange, canonicalizeDate,
   replaceH1, ensureH1, setFrontmatterTitle, setFrontmatterField, removeFrontmatterField,
 } from '../../lib/frontmatter.js';
 
@@ -204,6 +204,77 @@ describe('normalizeNote', () => {
     expect(isValidId(r.id)).toBe(true);
     expect(r.content).toContain(`created: ${localDateTime()}`);
     expect(normalizeNote(null).changed).toBe(true);
+  });
+
+  describe('frontmatter imported from other note-taking apps (#110)', () => {
+    test('created_at/updated_at are migrated and reformatted, not lost under a fresh "today" stamp', () => {
+      // The issue's own first example, verbatim.
+      const src = [
+        '---',
+        'title: "test1"',
+        'created_at: 02-04-2025 10:00 PM',
+        'updated_at: 21-06-2025 11:08 AM',
+        'tags: ',
+        '  - tag1',
+        '  - tag2',
+        '---',
+      ].join('\n');
+      const r = normalizeNote(src, fixed);
+      expect(r.content).not.toContain('created_at');
+      expect(r.content).not.toContain('updated_at');
+      expect(r.content).toContain('created: 2025-04-02T22:00:00');
+      expect(r.content).toContain('updated: 2025-06-21T11:08:00');
+      // Untouched: tags (block sequence), title, id insertion.
+      expect(r.content).toContain('tags: \n  - tag1\n  - tag2');
+      expect(r.content).toContain('title: "test1"');
+      expect(isValidId(r.id)).toBe(true);
+    });
+
+    test('an already-canonical key name with a non-canonical format (trailing Z) is reformatted in place', () => {
+      // The issue's own second example, verbatim.
+      const src = ['---', 'created: 2024-04-23T12:22:40Z', 'title: "test2"', 'updated: 2024-04-23T12:23:01Z', '---'].join('\n');
+      const r = normalizeNote(src, fixed);
+      expect(r.content).toContain(`created: ${localDateTime(new Date('2024-04-23T12:22:40Z'))}`);
+      expect(r.content).toContain(`updated: ${localDateTime(new Date('2024-04-23T12:23:01Z'))}`);
+      expect(r.content).not.toContain('Z');
+    });
+
+    test('touch still bumps updated to today even when an alternate key or a stale canonical value is present', () => {
+      const viaAlt = normalizeNote('---\ncreated_at: 02-04-2025 10:00 PM\nupdated_at: 02-04-2025 10:00 PM\n---\n', { ...fixed, touch: true });
+      expect(viaAlt.content).toContain(`updated: ${fixed.today}`);
+      expect(viaAlt.content).not.toContain('updated_at');
+
+      const viaCanonical = normalizeNote('---\ncreated: 2020-01-01T00:00:00\nupdated: 2024-04-23T12:23:01Z\n---\n', { ...fixed, touch: true });
+      expect(viaCanonical.content).toContain(`updated: ${fixed.today}`);
+    });
+
+    test('a created_at value by itself does not disturb an already-present created', () => {
+      const r = normalizeNote('---\ncreated: 2020-01-01T00:00:00\ncreated_at: 02-04-2025 10:00 PM\n---\n', fixed);
+      expect(r.content).toContain('created: 2020-01-01T00:00:00');
+      expect(r.content).toContain('created_at: 02-04-2025 10:00 PM'); // left alone, not noteroot's field
+    });
+  });
+});
+
+describe('canonicalizeDate (#110: dates imported from other apps)', () => {
+  test('an absolute ISO 8601 moment (trailing Z) converts to local time, same as every other stamp', () => {
+    const want = localDateTime(new Date('2024-04-23T12:22:40Z'));
+    expect(canonicalizeDate('2024-04-23T12:22:40Z')).toBe(want);
+  });
+  test('"DD-MM-YYYY h:mm AM/PM" reformats as local wall-clock, no zone to convert', () => {
+    expect(canonicalizeDate('02-04-2025 10:00 PM')).toBe('2025-04-02T22:00:00');
+    expect(canonicalizeDate('21-06-2025 11:08 AM')).toBe('2025-06-21T11:08:00');
+    expect(canonicalizeDate('01-01-2025 12:00 AM')).toBe('2025-01-01T00:00:00'); // midnight
+    expect(canonicalizeDate('01-01-2025 12:00 PM')).toBe('2025-01-01T12:00:00'); // noon
+  });
+  test('already-canonical, empty and unrecognised values pass through unchanged', () => {
+    expect(canonicalizeDate('2026-10-17T09:00:00')).toBe('2026-10-17T09:00:00');
+    expect(canonicalizeDate('')).toBe('');
+    expect(canonicalizeDate(null)).toBe('');
+    expect(canonicalizeDate('not a date')).toBe('not a date');
+  });
+  test('an ISO-shaped but invalid date (month 99) is left unchanged rather than guessed at', () => {
+    expect(canonicalizeDate('9999-99-99T99:99')).toBe('9999-99-99T99:99');
   });
 });
 

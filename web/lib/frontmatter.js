@@ -286,6 +286,52 @@ export function yamlString(s) {
   return JSON.stringify(v);
 }
 
+const CANONICAL_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+// "DD-MM-YYYY h:mm AM/PM", e.g. "02-04-2025 10:00 PM" — seen in
+// frontmatter exported by other note-taking apps (issue #110).
+const DMY_AMPM_RE = /^(\d{2})-(\d{2})-(\d{4})[ T](\d{1,2}):(\d{2})\s*(AM|PM)$/i;
+
+/**
+ * Parse a frontmatter date string in a format other than noteroot's
+ * own, without guessing at the many formats this could be: ISO 8601
+ * (any of the optional seconds/fraction/zone bits the Date
+ * constructor itself accepts — this is what catches a trailing "Z")
+ * and "DD-MM-YYYY h:mm AM/PM". Returns null, never throws, for
+ * anything else — callers keep the original string rather than guess.
+ */
+function parseFlexibleDate(v) {
+  const m = DMY_AMPM_RE.exec(v);
+  if (m) {
+    const [, dd, mm, yyyy, hh12, min, ap] = m;
+    let h = Number(hh12) % 12;
+    if (ap.toUpperCase() === 'PM') h += 12;
+    // The (year, month, day, hour, minute) constructor always rolls
+    // out-of-range components over rather than failing, so this branch
+    // never yields an Invalid Date.
+    return new Date(Number(yyyy), Number(mm) - 1, Number(dd), h, Number(min));
+  }
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(v)) {
+    const d = new Date(v.replace(' ', 'T'));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+/**
+ * Reformat a frontmatter date string to noteroot's own
+ * YYYY-MM-DDTHH:MM:SS, preserving the point in time it names (an
+ * absolute one, such as a trailing "Z", converts to local time — the
+ * same zone every other created/updated stamp in this file already
+ * uses). The input comes back unchanged when it is already canonical
+ * or unrecognised; this never invents a date for an empty string.
+ */
+export function canonicalizeDate(s) {
+  const v = String(s ?? '').trim();
+  if (v === '' || CANONICAL_DATE_RE.test(v)) return v;
+  const d = parseFlexibleDate(v);
+  return d ? localDateTime(d) : v;
+}
+
 /**
  * Give a note correct frontmatter.
  *
@@ -351,9 +397,35 @@ export function normalizeNote(src, o = {}) {
     for (const [k, v] of topLevel(lines)) keys.set(k, v);
   }
   if (!keys.get('title')?.present) set('title', yamlString(deriveTitle(sp.body, o.path)));
-  if (!keys.get('created')?.present) set('created', created);
-  const up = keys.get('updated');
-  if (!up?.present || (o.touch && up.value !== today)) set('updated', updated);
+
+  // created/updated: reformat an existing value to noteroot's own
+  // layout (e.g. a trailing "Z"), and when the canonical key is
+  // missing entirely, migrate an alternate key's value — created_at /
+  // updated_at, seen in frontmatter from other note-taking apps —
+  // instead of losing the original moment under a name this function
+  // doesn't recognise and stamping "now" in its place (issue #110).
+  // touch still wins for `updated`: a manual save always bumps it to
+  // today regardless of what either key held before.
+  const fixDateKey = (key, altKey, fallback, touch) => {
+    const k = keys.get(key);
+    if (k?.present) {
+      if (touch && k.value !== today) { set(key, fallback); return; }
+      const fixed = canonicalizeDate(k.value);
+      if (fixed !== k.value) set(key, fixed);
+      return;
+    }
+    const alt = keys.get(altKey);
+    if (alt?.present) {
+      const value = touch ? fallback : canonicalizeDate(alt.value);
+      lines.splice(alt.index, 1);
+      for (const [k2, v2] of topLevel(lines)) keys.set(k2, v2);
+      set(key, value);
+      return;
+    }
+    set(key, fallback);
+  };
+  fixDateKey('created', 'created_at', created, false);
+  fixDateKey('updated', 'updated_at', updated, Boolean(o.touch));
 
   if (!added.length) return { content: s, changed: false, added, id };
   return { content: `${sp.head}${lines.join('\n')}\n${sp.close}${sp.body}`, changed: true, added, id };
