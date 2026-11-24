@@ -3864,12 +3864,11 @@ async function actionNewNoteFromTemplate(dir = contextDir()) {
 
 // Frontmatter + body for a new note built from a URL: id/created/updated
 // come from normalizeNote (same as every other note), title and url are
-// given directly so normalizeNote only fills in what's missing. `link`
-// is the single reference line under the heading — either the plain
-// URL or, once Karakeep has archived it, the same "url ([archived](…))"
-// text the paste-to-archive flow writes (karakeepArchivedRe in
-// internal/httpapi/karakeep_bookmarks.go matches it either way).
-function urlNoteContent(url, title, link) {
+// given directly so normalizeNote only fills in what's missing. The URL
+// itself lives only in frontmatter (the note panel's Source link reads
+// it from there) — the body carries no reference line, since the url:
+// field is already the one place to find it.
+function urlNoteContent(url, title) {
   const draft = [
     "---",
     `title: ${yamlString(title)}`,
@@ -3877,8 +3876,6 @@ function urlNoteContent(url, title, link) {
     "---",
     "",
     `# ${title}`,
-    "",
-    link,
     "",
   ].join("\n");
   return normalizeNote(draft, {}).content;
@@ -3915,16 +3912,12 @@ async function actionNewNoteFromUrl(dir = contextDir()) {
   await guarded(async () => {
     const { path } = resolveChild(dir, r.name, { asNote: true });
     const title = displayName(path, false);
-    let link = `<${r.url}>`;
     if (r.archive) {
-      try {
-        const archiveUrl = await karakeepArchive(r.url);
-        if (archiveUrl) link = `${r.url} ([archived](${archiveUrl}))`;
-      } catch {
-        /* best-effort: the note still gets written with a plain link */
-      }
+      // Best-effort and fire-and-forget: archiving on Karakeep's side
+      // doesn't touch the note, so a failure here never blocks creating it.
+      karakeepArchive(r.url).catch(() => {});
     }
-    await notesApi.createNote(slug, path, urlNoteContent(r.url, title, link));
+    await notesApi.createNote(slug, path, urlNoteContent(r.url, title));
     ensureExpanded(parentDir(path));
     await refreshTree();
     await openNote(path, null);

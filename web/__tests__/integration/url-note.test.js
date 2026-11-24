@@ -116,7 +116,7 @@ beforeAll(async () => {
 });
 
 describe('New note from URL (#103)', () => {
-  test('the dialog offers a Karakeep checkbox once configured, and archiving builds the "(archived)" reference line', async () => {
+  test('the dialog offers a Karakeep checkbox once configured, and checking it archives the page without touching the body', async () => {
     $('new-more').click();
     await until(() => q('.ctx-menu'), 'new-note menu');
     [...qa('.ctx-menu .ctx-item')].find((b) => b.textContent === 'New note from URL…').click();
@@ -125,13 +125,16 @@ describe('New note from URL (#103)', () => {
 
     await submitDialog({ url: 'https://example.com/post', name: 'example-post', archive: true });
     await until(() => notes.has('example-post.md'), 'note created');
+    await until(() => requests.includes('POST /api/v1/integrations/karakeep/archive'), 'archive request sent');
 
     const content = notes.get('example-post.md');
     expect(content).toMatch(/url: "https:\/\/example\.com\/post"/);
-    expect(content).toMatch(/# example-post/);
-    expect(content).toContain(
-      'https://example.com/post ([archived](https://karakeep.example/bookmarks/https%3A%2F%2Fexample.com%2Fpost))',
-    );
+    const body = content.slice(content.indexOf('\n---\n', 4) + 5);
+    expect(body.trim()).toBe('# example-post');
+    // The URL lives only in frontmatter; the body carries no reference
+    // line (accessible via the note panel's Source link instead).
+    expect(body).not.toContain('example.com');
+    expect(body).not.toContain('archived');
 
     // The note auto-opens in the editor after creation; close it so the
     // next test's tree click opens the read view, not a no-op on an

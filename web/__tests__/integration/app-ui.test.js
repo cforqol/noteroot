@@ -1188,7 +1188,7 @@ describe('localization settings', () => {
 });
 
 describe('url frontmatter (#103)', () => {
-  test('New note from URL has no Karakeep checkbox when it is not configured, and writes a plain reference link', async () => {
+  test('New note from URL has no Karakeep checkbox when it is not configured, and the body carries no reference line', async () => {
     $('new-more').click();
     await until(() => q('.ctx-menu'), 'new-note menu');
     const item = [...qa('.ctx-menu .ctx-item')].find((b) => b.textContent === 'New note from URL…');
@@ -1201,7 +1201,8 @@ describe('url frontmatter (#103)', () => {
     await until(() => notes.has('no-karakeep-demo.md'), 'note created');
     const content = notes.get('no-karakeep-demo.md');
     expect(content).toMatch(/url: "https:\/\/example\.com\/no-karakeep"/);
-    expect(content).toContain('<https://example.com/no-karakeep>');
+    const body = content.slice(content.indexOf('\n---\n', 4) + 5);
+    expect(body.trim()).toBe('# no-karakeep-demo'); // no reference line; the url: field is the only copy
 
     await until(() => !$('editor').hidden, 'editor opened');
     $('closebtn').click();
