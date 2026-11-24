@@ -403,3 +403,208 @@ describe('mouse long-press (#84 follow-up): "left-click and hold" is the desktop
     expect(note.classList.contains('long-pressed')).toBe(false);
   });
 });
+
+describe('dragging a folder (#112): same gesture as a note, moving everything under it', () => {
+  // jsdom has no real DataTransfer; a plain object with the bits the
+  // listeners actually use (types/getData/setData) stands in, same
+  // trick the existing native-dragstart test above already relies on.
+  function dragEvent(type, data = {}) {
+    const ev = new Event(type, { bubbles: true, cancelable: true });
+    const store = { ...data };
+    ev.dataTransfer = {
+      get types() { return Object.keys(store); },
+      getData: (k) => store[k] || '',
+      setData: (k, v) => { store[k] = v; },
+      effectAllowed: '',
+      dropEffect: '',
+    };
+    return ev;
+  }
+
+  test('a folder is draggable; dragstart sets the folder-path data type, not the note one', () => {
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropFolder });
+    const folder = el.querySelector('[data-path="work"]');
+    expect(folder.draggable).toBe(true);
+
+    const ev = dragEvent('dragstart');
+    folder.dispatchEvent(ev);
+    expect(folder.classList.contains('dragging')).toBe(true);
+    expect(ev.dataTransfer.getData('text/x-noteroot-folder-path')).toBe('work');
+    expect(ev.dataTransfer.getData('text/x-noteroot-path')).toBe('');
+
+    folder.dispatchEvent(new Event('dragend', { bubbles: true }));
+    expect(folder.classList.contains('dragging')).toBe(false);
+  });
+
+  test('dropping a folder onto another folder calls onDropFolder, not onDropNote', () => {
+    const onDropNote = jest.fn();
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropNote, onDropFolder });
+    const row = el.querySelector('[data-path="empty"]').closest('.row');
+
+    const over = dragEvent('dragover', { 'text/x-noteroot-folder-path': 'work' });
+    row.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    expect(row.classList.contains('drop-target')).toBe(true);
+
+    row.dispatchEvent(dragEvent('drop', { 'text/x-noteroot-folder-path': 'work' }));
+    expect(onDropFolder).toHaveBeenCalledWith('work', 'empty');
+    expect(onDropNote).not.toHaveBeenCalled();
+    expect(row.classList.contains('drop-target')).toBe(false);
+  });
+
+  test('dragleave clears the drop-target highlight when the pointer actually leaves the row', () => {
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropFolder });
+    const row = el.querySelector('[data-path="empty"]').closest('.row');
+
+    row.dispatchEvent(dragEvent('dragover', { 'text/x-noteroot-folder-path': 'work' }));
+    expect(row.classList.contains('drop-target')).toBe(true);
+
+    const leaveInside = new Event('dragleave', { bubbles: true });
+    leaveInside.relatedTarget = row.querySelector('.node');
+    row.dispatchEvent(leaveInside);
+    expect(row.classList.contains('drop-target')).toBe(true); // still inside the row
+
+    const leaveOutside = new Event('dragleave', { bubbles: true });
+    leaveOutside.relatedTarget = document.body;
+    row.dispatchEvent(leaveOutside);
+    expect(row.classList.contains('drop-target')).toBe(false);
+  });
+
+  test('dropping a note onto a folder still calls onDropNote, not onDropFolder (dual data types on the same row)', () => {
+    const onDropNote = jest.fn();
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropNote, onDropFolder });
+    const row = el.querySelector('[data-path="empty"]').closest('.row');
+
+    row.dispatchEvent(dragEvent('drop', { 'text/x-noteroot-path': 'top.md' }));
+    expect(onDropNote).toHaveBeenCalledWith('top.md', 'empty');
+    expect(onDropFolder).not.toHaveBeenCalled();
+  });
+
+  test('the root zone accepts a dropped folder too, and highlights only while something draggable is over it', () => {
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropFolder });
+    const rootRow = el.querySelector('.root-node').closest('.row');
+
+    const over = dragEvent('dragover', { 'text/x-noteroot-folder-path': 'work/deep' });
+    rootRow.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    expect(rootRow.classList.contains('drop-target')).toBe(true);
+    const leave = new Event('dragleave', { bubbles: true });
+    leave.relatedTarget = document.body;
+    rootRow.dispatchEvent(leave);
+    expect(rootRow.classList.contains('drop-target')).toBe(false);
+
+    rootRow.dispatchEvent(dragEvent('drop', { 'text/x-noteroot-folder-path': 'work/deep' }));
+    expect(onDropFolder).toHaveBeenCalledWith('work/deep', '');
+  });
+
+  test('the root zone ignores an unrelated drag (e.g. a file from outside the app)', () => {
+    const onDropFolder = jest.fn();
+    renderTree(el, tree(), { onDropFolder });
+    const rootRow = el.querySelector('.root-node').closest('.row');
+
+    const over = dragEvent('dragover', {});
+    rootRow.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(false);
+    expect(rootRow.classList.contains('drop-target')).toBe(false);
+  });
+
+  test('a locked folder is neither draggable nor a drop target', () => {
+    const onDropFolder = jest.fn();
+    const lockedTree = {
+      isDir: true,
+      children: [{ name: 'secret', path: 'secret', isDir: true, locked: true, noteCount: 0 }],
+    };
+    renderTree(el, lockedTree, { onDropFolder });
+    const folder = el.querySelector('[data-path="secret"]');
+    expect(folder.draggable).toBe(false);
+    const row = folder.closest('.row');
+    const over = dragEvent('dragover', { 'text/x-noteroot-folder-path': 'anywhere' });
+    row.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(false);
+  });
+
+  test('without onDropFolder, a folder is not draggable (onDropNote alone does not add it)', () => {
+    const onDropNote = jest.fn();
+    renderTree(el, tree(), { onDropNote });
+    expect(el.querySelector('[data-path="work"]').draggable).toBe(false);
+  });
+
+  describe('touch and mouse long-press, same as a note row', () => {
+    const touch = (x, y) => new TouchEvent('touchstart', { touches: [{ clientX: x, clientY: y }] });
+    const move = (x, y) => new TouchEvent('touchmove', { touches: [{ clientX: x, clientY: y }], cancelable: true });
+    const mdown = (x, y) => new MouseEvent('mousedown', { clientX: x, clientY: y, button: 0, bubbles: true });
+    const mmove = (x, y) => new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true });
+    const mup = () => new MouseEvent('mouseup', { bubbles: true });
+    const click = () => new MouseEvent('click', { bubbles: true, cancelable: true });
+
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+      jest.useRealTimers();
+      delete document.elementFromPoint;
+    });
+
+    test('touch long-press then drag from one folder onto another calls onDropFolder', () => {
+      const onDropFolder = jest.fn();
+      renderTree(el, tree(), { onDropFolder });
+      const source = el.querySelector('[data-path="empty"]');
+      const target = el.querySelector('[data-path="work"]');
+
+      document.elementFromPoint = jest.fn().mockReturnValue(target);
+      source.dispatchEvent(touch(100, 100));
+      jest.advanceTimersByTime(500);
+      expect(source.classList.contains('long-pressed')).toBe(true);
+      source.dispatchEvent(move(100, 300));
+      expect(source.classList.contains('touch-dragging')).toBe(true);
+      source.dispatchEvent(new Event('touchend'));
+
+      expect(onDropFolder).toHaveBeenCalledWith('empty', 'work');
+    });
+
+    test('a long-press release with no drag does not toggle the folder open/closed (click is suppressed, same as a note opening)', () => {
+      const onDropFolder = jest.fn();
+      const onToggle = jest.fn();
+      renderTree(el, tree(), { onDropFolder, onToggle });
+      const folder = el.querySelector('[data-path="work"]');
+
+      folder.dispatchEvent(mdown(100, 100));
+      jest.advanceTimersByTime(500);
+      folder.dispatchEvent(mup());
+      folder.dispatchEvent(click()); // the browser's own click, right after mouseup
+
+      expect(onDropFolder).not.toHaveBeenCalled();
+      expect(onToggle).not.toHaveBeenCalled();
+    });
+
+    test('a plain quick click on a folder still toggles it (long-press wiring does not interfere)', () => {
+      const onDropFolder = jest.fn();
+      const onToggle = jest.fn();
+      renderTree(el, tree(), { onDropFolder, onToggle });
+      const folder = el.querySelector('[data-path="work"]');
+
+      folder.dispatchEvent(mdown(100, 100));
+      jest.advanceTimersByTime(100); // well under the threshold
+      folder.dispatchEvent(mup());
+      folder.dispatchEvent(click());
+
+      expect(onToggle).toHaveBeenCalledWith('work', true); // 'work' starts expanded; a click collapses it
+    });
+
+    test('a locked folder gets no long-press wiring at all', () => {
+      const onDropFolder = jest.fn();
+      const lockedTree = {
+        isDir: true,
+        children: [{ name: 'secret', path: 'secret', isDir: true, locked: true, noteCount: 0 }],
+      };
+      renderTree(el, lockedTree, { onDropFolder });
+      const folder = el.querySelector('[data-path="secret"]');
+      folder.dispatchEvent(touch(0, 0));
+      jest.advanceTimersByTime(500);
+      expect(folder.classList.contains('long-pressed')).toBe(false);
+    });
+  });
+});

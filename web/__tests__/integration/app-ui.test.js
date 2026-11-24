@@ -404,6 +404,14 @@ describe('CRUD', () => {
     expect($('tree-status').textContent).toMatch(/folders$/);
   });
 
+  test('the New folder dialog offers a destination picker, not just the context-menu default (#113)', async () => {
+    $('new-folder').click();
+    await until(() => q('.dialog [name="folder"]'), 'destination select');
+    expect(q('.dialog [name="folder"]').tagName).toBe('SELECT');
+    await submitDialog({ name: 'notes', folder: 'work/ideas' });
+    await until(() => folders.has('work/ideas/notes'), 'folder created at the picked destination');
+  });
+
   test('rename a note via the row menu', async () => {
     await menuAction('work/plan.md', 'Rename…');
     await submitDialog({ name: 'plan2' });

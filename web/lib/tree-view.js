@@ -174,13 +174,13 @@ function attachLongPress(doc, main, row, node, onDropNote, onLongPress) {
   });
 }
 
-function buildRootDropZone(doc, onDropNote) {
+function buildRootDropZone(doc, onDropNote, onDropFolder) {
   const row = doc.createElement('div');
   row.className = 'row root-zone';
   const btn = doc.createElement('div');
   btn.className = 'root-node';
   btn.dataset.path = '';
-  btn.setAttribute('aria-label', 'Notebook root — drop here to move a note to the root folder');
+  btn.setAttribute('aria-label', 'Notebook root — drop here to move a note or folder to the root');
   const icon = doc.createElement('span');
   icon.className = 'icon';
   icon.textContent = '📂';
@@ -190,7 +190,7 @@ function buildRootDropZone(doc, onDropNote) {
   btn.append(icon, label);
   row.append(btn);
   row.addEventListener('dragover', (e) => {
-    if (!e.dataTransfer.types.includes('text/x-noteroot-path')) return;
+    if (!e.dataTransfer.types.includes('text/x-noteroot-path') && !e.dataTransfer.types.includes('text/x-noteroot-folder-path')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     row.classList.add('drop-target');
@@ -202,7 +202,9 @@ function buildRootDropZone(doc, onDropNote) {
     e.preventDefault();
     row.classList.remove('drop-target');
     const notePath = e.dataTransfer.getData('text/x-noteroot-path');
-    if (notePath) onDropNote(notePath, '');
+    if (notePath && onDropNote) { onDropNote(notePath, ''); return; }
+    const folderPath = e.dataTransfer.getData('text/x-noteroot-folder-path');
+    if (folderPath && onDropFolder) onDropFolder(folderPath, '');
   });
   return row;
 }
@@ -221,9 +223,16 @@ function buildRootDropZone(doc, onDropNote) {
  * @param {(path:string, collapsed:boolean)=>void} [ctx.onToggle]
  * @param {(node:object, x:number, y:number)=>void} [ctx.onMenu]
  * @param {(notePath:string, destPath:string)=>void} [ctx.onDropNote]
- * @param {(notePath:string)=>void} [ctx.onLongPress] touch long-press
- *   held still on a note (toggle multi-select); a long-press that then
- *   moves calls onDropNote instead, same as a mouse drag would.
+ * @param {(folderPath:string, destPath:string)=>void} [ctx.onDropFolder]
+ *   same drag-and-drop (mouse-native, or touch/desktop long-press-and-
+ *   drag via onLongPress) as onDropNote, for a folder dragged onto
+ *   another folder or the root — moving everything under it along
+ *   with it is the server's job (vault.RenameDir), not this UI's.
+ * @param {(path:string)=>void} [ctx.onLongPress] touch, or desktop
+ *   left-click, held still on a note or folder (toggle multi-select
+ *   for a note; a no-op the caller can still hook for a folder); a
+ *   long-press that then moves calls onDropNote/onDropFolder instead,
+ *   same as a mouse drag would.
  * @returns {{notes:number, folders:number}} totals for the status line
  */
 export function renderTree(container, root, ctx = {}, doc = document) {
@@ -231,7 +240,7 @@ export function renderTree(container, root, ctx = {}, doc = document) {
     current = null, splitPath = null, multi = new Set(), selected = null,
     collapsed = new Set(), decorations = {},
     onOpen = () => {}, onToggle = () => {}, onMenu = () => {},
-    onDropNote = null, onLongPress = null,
+    onDropNote = null, onDropFolder = null, onLongPress = null,
   } = ctx;
   const totals = annotateCounts(root);
 
@@ -289,10 +298,9 @@ export function renderTree(container, root, ctx = {}, doc = document) {
         count.className = 'count';
         count.textContent = node.locked ? '' : `[${node.noteCount}]`;
         main.append(caret, icon, label, count);
-        main.addEventListener('click', () => onToggle(node.path, !isCollapsed));
-        if (onDropNote && !node.locked) {
+        if ((onDropNote || onDropFolder) && !node.locked) {
           row.addEventListener('dragover', (e) => {
-            if (!e.dataTransfer.types.includes('text/x-noteroot-path')) return;
+            if (!e.dataTransfer.types.includes('text/x-noteroot-path') && !e.dataTransfer.types.includes('text/x-noteroot-folder-path')) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             row.classList.add('drop-target');
@@ -304,9 +312,35 @@ export function renderTree(container, root, ctx = {}, doc = document) {
             e.preventDefault();
             row.classList.remove('drop-target');
             const notePath = e.dataTransfer.getData('text/x-noteroot-path');
-            if (notePath) onDropNote(notePath, node.path);
+            if (notePath && onDropNote) { onDropNote(notePath, node.path); return; }
+            const folderPath = e.dataTransfer.getData('text/x-noteroot-folder-path');
+            if (folderPath && onDropFolder) onDropFolder(folderPath, node.path);
           });
         }
+        // Same click-and-hold gesture as a note row (#112): native
+        // HTML5 drag-and-drop for the mouse, attachLongPress's touch
+        // simulation for everything else — one fires onDropFolder at
+        // the end, the other calls it directly. Registered before the
+        // toggle click listener below for the same reason as the note
+        // row's own ordering: attachLongPress's click-suppressing guard
+        // (swallows the click that follows a long-press release) must
+        // run first, or releasing a long-press would also toggle the
+        // folder open/closed.
+        if (onDropFolder && !node.locked) {
+          main.draggable = true;
+          main.addEventListener('dragstart', (e) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/x-noteroot-folder-path', node.path);
+            main.classList.add('dragging');
+          });
+          main.addEventListener('dragend', () => main.classList.remove('dragging'));
+          // No multi-select to toggle on "held still" for a folder (unlike
+          // a note) — only the drag half matters, so the notification is
+          // a no-op; attachLongPress still arms drag-tracking regardless
+          // of what it does.
+          attachLongPress(doc, main, row, node, onDropFolder, () => {});
+        }
+        main.addEventListener('click', () => onToggle(node.path, !isCollapsed));
         row.append(main, menuButton(node));
         frag.append(row);
         if (!isCollapsed && !node.locked) frag.append(build(node, depth + 1));
@@ -356,8 +390,8 @@ export function renderTree(container, root, ctx = {}, doc = document) {
     empty.className = 'muted tree-empty';
     empty.textContent = 'No notes yet. Use "+ Note" to create one.';
     container.replaceChildren(empty);
-  } else if (onDropNote) {
-    container.replaceChildren(buildRootDropZone(doc, onDropNote), body);
+  } else if (onDropNote || onDropFolder) {
+    container.replaceChildren(buildRootDropZone(doc, onDropNote, onDropFolder), body);
   } else {
     container.replaceChildren(body);
   }

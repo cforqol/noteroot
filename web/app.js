@@ -764,6 +764,26 @@ function drawTree() {
         toast(`Moved to ${folderPath || "/"}`);
       });
     },
+    // Same drag/long-press gesture as a note (#112): dropping a folder
+    // onto another folder (or the root zone) moves it and everything
+    // under it — moveFolder is one atomic server-side rename of the
+    // whole directory (vault.RenameDir), so every child note and
+    // subfolder comes along without this UI doing anything extra.
+    onDropFolder: async (folderPath, destPath) => {
+      await guarded(async () => {
+        const t = moveTarget(folderPath, true, destPath);
+        if (!t.ok) return; // self/descendant or already there — silently ignored, same as onDropNote's no-op cases
+        await notesApi.moveFolder(slug, folderPath, t.path);
+        moveFolderPrefs(slug, folderPath, t.path);
+        collapsed = getCollapsed(slug);
+        decorations = getDecorations(slug);
+        if (selectedFolder && isWithin(selectedFolder, folderPath)) selectedFolder = t.path + selectedFolder.slice(folderPath.length);
+        followMove(folderPath, t.path, true);
+        ensureExpanded(t.path);
+        await refreshTree();
+        toast(`Moved to ${t.path || "/"}`);
+      });
+    },
     onLongPress: (path) => toggleMultiNote(path),
   });
   $("tree-status").textContent = formatTreeStatus(totals);
@@ -3950,16 +3970,27 @@ async function actionSetSourceUrl(node) {
 
 async function actionNewFolder(dir = contextDir()) {
   if (!slug) { toast("Create or import a notebook first.", true); return; }
+  // Same picker as New note (#113): dir is only the default, not the
+  // only option — a different destination can be picked right in the
+  // dialog instead of having to find "New folder here" on that folder.
+  const folders = treeData ? folderChoices(treeData) : [{ value: "", label: "Notebook root", depth: 0 }];
   const r = await formDialog({
     title: "New folder",
-    message: dir ? `Inside “${dir}”.` : "At the notebook root.",
-    fields: [{ name: "name", label: "Name", placeholder: "projects" }],
+    message: dir ? `Default folder: “${dir}”.` : "At the notebook root.",
+    fields: [
+      { name: "name", label: "Name", placeholder: "projects" },
+      { name: "folder", label: "Folder", type: "select", options: folders, value: dir || "" },
+    ],
     okLabel: "Create",
-    validate: (v) => { const c = resolveChild(dir, v.name); return c.ok ? null : c.error; },
+    preview: (v) => {
+      const c = resolveChild(v.folder || "", v.name);
+      return c.ok ? c.path : "";
+    },
+    validate: (v) => { const c = resolveChild(v.folder || "", v.name); return c.ok ? null : c.error; },
   });
   if (!r) return;
   await guarded(async () => {
-    const { path } = resolveChild(dir, r.name);
+    const { path } = resolveChild(r.folder || "", r.name);
     await notesApi.createFolder(slug, path);
     ensureExpanded(path);
     selectedFolder = path;

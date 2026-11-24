@@ -80,7 +80,8 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 ### Organisation
 
 - Folders: `POST` / `PATCH` / `DELETE /n/{slug}/folder` create an empty folder, rename or move a folder with everything in it (identity map follows), or move its notes to the trash and remove it. Session surface only — not exposed on the token API
-- **Drag-and-drop notes to folders** in the sidebar: grab any note row and drop it onto a folder to move it
+- **Drag-and-drop notes and folders** in the sidebar: grab any note or folder row (click-and-hold on touch/mouse works the same way) and drop it onto another folder, or the root zone, to move it — dropping a folder takes everything under it along in one atomic server-side rename
+- **New folder** lets you pick the destination folder right in the dialog, same as New note, instead of only defaulting to whatever was selected
 - **Folder icon picker** with 10 named categories (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel, Nature, Symbols — ~300 icons) and a filter input above the grid
 - **Source URL**: a note's `url:` frontmatter field shows as a clickable "Source" link in the note panel. "New note from URL…" (+ menu / a folder's ⋯ menu) creates one from a URL and a name, optionally archiving it via Karakeep when configured; a note's own ⋯ menu can set, change or clear the field on any existing note afterward
 
