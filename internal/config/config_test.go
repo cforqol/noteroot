@@ -270,6 +270,58 @@ func TestLoad_stage8Overrides(t *testing.T) {
 	}
 }
 
+func TestLoad_breakerDefaults(t *testing.T) {
+	for _, k := range []string{"NOTEROOT_BREAKER_THRESHOLD", "NOTEROOT_BREAKER_COOLDOWN"} {
+		unsetenv(t, k)
+	}
+	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/breakertest")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.BreakerThreshold != 5 {
+		t.Errorf("BreakerThreshold default = %d, want 5", cfg.BreakerThreshold)
+	}
+	if cfg.BreakerCooldown != "30s" {
+		t.Errorf("BreakerCooldown default = %q, want 30s", cfg.BreakerCooldown)
+	}
+}
+
+func TestLoad_breakerOverrides(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/breakertest")
+	setenv(t, "NOTEROOT_BREAKER_THRESHOLD", "10")
+	setenv(t, "NOTEROOT_BREAKER_COOLDOWN", "1m")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.BreakerThreshold != 10 {
+		t.Errorf("BreakerThreshold = %d, want 10", cfg.BreakerThreshold)
+	}
+	if cfg.BreakerCooldown != "1m" {
+		t.Errorf("BreakerCooldown = %q, want 1m", cfg.BreakerCooldown)
+	}
+	unsetenv(t, "NOTEROOT_BREAKER_THRESHOLD")
+	unsetenv(t, "NOTEROOT_BREAKER_COOLDOWN")
+}
+
+func TestLoad_rejectsBadBreakerConfig(t *testing.T) {
+	setenv(t, "NOTEROOT_DATA_DIR", "/data/notes")
+	for _, kv := range [][2]string{
+		{"NOTEROOT_BREAKER_THRESHOLD", "0"},
+		{"NOTEROOT_BREAKER_THRESHOLD", "-1"},
+		{"NOTEROOT_BREAKER_COOLDOWN", "not a duration"},
+		{"NOTEROOT_BREAKER_COOLDOWN", "-5s"},
+		{"NOTEROOT_BREAKER_COOLDOWN", "0s"},
+	} {
+		setenv(t, kv[0], kv[1])
+		if _, err := Load(); err == nil {
+			t.Errorf("expected error for %s=%q", kv[0], kv[1])
+		}
+		unsetenv(t, kv[0])
+	}
+}
+
 func TestEnvInt64(t *testing.T) {
 	setenv(t, "TEST_INT64", "99")
 	if got := envInt64("TEST_INT64", 0); got != 99 {

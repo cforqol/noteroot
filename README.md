@@ -117,6 +117,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Sandboxed Lua plugins (gopher-lua): per-notebook `.notebook/plugins/<dir>/{plugin.toml,plugin.lua}`; commands, event hooks, kv, panels, frontmatter helpers; permission-checked capabilities, per-plugin VM behind one mutex, context timeouts, panic recovery, circuit breaker; a slow plugin delays itself and nothing else
 - Per-notebook event bus: coalesced bursts, actor/origin self-suppression, depth-limited chains — plugin and integration writes can never loop the app
 - Integrations: outbound signed webhooks from `.notebook/integrations/<name>.toml` (HMAC-SHA256, breaker, redirects refused); inbound HMAC-authenticated webhooks to `/hooks/{slug}/{name}` writing notes with `hook:` attribution; secrets in platform.db, rotation without reload; delivery depth carried across the HTTP round trip so an echo terminates
+- Per-notebook server-side circuit breaker: every `/n/{slug}/...` route, bearer-token `/api/v1/n/{slug}/...` route, and inbound `/hooks/{slug}/{name}` webhook trips after `NOTEROOT_BREAKER_THRESHOLD` consecutive 5xx responses, fails fast with `503` + `Retry-After` while open, half-opens for one probe after `NOTEROOT_BREAKER_COOLDOWN`, and closes on success; notebook create/rename/delete stay exempt so a tripped notebook can still be fixed or removed
 - Scoped API tokens: hashed at rest, `resource:action[:qualifier]` grants, minted over the forward-auth surface, used against the bearer-authenticated `/api/v1` machine API (no CSRF — Authorization can't ride a cross-site request)
 - Proof plugins in `plugins/` (copy into the notebook, hit reload): frontmatter tagger, status-bar word count, theme preference — rendered by the UI's plugin panel strip
 
@@ -358,6 +359,8 @@ All configuration is environment variables.
 | `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 | `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
 | `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
+| `NOTEROOT_BREAKER_THRESHOLD` | `5` | Consecutive 5xx responses on a notebook's routes before its circuit breaker trips open. Must be >= 1. |
+| `NOTEROOT_BREAKER_COOLDOWN` | `30s` | How long a tripped notebook circuit breaker stays open before half-opening for one probe request (Go duration). Must be positive. |
 | `NOTEROOT_TLS_CA_FILE` | `` (disabled) | Path to a PEM file of extra CA certificate(s) to trust for every outbound request this server makes to another service (Karakeep, Slink, S3-compatible storage). Added to the system trust pool, not a replacement for it — only needed behind a private/internal CA. |
 | `NOTEROOT_TLS_CLIENT_CERT_FILE` | `` (disabled) | Path to a PEM client certificate presented for mTLS on the same outbound requests. Must be set together with `NOTEROOT_TLS_CLIENT_KEY_FILE`. |
 | `NOTEROOT_TLS_CLIENT_KEY_FILE` | `` (disabled) | Path to the PEM private key matching `NOTEROOT_TLS_CLIENT_CERT_FILE`. |

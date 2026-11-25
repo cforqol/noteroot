@@ -25,11 +25,12 @@ import (
 type Server struct {
 	cfg   config.Config
 	log   *slog.Logger
-	reg   *notebooks.Registry
-	plat  *platform.Manager
-	plug  *plugins.Manager
-	integ *integrations.Manager
-	http  *http.Server
+	reg      *notebooks.Registry
+	plat     *platform.Manager
+	plug     *plugins.Manager
+	integ    *integrations.Manager
+	breakers *notebooks.Breakers
+	http     *http.Server
 
 	// transport is shared by every outbound request this server makes to
 	// another service (Karakeep, Slink, S3-compatible storage): nil
@@ -66,6 +67,12 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	s.integ = integrations.NewManager(log, func(slug string) plugins.NoteStore {
 		return &pluginNoteStore{s: s, slug: slug}
 	})
+	breakerCooldown, err := time.ParseDuration(cfg.BreakerCooldown)
+	if err != nil {
+		log.Warn("invalid breaker cooldown, using default", "value", cfg.BreakerCooldown, "default", notebooks.DefaultBreakerCooldown)
+		breakerCooldown = notebooks.DefaultBreakerCooldown
+	}
+	s.breakers = notebooks.NewBreakers(cfg.BreakerThreshold, breakerCooldown)
 
 	mux := http.NewServeMux()
 
@@ -83,6 +90,17 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mutating := func(h http.HandlerFunc) http.Handler {
 		return Chain(h, Auth(cfg.AuthMode), CSRF(cfg.PublicOrigin))
 	}
+	// nbAuth and nbMutating are auth/mutating plus the per-notebook
+	// circuit breaker: used for every route that actually touches a
+	// notebook's vault/db/plugins. Notebook *management* — create,
+	// rename, delete — stays on plain auth/mutating below, so a broken
+	// notebook whose breaker has tripped can still be fixed or removed.
+	nbAuth := func(h http.HandlerFunc) http.Handler {
+		return Chain(h, Auth(cfg.AuthMode), NotebookBreaker(s.breakers))
+	}
+	nbMutating := func(h http.HandlerFunc) http.Handler {
+		return Chain(h, Auth(cfg.AuthMode), CSRF(cfg.PublicOrigin), NotebookBreaker(s.breakers))
+	}
 	// Listing notebooks is unauthenticated: the wizard shown on first visit
 	// needs it to detect an empty install, and /readyz already leaks the
 	// count unauthed. Actual note content still requires auth.
@@ -90,98 +108,98 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /api/v1/notebooks", mutating(s.createNotebook))
 	mux.Handle("PATCH /api/v1/notebooks/{slug}", mutating(s.renameNotebook))
 	mux.Handle("DELETE /api/v1/notebooks/{slug}", mutating(s.deleteNotebook))
-	mux.Handle("GET /n/{slug}/", auth(s.notebookRoot))
-	mux.Handle("GET /n/{slug}/tree", auth(s.tree))
-	mux.Handle("GET /n/{slug}/note", auth(s.note))
-	mux.Handle("GET /n/{slug}/raw", auth(s.raw))
-	mux.Handle("GET /n/{slug}/note/history", auth(s.noteHistory))
-	mux.Handle("GET /n/{slug}/note/diff", auth(s.noteDiff))
-	mux.Handle("GET /n/{slug}/tags", auth(s.listTags))
-	mux.Handle("GET /n/{slug}/search", auth(s.search))
-	mux.Handle("GET /n/{slug}/trash", auth(s.listTrash))
-	mux.Handle("GET /n/{slug}/trash/note", auth(s.trashedNote))
-	mux.Handle("PUT /n/{slug}/note", mutating(s.putNote))
-	mux.Handle("PATCH /n/{slug}/note", mutating(s.moveNote))
-	mux.Handle("DELETE /n/{slug}/note", mutating(s.deleteNote))
-	mux.Handle("POST /n/{slug}/folder", mutating(s.createFolder))
-	mux.Handle("PATCH /n/{slug}/folder", mutating(s.moveFolder))
-	mux.Handle("DELETE /n/{slug}/folder", mutating(s.deleteFolder))
-	mux.Handle("POST /n/{slug}/trash/restore", mutating(s.restoreTrash))
-	mux.Handle("POST /n/{slug}/trash/restore-folder", mutating(s.restoreTrashFolder))
-	mux.Handle("DELETE /n/{slug}/trash", mutating(s.deleteTrashEntry))
-	mux.Handle("DELETE /n/{slug}/trash/folder", mutating(s.deleteTrashFolder))
-	mux.Handle("PUT /n/{slug}/trash/settings", mutating(s.putTrashSettings))
-	mux.Handle("POST /n/{slug}/trash/purge", mutating(s.purgeTrashNow))
-	mux.Handle("PUT /n/{slug}/lock", mutating(s.putLock))
-	mux.Handle("DELETE /n/{slug}/lock", mutating(s.deleteLock))
+	mux.Handle("GET /n/{slug}/", nbAuth(s.notebookRoot))
+	mux.Handle("GET /n/{slug}/tree", nbAuth(s.tree))
+	mux.Handle("GET /n/{slug}/note", nbAuth(s.note))
+	mux.Handle("GET /n/{slug}/raw", nbAuth(s.raw))
+	mux.Handle("GET /n/{slug}/note/history", nbAuth(s.noteHistory))
+	mux.Handle("GET /n/{slug}/note/diff", nbAuth(s.noteDiff))
+	mux.Handle("GET /n/{slug}/tags", nbAuth(s.listTags))
+	mux.Handle("GET /n/{slug}/search", nbAuth(s.search))
+	mux.Handle("GET /n/{slug}/trash", nbAuth(s.listTrash))
+	mux.Handle("GET /n/{slug}/trash/note", nbAuth(s.trashedNote))
+	mux.Handle("PUT /n/{slug}/note", nbMutating(s.putNote))
+	mux.Handle("PATCH /n/{slug}/note", nbMutating(s.moveNote))
+	mux.Handle("DELETE /n/{slug}/note", nbMutating(s.deleteNote))
+	mux.Handle("POST /n/{slug}/folder", nbMutating(s.createFolder))
+	mux.Handle("PATCH /n/{slug}/folder", nbMutating(s.moveFolder))
+	mux.Handle("DELETE /n/{slug}/folder", nbMutating(s.deleteFolder))
+	mux.Handle("POST /n/{slug}/trash/restore", nbMutating(s.restoreTrash))
+	mux.Handle("POST /n/{slug}/trash/restore-folder", nbMutating(s.restoreTrashFolder))
+	mux.Handle("DELETE /n/{slug}/trash", nbMutating(s.deleteTrashEntry))
+	mux.Handle("DELETE /n/{slug}/trash/folder", nbMutating(s.deleteTrashFolder))
+	mux.Handle("PUT /n/{slug}/trash/settings", nbMutating(s.putTrashSettings))
+	mux.Handle("POST /n/{slug}/trash/purge", nbMutating(s.purgeTrashNow))
+	mux.Handle("PUT /n/{slug}/lock", nbMutating(s.putLock))
+	mux.Handle("DELETE /n/{slug}/lock", nbMutating(s.deleteLock))
 
 	// Content locks (advisory UI password gate; distinct from the edit
 	// locks above). Status and unlock are reads/mutations on state only.
-	mux.Handle("GET /n/{slug}/contentlock", auth(s.contentLockStatus))
-	mux.Handle("PUT /n/{slug}/contentlock", mutating(s.setContentLock))
-	mux.Handle("DELETE /n/{slug}/contentlock", mutating(s.deleteContentLock))
-	mux.Handle("POST /n/{slug}/contentlock/unlock", mutating(s.unlockContentLock))
-	mux.Handle("POST /n/{slug}/contentlock/lock", mutating(s.relockContentLock))
+	mux.Handle("GET /n/{slug}/contentlock", nbAuth(s.contentLockStatus))
+	mux.Handle("PUT /n/{slug}/contentlock", nbMutating(s.setContentLock))
+	mux.Handle("DELETE /n/{slug}/contentlock", nbMutating(s.deleteContentLock))
+	mux.Handle("POST /n/{slug}/contentlock/unlock", nbMutating(s.unlockContentLock))
+	mux.Handle("POST /n/{slug}/contentlock/lock", nbMutating(s.relockContentLock))
 
 	// Resources (stage 5) — uploads allow multipart via CSRFAllowMultipart.
-	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
-	mux.Handle("POST /n/{slug}/resources/presign", mutating(s.presignUpload))
-	mux.Handle("POST /n/{slug}/resources/confirm", mutating(s.confirmUpload))
-	mux.Handle("POST /n/{slug}/resources/gc", mutating(s.gcResources))
+	mux.Handle("POST /n/{slug}/resources", Chain(http.HandlerFunc(s.uploadResource), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin), NotebookBreaker(s.breakers)))
+	mux.Handle("POST /n/{slug}/resources/presign", nbMutating(s.presignUpload))
+	mux.Handle("POST /n/{slug}/resources/confirm", nbMutating(s.confirmUpload))
+	mux.Handle("POST /n/{slug}/resources/gc", nbMutating(s.gcResources))
 
 	// Stage 8: backup, import/export.
-	mux.Handle("POST /n/{slug}/backup", mutating(s.createBackup))
-	mux.Handle("GET /n/{slug}/export", auth(s.exportNotebook))
-	mux.Handle("GET /n/{slug}/note/export", auth(s.exportNoteHTML))
-	mux.Handle("GET /n/{slug}/note/export/archive", auth(s.exportNoteArchive))
-	mux.Handle("GET /n/{slug}/export/html", auth(s.exportNotebookHTML))
-	mux.Handle("GET /n/{slug}/export/selection", auth(s.exportSelection))
-	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
-	mux.Handle("POST /n/{slug}/note/import", Chain(http.HandlerFunc(s.importNoteArchive), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+	mux.Handle("POST /n/{slug}/backup", nbMutating(s.createBackup))
+	mux.Handle("GET /n/{slug}/export", nbAuth(s.exportNotebook))
+	mux.Handle("GET /n/{slug}/note/export", nbAuth(s.exportNoteHTML))
+	mux.Handle("GET /n/{slug}/note/export/archive", nbAuth(s.exportNoteArchive))
+	mux.Handle("GET /n/{slug}/export/html", nbAuth(s.exportNotebookHTML))
+	mux.Handle("GET /n/{slug}/export/selection", nbAuth(s.exportSelection))
+	mux.Handle("POST /n/{slug}/import", Chain(http.HandlerFunc(s.importNotebook), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin), NotebookBreaker(s.breakers)))
+	mux.Handle("POST /n/{slug}/note/import", Chain(http.HandlerFunc(s.importNoteArchive), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin), NotebookBreaker(s.breakers)))
 
 	// Resumable import/export jobs: large notebooks (many GB of
 	// resources) transfer without holding one HTTP connection open for
 	// the whole duration — export builds to a file and downloads with
 	// Range support, import accepts the archive in offset-fenced chunks.
-	mux.Handle("POST /n/{slug}/export/jobs", mutating(s.createExportJob))
-	mux.Handle("GET /n/{slug}/export/jobs/{id}", auth(s.exportJobStatus))
-	mux.Handle("GET /n/{slug}/export/jobs/{id}/download", auth(s.downloadExportJob))
-	mux.Handle("DELETE /n/{slug}/export/jobs/{id}", mutating(s.deleteExportJob))
-	mux.Handle("POST /n/{slug}/import/jobs", mutating(s.createImportJob))
-	mux.Handle("PATCH /n/{slug}/import/jobs/{id}", mutating(s.appendImportJob))
-	mux.Handle("GET /n/{slug}/import/jobs/{id}", auth(s.importJobStatus))
-	mux.Handle("POST /n/{slug}/import/jobs/{id}/complete", mutating(s.completeImportJob))
-	mux.Handle("DELETE /n/{slug}/import/jobs/{id}", mutating(s.deleteImportJob))
-	mux.Handle("GET /n/{slug}/resources", auth(s.listResources))
-	mux.Handle("GET /n/{slug}/resources/stats", auth(s.resourceStats))
-	mux.Handle("GET /n/{slug}/resources/{sha}", auth(s.getResource))
-	mux.Handle("GET /n/{slug}/resources/{sha}/thumb", auth(s.thumbResource))
-	mux.Handle("GET /n/{slug}/resources/{sha}/poster", auth(s.posterResource))
-	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", auth(s.presignRead))
-	mux.Handle("GET /n/{slug}/resources/{sha}/refs", auth(s.listResourceRefs))
-	mux.Handle("DELETE /n/{slug}/resources/{sha}", mutating(s.deleteResource))
-	mux.Handle("GET /n/{slug}/integrations/karakeep/bookmarks", auth(s.listKarakeepBookmarks))
+	mux.Handle("POST /n/{slug}/export/jobs", nbMutating(s.createExportJob))
+	mux.Handle("GET /n/{slug}/export/jobs/{id}", nbAuth(s.exportJobStatus))
+	mux.Handle("GET /n/{slug}/export/jobs/{id}/download", nbAuth(s.downloadExportJob))
+	mux.Handle("DELETE /n/{slug}/export/jobs/{id}", nbMutating(s.deleteExportJob))
+	mux.Handle("POST /n/{slug}/import/jobs", nbMutating(s.createImportJob))
+	mux.Handle("PATCH /n/{slug}/import/jobs/{id}", nbMutating(s.appendImportJob))
+	mux.Handle("GET /n/{slug}/import/jobs/{id}", nbAuth(s.importJobStatus))
+	mux.Handle("POST /n/{slug}/import/jobs/{id}/complete", nbMutating(s.completeImportJob))
+	mux.Handle("DELETE /n/{slug}/import/jobs/{id}", nbMutating(s.deleteImportJob))
+	mux.Handle("GET /n/{slug}/resources", nbAuth(s.listResources))
+	mux.Handle("GET /n/{slug}/resources/stats", nbAuth(s.resourceStats))
+	mux.Handle("GET /n/{slug}/resources/{sha}", nbAuth(s.getResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/thumb", nbAuth(s.thumbResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/poster", nbAuth(s.posterResource))
+	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", nbAuth(s.presignRead))
+	mux.Handle("GET /n/{slug}/resources/{sha}/refs", nbAuth(s.listResourceRefs))
+	mux.Handle("DELETE /n/{slug}/resources/{sha}", nbMutating(s.deleteResource))
+	mux.Handle("GET /n/{slug}/integrations/karakeep/bookmarks", nbAuth(s.listKarakeepBookmarks))
 
 	// Stage 9 phase 2: scoped API tokens (human-managed under the
 	// forward-auth surface) and the token-authenticated machine API.
-	mux.Handle("GET /n/{slug}/tokens", auth(s.listTokens))
-	mux.Handle("POST /n/{slug}/tokens", mutating(s.createToken))
-	mux.Handle("DELETE /n/{slug}/tokens", mutating(s.revokeToken))
+	mux.Handle("GET /n/{slug}/tokens", nbAuth(s.listTokens))
+	mux.Handle("POST /n/{slug}/tokens", nbMutating(s.createToken))
+	mux.Handle("DELETE /n/{slug}/tokens", nbMutating(s.revokeToken))
 
 	// Stage 9 phase 3: plugin management and command dispatch.
-	mux.Handle("GET /n/{slug}/plugins", auth(s.listPlugins))
-	mux.Handle("GET /n/{slug}/plugins/panels", auth(s.pluginPanels))
-	mux.Handle("POST /n/{slug}/plugins/reload", mutating(s.reloadPlugins))
-	mux.Handle("POST /n/{slug}/plugins/{name}/commands/{command}", mutating(s.runPluginCommand))
+	mux.Handle("GET /n/{slug}/plugins", nbAuth(s.listPlugins))
+	mux.Handle("GET /n/{slug}/plugins/panels", nbAuth(s.pluginPanels))
+	mux.Handle("POST /n/{slug}/plugins/reload", nbMutating(s.reloadPlugins))
+	mux.Handle("POST /n/{slug}/plugins/{name}/commands/{command}", nbMutating(s.runPluginCommand))
 
 	// Stage 9 phase 4: integration and hook management (human) plus
 	// the inbound webhook endpoint (HMAC-authenticated machine).
-	mux.Handle("GET /n/{slug}/integrations", auth(s.listIntegrations))
-	mux.Handle("GET /n/{slug}/hooks", auth(s.listHooks))
-	mux.Handle("POST /n/{slug}/integrations/reload", mutating(s.reloadIntegrations))
-	mux.Handle("POST /n/{slug}/integrations/{name}/secret", mutating(s.setIntegrationSecret))
-	mux.Handle("POST /n/{slug}/hooks/{name}/secret", mutating(s.setHookSecret))
-	mux.HandleFunc("POST /hooks/{slug}/{name}", s.handleWebhook)
+	mux.Handle("GET /n/{slug}/integrations", nbAuth(s.listIntegrations))
+	mux.Handle("GET /n/{slug}/hooks", nbAuth(s.listHooks))
+	mux.Handle("POST /n/{slug}/integrations/reload", nbMutating(s.reloadIntegrations))
+	mux.Handle("POST /n/{slug}/integrations/{name}/secret", nbMutating(s.setIntegrationSecret))
+	mux.Handle("POST /n/{slug}/hooks/{name}/secret", nbMutating(s.setHookSecret))
+	mux.Handle("POST /hooks/{slug}/{name}", NotebookBreaker(s.breakers)(http.HandlerFunc(s.handleWebhook)))
 
 	// /api/v1: bearer tokens with resource:action[:qualifier] scopes.
 	// No forward-auth and no CSRF here — the Authorization header

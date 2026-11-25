@@ -84,6 +84,15 @@ type Config struct {
 	// MaxHeaderBytes is the maximum size of the request headers.
 	// Defaults to 1 << 16 (65536) if not set.
 	MaxHeaderBytes int
+
+	// BreakerThreshold is the number of consecutive request failures
+	// (5xx) against one notebook before its circuit opens and further
+	// requests fail fast. Defaults to 5 if not set.
+	BreakerThreshold int
+	// BreakerCooldown is how long a tripped notebook breaker stays
+	// open before a single probe request is let through. Defaults to
+	// "30s" if not set.
+	BreakerCooldown string
 }
 
 // BuildTransport returns the http.RoundTripper outbound requests to
@@ -170,6 +179,9 @@ func Load() (Config, error) {
 		WriteTimeout:   env("NOTEROOT_WRITE_TIMEOUT", "10s"),
 		IdleTimeout:    env("NOTEROOT_IDLE_TIMEOUT", "60s"),
 		MaxHeaderBytes: envInt("NOTEROOT_MAX_HEADER_BYTES", 1<<16),
+
+		BreakerThreshold: envInt("NOTEROOT_BREAKER_THRESHOLD", 5),
+		BreakerCooldown:  env("NOTEROOT_BREAKER_COOLDOWN", "30s"),
 	}
 	if !strings.HasPrefix(c.DataDir, "/") {
 		return c, fmt.Errorf("NOTEROOT_DATA_DIR must be absolute, got %q", c.DataDir)
@@ -204,6 +216,16 @@ func Load() (Config, error) {
 	if c.BackupSchedule != "" && c.BackupSchedule != "0" {
 		if _, err := time.ParseDuration(c.BackupSchedule); err != nil {
 			return c, fmt.Errorf("bad NOTEROOT_BACKUP_SCHEDULE %q: %w", c.BackupSchedule, err)
+		}
+	}
+	if c.BreakerThreshold < 1 {
+		return c, fmt.Errorf("NOTEROOT_BREAKER_THRESHOLD must be >= 1, got %d", c.BreakerThreshold)
+	}
+	if c.BreakerCooldown != "" {
+		if d, err := time.ParseDuration(c.BreakerCooldown); err != nil {
+			return c, fmt.Errorf("bad NOTEROOT_BREAKER_COOLDOWN %q: %w", c.BreakerCooldown, err)
+		} else if d <= 0 {
+			return c, fmt.Errorf("NOTEROOT_BREAKER_COOLDOWN must be positive, got %q", c.BreakerCooldown)
 		}
 	}
 	if (c.KarakeepURL == "") != (c.KarakeepKey == "") {

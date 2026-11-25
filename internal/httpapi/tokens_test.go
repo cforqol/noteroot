@@ -13,7 +13,12 @@ import (
 
 func issueToken(t *testing.T, srv *Server, body string) tokenCreated {
 	t.Helper()
-	rec := doReq(t, srv, http.MethodPost, "/n/work/tokens", body,
+	return issueTokenFor(t, srv, "work", body)
+}
+
+func issueTokenFor(t *testing.T, srv *Server, slug, body string) tokenCreated {
+	t.Helper()
+	rec := doReq(t, srv, http.MethodPost, "/n/"+slug+"/tokens", body,
 		map[string]string{"Content-Type": "application/json"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /tokens status = %d, body=%s", rec.Code, rec.Body)

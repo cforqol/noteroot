@@ -211,7 +211,15 @@ terminates in a handful of hops.
 Failure matrix with classification. Atomic writes, reconcile on boot,
 quarantine, trash, `state.db` rebuild via the rebuildability guard; the
 editor's circuit breaker falls back to a plain textarea. Server-side
-per-notebook circuit breakers and a global disk budget are planned.
+per-notebook circuit breakers are shipped: `NotebookBreaker` middleware
+wraps every `/n/{slug}/...`, bearer `/api/v1/n/{slug}/...`, and inbound
+`/hooks/{slug}/{name}` route, tripping open after `NOTEROOT_BREAKER_THRESHOLD`
+consecutive 5xx (4xx is neutral; 2xx/3xx closes) and fast-failing with
+503 + `Retry-After` until a half-open probe after `NOTEROOT_BREAKER_COOLDOWN`
+succeeds — the same strikes/cooldown/half-open shape as the per-plugin and
+per-integration breakers (§9), kept as a separate implementation. Notebook
+create/rename/delete stay exempt so a tripped notebook is still reachable
+for repair. A global disk budget is still planned.
 
 ## 11. Backups
 

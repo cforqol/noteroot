@@ -197,7 +197,10 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
 // is looked up by secret hash in the notebook's platform.db, checked
 // against the token's grants for this resource:action[:qualifier],
 // and the request continues as actor "token:<name>" so audit and bus
-// events attribute writes to the credential that made them.
+// events attribute writes to the credential that made them. The
+// per-notebook circuit breaker guards only the call to h below, after
+// token verification succeeds: an invalid token (401/403/404) must
+// never count as, reset, or be blocked by a notebook's own failures.
 func (s *Server) bearer(resource, action string, qf func(*http.Request) string, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := bearerToken(r)
@@ -252,8 +255,13 @@ func (s *Server) bearer(resource, action string, qf func(*http.Request) string, 
 		if err := db.TokenTouch(r.Context(), t.ID); err != nil {
 			s.log.Warn("token touch failed", "notebook", nb.Manifest.Slug, "err", err)
 		}
+		if !breakerGuard(s.breakers, nb.Manifest.Slug, w) {
+			return
+		}
 		ctx := context.WithValue(r.Context(), keyUser, "token:"+t.Name)
-		h(w, r.WithContext(ctx))
+		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+		h(sw, r.WithContext(ctx))
+		recordBreakerResult(s.breakers, nb.Manifest.Slug, r, sw.code)
 	})
 }
 

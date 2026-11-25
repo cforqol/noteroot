@@ -29,7 +29,8 @@ consequences for design decisions elsewhere.
 5. **Accidental user error** — trash instead of unlink, git history, conflict
    copies, no destructive merges, dry-run imports.
 6. **Bugs in our own code** — atomic writes, bounded failure domains,
-   per-notebook isolation, quarantine over repair.
+   per-notebook isolation (server-side circuit breaker after repeated
+   5xx failures), quarantine over repair.
 
 ## Explicitly out of scope
 

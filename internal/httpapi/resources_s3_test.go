@@ -887,7 +887,13 @@ func TestS3_presignReadHonorsTTLConfig(t *testing.T) {
 func TestS3_corruptStateDBReturns500(t *testing.T) {
 	f := newS3Fake(t)
 	reg := resourceFixture(t)
-	srv := newS3Server(t, reg, f, nil)
+	// This test drives more consecutive failures against one notebook
+	// than the per-notebook circuit breaker's default threshold allows
+	// — raise it so every case below still reaches the handler and
+	// gets its own 500, instead of the breaker short-circuiting later
+	// cases with a 503. The breaker's own behavior is covered by
+	// breaker_test.go.
+	srv := newS3Server(t, reg, f, func(cfg *config.Config) { cfg.BreakerThreshold = 1000 })
 
 	nb, ok := reg.Get("work")
 	if !ok {
