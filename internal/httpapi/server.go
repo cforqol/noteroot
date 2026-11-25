@@ -14,6 +14,7 @@ import (
 	"noteroot/internal/git"
 	"noteroot/internal/index"
 	"noteroot/internal/integrations"
+	rlog "noteroot/internal/log"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/platform"
 	"noteroot/internal/plugins"
@@ -23,14 +24,15 @@ import (
 )
 
 type Server struct {
-	cfg   config.Config
-	log   *slog.Logger
-	reg      *notebooks.Registry
-	plat     *platform.Manager
-	plug     *plugins.Manager
-	integ    *integrations.Manager
-	breakers *notebooks.Breakers
-	http     *http.Server
+	cfg        config.Config
+	log        *slog.Logger
+	reg        *notebooks.Registry
+	plat       *platform.Manager
+	plug       *plugins.Manager
+	integ      *integrations.Manager
+	breakers   *notebooks.Breakers
+	recentLogs *rlog.Recent
+	http       *http.Server
 
 	// transport is shared by every outbound request this server makes to
 	// another service (Karakeep, Slink, S3-compatible storage): nil
@@ -55,7 +57,17 @@ type Server struct {
 }
 
 func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
-	s := &Server{cfg: cfg, log: log, reg: reg, plat: platform.NewManager(log)}
+	// Tee every Warn-or-above record into a bounded in-memory ring, on
+	// top of (never instead of) wherever log already writes: the
+	// diagnostics bundle (/n/{slug}/diagnostics) reads it back as
+	// "recent error logs" without needing a separate log-shipping
+	// setup. Wrapping here, before any manager is constructed, means
+	// every logger derived from this one (s.plug, s.integ, s.plat, and
+	// every s.log.Warn/Error call below) is captured too.
+	recentLogs := rlog.NewRecent(rlog.DefaultRecentCapacity)
+	log = slog.New(rlog.Tee(log.Handler(), recentLogs))
+
+	s := &Server{cfg: cfg, log: log, reg: reg, recentLogs: recentLogs, plat: platform.NewManager(log)}
 	if tr, err := cfg.BuildTransport(); err != nil {
 		log.Error("custom TLS transport failed, falling back to default", "err", err)
 	} else {
@@ -146,6 +158,11 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/resources/presign", nbMutating(s.presignUpload))
 	mux.Handle("POST /n/{slug}/resources/confirm", nbMutating(s.confirmUpload))
 	mux.Handle("POST /n/{slug}/resources/gc", nbMutating(s.gcResources))
+
+	// Diagnostics bundle (#49): version info, DB stats, vault row
+	// count, circuit breaker state, global quota snapshot, recent
+	// error logs and a goroutine dump, zipped.
+	mux.Handle("POST /n/{slug}/diagnostics", nbMutating(s.diagnostics))
 
 	// Stage 8: backup, import/export.
 	mux.Handle("POST /n/{slug}/backup", nbMutating(s.createBackup))
@@ -243,6 +260,11 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /api/v1/integrations/karakeep/archive", mutating(s.archiveWithKarakeep))
 	mux.Handle("POST /api/v1/integrations/slink/upload",
 		Chain(http.HandlerFunc(s.uploadToSlink), Auth(cfg.AuthMode), CSRFAllowMultipart(cfg.PublicOrigin)))
+
+	// Admin health page (#49): a per-notebook summary across every
+	// notebook at once — breaker state, resource usage, global quota.
+	// Not notebook-scoped, so it sits outside the per-notebook breaker.
+	mux.Handle("GET /admin/health", auth(s.adminHealth))
 
 	parseDuration := func(s, name string, fallback time.Duration) time.Duration {
 		if s == "" {

@@ -262,5 +262,15 @@ COOP/COEP headers for SharedArrayBuffer isolation (ship). Every mutation is reco
 trail (actor, action, resource, detail) — HTTP writes say who, plugin and
 hook writes say which extension. CSP is planned. Structured
 logs and forward-only migrations ship. Stage 9 shipped: plugin substrate,
-scoped API tokens, integrations. Also planned: diagnostics bundle,
-health page, alerts, remote backup targets.
+scoped API tokens, integrations. Diagnostics and health visibility shipped
+(#49): `POST /n/{slug}/diagnostics` returns a zip (version/runtime info,
+per-notebook DB file sizes, vault row count, quota usage, circuit breaker
+state — §6, §10 — a full goroutine dump, and recent warn/error log lines),
+gated by the same per-notebook circuit breaker as other mutating routes; a
+notebook whose state DB can't currently be opened still gets a 200 with a
+degraded report rather than failing. `GET /admin/health` is a
+session-authenticated, not notebook-scoped, HTML page listing every
+notebook's breaker status (open/closed plus strike/trip counts — half-open
+is a transient one-probe window entered only by an actual request, not a
+readable third state) and quota usage, plus a global quota summary line
+(§6) when enabled. Also planned: alerts, remote backup targets.

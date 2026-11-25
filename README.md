@@ -126,6 +126,8 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 
 - Backups: `POST /n/{slug}/backup` writes a git bundle (`<stamp>-vault.bundle`) and a `VACUUM INTO` state snapshot (`<stamp>-state.db`) into `.notebook/backups/`; the run manifest (paths, SHAs, partial-failure notes) is the HTTP response body
 - Import/export: streaming tar.gz export; staged import with dry-run, per-item isolation, and SHA-256 idempotency
+- Diagnostics bundle: `POST /n/{slug}/diagnostics` returns a zip (`<slug>-diagnostics.zip`) with version/runtime info, per-notebook DB file sizes, vault row count, quota usage, circuit breaker state, a full goroutine dump, and recent warn/error log lines — gated by the same per-notebook circuit breaker as other mutating routes, so a tripped notebook's request also fails fast with 503; a notebook whose state DB can't currently be opened still gets a 200 with a degraded report instead
+- Health page: `GET /admin/health` is a session-authenticated (not notebook-scoped) HTML page listing every notebook's breaker status (open/closed + strike/trip counts) and resource usage against its quota, plus a global quota summary line when `NOTEROOT_GLOBAL_QUOTA_BYTES` is enabled
 
 ## Architecture
 
