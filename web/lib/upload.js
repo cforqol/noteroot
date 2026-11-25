@@ -103,6 +103,53 @@ export function findVideoResources(html, slug) {
   return [...shas];
 }
 
+// --- Recovering the original filename for pasted/dragged images (#111) ---
+
+/**
+ * True for the browser-assigned placeholder name ("image" or
+ * "image.<ext>", case-insensitive) that Chrome/Firefox give clipboard
+ * or drag image data with no accompanying file — as opposed to a real
+ * filename.
+ */
+export function isGenericImageName(name) {
+  return /^image(\.[a-z0-9]+)?$/i.test(String(name || "").trim());
+}
+
+/**
+ * Pull a filename out of the first `<img src="...">` in a paste/drop
+ * HTML payload — browsers include this alongside raw pixel data when
+ * copying or dragging an `<img>` from a web page, even though the
+ * image bytes themselves carry no filename. Returns null when there's
+ * no HTML, no `<img>`, or the src has no usable path (data: URIs, no
+ * path segment).
+ */
+export function filenameFromHtmlImage(html) {
+  if (!html) return null;
+  const m = /<img\b[^>]*\bsrc=["']([^"']+)["']/i.exec(html);
+  if (!m) return null;
+  const src = m[1];
+  if (/^data:/i.test(src)) return null;
+  let path;
+  try {
+    path = new URL(src, "http://x").pathname;
+  } catch (_) {
+    path = src;
+  }
+  const last = decodeURIComponent(path.split("/").pop() || "");
+  return last || null;
+}
+
+/**
+ * Resolve the filename an attachment should be uploaded under: when
+ * the browser handed over a generic placeholder, prefer the real
+ * filename recovered from the paste/drop HTML's `<img src>`, falling
+ * back to the placeholder when none is found.
+ */
+export function resolveAttachmentFilename(name, html) {
+  if (!isGenericImageName(name)) return name;
+  return filenameFromHtmlImage(html) || name;
+}
+
 // --- Presigned direct-to-S3 flow (stage 7) ---
 
 /** Presign request URL for a notebook. */

@@ -1534,11 +1534,11 @@ describe('line-number gutter', () => {
 });
 
 describe('paste image upload', () => {
-  const pasteImage = (target, name = 'shot.png') => {
+  const pasteImage = (target, name = 'shot.png', html = '') => {
     const file = new File(['\x89PNG'], name, { type: 'image/png' });
     const item = { type: 'image/png', getAsFile: () => file };
     const e = new Event('paste', { bubbles: true, cancelable: true });
-    e.clipboardData = { items: [item] };
+    e.clipboardData = { items: [item], getData: (t) => (t === 'text/html' ? html : '') };
     target.dispatchEvent(e);
     return e;
   };
@@ -1551,6 +1551,111 @@ describe('paste image upload', () => {
     const link = `![shot.png](/n/nb/resources/${'a'.repeat(64)})`;
     await until(() => $('editbody').value.includes(link), 'image embedded');
     expect(requests).toContain('POST /n/nb/resources?filename=shot.png');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  // #111: pasting a web image gives a browser-generic "image.png" File
+  // alongside HTML that still has the real <img src> — recover the
+  // original filename from that instead of uploading it as "image.png".
+  test('pasting a copied web image recovers its original filename from the paste HTML', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'paste-source-note' });
+    await until(() => !$('editor').hidden, 'editor opened');
+    pasteImage(
+      $('editbody'),
+      'image.png',
+      '<img src="https://example.com/photos/sunset-vacation.jpg" alt="">',
+    );
+    const link = `![sunset-vacation.jpg](/n/nb/resources/${'a'.repeat(64)})`;
+    await until(() => $('editbody').value.includes(link), 'image embedded under source filename');
+    expect(requests).toContain('POST /n/nb/resources?filename=sunset-vacation.jpg');
+    expect(requests).not.toContain('POST /n/nb/resources?filename=image.png');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('pasting a genuinely named clipboard image is left untouched', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'paste-named-note' });
+    await until(() => !$('editor').hidden, 'editor opened');
+    pasteImage(
+      $('editbody'),
+      'vacation-photo.png',
+      '<img src="https://example.com/photos/other.jpg">',
+    );
+    const link = `![vacation-photo.png](/n/nb/resources/${'a'.repeat(64)})`;
+    await until(() => $('editbody').value.includes(link), 'image embedded under its own name');
+    expect(requests).toContain('POST /n/nb/resources?filename=vacation-photo.png');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('falls back to the generic name if the File cannot be reconstructed', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'paste-unreconstructible-note' });
+    await until(() => !$('editor').hidden, 'editor opened');
+    // Build the clipboard File with the real constructor first; only
+    // the rename attempt inside app.js (triggered during dispatch)
+    // should see the patched, throwing one.
+    const file = new File(['\x89PNG'], 'image.png', { type: 'image/png' });
+    const item = { type: 'image/png', getAsFile: () => file };
+    const e = new Event('paste', { bubbles: true, cancelable: true });
+    e.clipboardData = {
+      items: [item],
+      getData: (t) => (t === 'text/html' ? '<img src="https://example.com/photos/sunset-vacation.jpg">' : ''),
+    };
+    const OrigFile = window.File;
+    window.File = class {
+      constructor() { throw new Error('boom'); }
+    };
+    try {
+      $('editbody').dispatchEvent(e);
+      const link = `![image.png](/n/nb/resources/${'a'.repeat(64)})`;
+      await until(() => $('editbody').value.includes(link), 'image embedded under the generic name');
+      expect(requests).toContain('POST /n/nb/resources?filename=image.png');
+    } finally {
+      window.File = OrigFile;
+    }
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+});
+
+describe('drop image upload (#111)', () => {
+  const dropFile = (target, name, html = '') => {
+    const file = new File(['\x89PNG'], name, { type: 'image/png' });
+    const e = new Event('drop', { bubbles: true, cancelable: true });
+    e.dataTransfer = { files: [file], getData: (t) => (t === 'text/html' ? html : '') };
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  test('dropping a dragged web image recovers its original filename from the drop HTML', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'drop-source-note' });
+    await until(() => !$('editor').hidden, 'editor opened');
+    dropFile(
+      $('editor'),
+      'image.jpg',
+      '<img src="https://example.com/gallery/mountain-view.jpg">',
+    );
+    const link = `![mountain-view.jpg](/n/nb/resources/${'a'.repeat(64)})`;
+    await until(() => $('editbody').value.includes(link), 'image embedded under source filename');
+    expect(requests).toContain('POST /n/nb/resources?filename=mountain-view.jpg');
+    expect(requests).not.toContain('POST /n/nb/resources?filename=image.jpg');
+    $('closebtn').click();
+    await until(() => $('editor').hidden, 'editor closed');
+  });
+
+  test('dropping a real file (OS drag) keeps its own filename', async () => {
+    $('new-note').click();
+    await submitDialog({ name: 'drop-named-note' });
+    await until(() => !$('editor').hidden, 'editor opened');
+    dropFile($('editor'), 'report.png');
+    const link = `![report.png](/n/nb/resources/${'a'.repeat(64)})`;
+    await until(() => $('editbody').value.includes(link), 'image embedded under its own name');
+    expect(requests).toContain('POST /n/nb/resources?filename=report.png');
     $('closebtn').click();
     await until(() => $('editor').hidden, 'editor closed');
   });

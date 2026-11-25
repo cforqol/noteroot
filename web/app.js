@@ -1,5 +1,5 @@
 import { VimWasm, checkBrowserCompatibility } from '/vim/vimwasm.js';
-import { uploadURL, markdownFor, rewriteImageThumbs, presignUpload, thumbURL } from '/lib/upload.js';
+import { uploadURL, markdownFor, rewriteImageThumbs, presignUpload, thumbURL, resolveAttachmentFilename } from '/lib/upload.js';
 import {
   getVimModeState,
   recordVimFailure,
@@ -3337,15 +3337,32 @@ async function handleSplitFileUpload(file) {
   }
 }
 
+/**
+ * Rename a File to the source filename recovered from paste/drop HTML
+ * when the browser only gave it a generic placeholder name (#111) —
+ * e.g. copying/dragging an <img> from a web page hands over raw pixel
+ * data named "image.png" alongside HTML that still has the real src.
+ */
+function withResolvedName(file, html) {
+  const resolved = resolveAttachmentFilename(file.name, html);
+  if (resolved === file.name) return file;
+  try {
+    return new File([file], resolved, { type: file.type, lastModified: file.lastModified });
+  } catch (_) {
+    return file;
+  }
+}
+
 /** Pull image files out of a clipboard event, or [] if there are none. */
 function clipboardImages(e) {
   const items = e.clipboardData?.items;
   if (!items) return [];
+  const html = e.clipboardData?.getData ? e.clipboardData.getData("text/html") : "";
   const out = [];
   for (const item of items) {
     if (item.type.startsWith("image/")) {
       const file = item.getAsFile();
-      if (file) out.push(file);
+      if (file) out.push(withResolvedName(file, html));
     }
   }
   return out;
@@ -3403,7 +3420,8 @@ function setupEditorDropZone() {
     editorEl.classList.remove("drag-over");
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    for (const file of files) handleFileUpload(file);
+    const html = e.dataTransfer?.getData ? e.dataTransfer.getData("text/html") : "";
+    for (const file of files) handleFileUpload(withResolvedName(file, html));
   });
   editorEl.addEventListener("paste", (e) => handlePaste(e, editorEl));
 }

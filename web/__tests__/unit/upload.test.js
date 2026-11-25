@@ -403,3 +403,92 @@ describe('presignUpload branch coverage (stage 7)', () => {
     }
   });
 });
+
+// --- Recovering the original filename for pasted/dragged images (#111) ---
+
+import { isGenericImageName, filenameFromHtmlImage, resolveAttachmentFilename } from '../../lib/upload.js';
+
+describe('isGenericImageName', () => {
+  test('matches the bare placeholder', () => {
+    expect(isGenericImageName('image')).toBe(true);
+  });
+
+  test('matches the placeholder with an extension, case-insensitively', () => {
+    expect(isGenericImageName('image.png')).toBe(true);
+    expect(isGenericImageName('IMAGE.PNG')).toBe(true);
+    expect(isGenericImageName('Image.jpeg')).toBe(true);
+  });
+
+  test('rejects real filenames', () => {
+    expect(isGenericImageName('sunset-vacation.jpg')).toBe(false);
+    expect(isGenericImageName('imagewithmore.png')).toBe(false);
+    expect(isGenericImageName('my image.png')).toBe(false);
+  });
+
+  test('rejects empty/missing names', () => {
+    expect(isGenericImageName('')).toBe(false);
+    expect(isGenericImageName(undefined)).toBe(false);
+  });
+});
+
+describe('filenameFromHtmlImage', () => {
+  test('extracts the basename from an <img src> URL', () => {
+    const html = '<img src="https://example.com/photos/sunset-vacation.jpg" alt="">';
+    expect(filenameFromHtmlImage(html)).toBe('sunset-vacation.jpg');
+  });
+
+  test('strips query strings from the URL', () => {
+    const html = '<img src="https://example.com/p/cat.png?token=abc&w=200">';
+    expect(filenameFromHtmlImage(html)).toBe('cat.png');
+  });
+
+  test('decodes percent-encoded characters', () => {
+    const html = '<img src="https://example.com/My%20Photo.png">';
+    expect(filenameFromHtmlImage(html)).toBe('My Photo.png');
+  });
+
+  test('returns null for data: URIs', () => {
+    const html = '<img src="data:image/png;base64,iVBORw0KGgo=">';
+    expect(filenameFromHtmlImage(html)).toBeNull();
+  });
+
+  test('returns null when there is no <img> tag', () => {
+    expect(filenameFromHtmlImage('<p>no image here</p>')).toBeNull();
+  });
+
+  test('returns null for empty/missing HTML', () => {
+    expect(filenameFromHtmlImage('')).toBeNull();
+    expect(filenameFromHtmlImage(undefined)).toBeNull();
+  });
+
+  test('falls back to the raw src when it cannot be parsed as a URL', () => {
+    const html = '<img src="http://[invalid/weird.png">';
+    expect(filenameFromHtmlImage(html)).toBe('weird.png');
+  });
+
+  test('returns null when the URL has no filename segment', () => {
+    const html = '<img src="https://example.com/">';
+    expect(filenameFromHtmlImage(html)).toBeNull();
+  });
+});
+
+describe('resolveAttachmentFilename', () => {
+  test('recovers the source filename for a generic clipboard name', () => {
+    const html = '<img src="https://example.com/photos/sunset-vacation.jpg">';
+    expect(resolveAttachmentFilename('image.png', html)).toBe('sunset-vacation.jpg');
+  });
+
+  test('leaves a real filename untouched even if HTML is present', () => {
+    const html = '<img src="https://example.com/photos/other.jpg">';
+    expect(resolveAttachmentFilename('vacation-photo.png', html)).toBe('vacation-photo.png');
+  });
+
+  test('falls back to the generic name when no HTML is available', () => {
+    expect(resolveAttachmentFilename('image.png', '')).toBe('image.png');
+  });
+
+  test('falls back to the generic name when HTML has no usable filename', () => {
+    const html = '<img src="data:image/png;base64,abc">';
+    expect(resolveAttachmentFilename('image', html)).toBe('image');
+  });
+});
