@@ -238,7 +238,7 @@ func TestS3Enabled_partialFalse(t *testing.T) {
 }
 
 func TestLoad_stage8Defaults(t *testing.T) {
-	for _, k := range []string{"NOTEROOT_QUOTA_BYTES", "NOTEROOT_GC_INTERVAL"} {
+	for _, k := range []string{"NOTEROOT_QUOTA_BYTES", "NOTEROOT_GLOBAL_QUOTA_BYTES", "NOTEROOT_GC_INTERVAL"} {
 		unsetenv(t, k)
 	}
 	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/stage8test")
@@ -249,6 +249,9 @@ func TestLoad_stage8Defaults(t *testing.T) {
 	if cfg.QuotaBytes != 0 {
 		t.Errorf("QuotaBytes default = %d, want 0", cfg.QuotaBytes)
 	}
+	if cfg.GlobalQuotaBytes != 0 {
+		t.Errorf("GlobalQuotaBytes default = %d, want 0", cfg.GlobalQuotaBytes)
+	}
 	if cfg.GCInterval != "24h" {
 		t.Errorf("GCInterval default = %q, want 24h", cfg.GCInterval)
 	}
@@ -257,6 +260,7 @@ func TestLoad_stage8Defaults(t *testing.T) {
 func TestLoad_stage8Overrides(t *testing.T) {
 	setenv(t, "NOTEROOT_DATA_DIR", "/tmp/stage8test")
 	setenv(t, "NOTEROOT_QUOTA_BYTES", "1073741824")
+	setenv(t, "NOTEROOT_GLOBAL_QUOTA_BYTES", "9999999999")
 	setenv(t, "NOTEROOT_GC_INTERVAL", "6h")
 	cfg, err := Load()
 	if err != nil {
@@ -264,6 +268,9 @@ func TestLoad_stage8Overrides(t *testing.T) {
 	}
 	if cfg.QuotaBytes != 1073741824 {
 		t.Errorf("QuotaBytes = %d, want 1073741824", cfg.QuotaBytes)
+	}
+	if cfg.GlobalQuotaBytes != 9999999999 {
+		t.Errorf("GlobalQuotaBytes = %d, want 9999999999", cfg.GlobalQuotaBytes)
 	}
 	if cfg.GCInterval != "6h" {
 		t.Errorf("GCInterval = %q, want 6h", cfg.GCInterval)
@@ -360,6 +367,7 @@ func TestLoad_rejectsBadDurationsAndQuota(t *testing.T) {
 		{"NOTEROOT_GC_INTERVAL", "every other tuesday"},
 		{"NOTEROOT_S3_PRESIGN_TTL", "forever"},
 		{"NOTEROOT_QUOTA_BYTES", "-5"},
+		{"NOTEROOT_GLOBAL_QUOTA_BYTES", "-5"},
 	} {
 		setenv(t, kv[0], kv[1])
 		if _, err := Load(); err == nil {

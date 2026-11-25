@@ -110,6 +110,21 @@ every upload entry point (direct and presign) with HTTP 507. Stats expose
 `usedBytes`/`quotaBytes`; usage is dedup-aware (content-addressed bytes
 counted once).
 
+**Global quota** — `NOTEROOT_GLOBAL_QUOTA_BYTES` (0 = unlimited) is a
+second ceiling on top of (not instead of) each notebook's own quota: the
+same committed + in-flight-reservation bytes `NOTEROOT_QUOTA_BYTES` tracks
+per notebook, summed across every notebook's own upload journal. Enforced
+at the same two entry points — the atomic reserve-then-begin check (now
+serialized across all notebooks via the shared `uploadMu`, since two
+different notebooks can race against one global ceiling) and the advisory
+presign check — returning the same `ErrQuotaExceeded`/507. A notebook
+whose state DB can't be opened when summing is skipped and logged rather
+than failing the request, same best-effort posture as the per-notebook
+check. Stats expose `globalUsedBytes`/`globalReservedBytes`/
+`globalQuotaBytes` when the global quota is enabled. Scope: this is a
+resource/blob storage budget, not a filesystem total — it does not count
+vault markdown, git history, state/index/platform DB files, or backups.
+
 **GC** — background sweep every `NOTEROOT_GC_INTERVAL` (default 24h) plus a
 manual trigger `POST /n/{slug}/resources/gc`; deletes unreferenced blobs
 past their grace period and returns removal counts.
@@ -219,7 +234,7 @@ consecutive 5xx (4xx is neutral; 2xx/3xx closes) and fast-failing with
 succeeds — the same strikes/cooldown/half-open shape as the per-plugin and
 per-integration breakers (§9), kept as a separate implementation. Notebook
 create/rename/delete stay exempt so a tripped notebook is still reachable
-for repair. A global disk budget is still planned.
+for repair.
 
 ## 11. Backups
 

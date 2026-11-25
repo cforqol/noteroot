@@ -100,6 +100,7 @@ A single-user, self-hosted notebook built around a few uncompromising ideas:
 - Transforms: automatic image resize and video poster frames
 - S3-compatible object storage: presigned direct-to-S3 upload URLs (AWS SigV4, stdlib-only — no SDK dependency) with journal confirm, plus authenticated presigned read URLs
 - Per-notebook quota (`NOTEROOT_QUOTA_BYTES`, HTTP 507 on exceed) and background GC (`NOTEROOT_GC_INTERVAL`) with a manual `POST /n/{slug}/resources/gc` trigger
+- Global quota (`NOTEROOT_GLOBAL_QUOTA_BYTES`, HTTP 507 on exceed): a ceiling on resource storage — committed plus in-flight-reservation bytes, the same thing `NOTEROOT_QUOTA_BYTES` tracks per notebook — summed across every notebook, on top of each notebook's own quota; `GET /n/{slug}/resources/stats` reports `globalUsedBytes`/`globalReservedBytes`/`globalQuotaBytes` when enabled
 
 ### Workspace UI
 
@@ -358,6 +359,7 @@ All configuration is environment variables.
 | `NOTEROOT_S3_PATH_STYLE` | `false` | `true` = path-style URLs (MinIO), `false` = virtual-hosted (AWS). |
 | `NOTEROOT_S3_PRESIGN_TTL` | `` (empty = 15m) | Presigned upload/read URL lifetime (Go duration, capped at 168h). |
 | `NOTEROOT_QUOTA_BYTES` | `0` (unlimited) | Per-notebook storage quota in bytes; uploads past the quota fail with 507. |
+| `NOTEROOT_GLOBAL_QUOTA_BYTES` | `0` (unlimited) | Ceiling on resource storage (committed + in-flight reservations) summed across every notebook, on top of each notebook's own `NOTEROOT_QUOTA_BYTES`; uploads past it fail with 507. Covers the same resource/blob bytes `NOTEROOT_QUOTA_BYTES` already tracks — not a filesystem total of `NOTEROOT_DATA_DIR` (vault markdown, git history, and database files aren't counted). Must be >= 0. |
 | `NOTEROOT_GC_INTERVAL` | `24h` | How often the background resource GC sweep runs (Go duration). |
 | `NOTEROOT_BREAKER_THRESHOLD` | `5` | Consecutive 5xx responses on a notebook's routes before its circuit breaker trips open. Must be >= 1. |
 | `NOTEROOT_BREAKER_COOLDOWN` | `30s` | How long a tripped notebook circuit breaker stays open before half-opening for one probe request (Go duration). Must be positive. |

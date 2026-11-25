@@ -94,14 +94,16 @@ func (s *Server) fitsQuota(ctx context.Context, journal *resources.Journal, size
 	return nil
 }
 
-// reserveQuota atomically checks the quota and journals a pending
-// reservation of checkSize. The mutex makes check+Begin one
-// reservation window across every upload path, so two racing requests
-// can never both pass the same free-space check. Returns
+// reserveQuota atomically checks both the per-notebook and global
+// quotas and journals a pending reservation of checkSize. The mutex
+// makes check+Begin one reservation window across every upload path
+// for every notebook — not just this one — so two racing requests,
+// even against different notebooks, can never both pass the same
+// free-space check against the global ceiling. Returns
 // ErrQuotaExceeded when it does not fit; the entry ID is valid only on
 // success.
 func (s *Server) reserveQuota(ctx context.Context, journal *resources.Journal, filename, mime string, checkSize int64) (string, error) {
-	if s.cfg.QuotaBytes <= 0 {
+	if s.cfg.QuotaBytes <= 0 && s.cfg.GlobalQuotaBytes <= 0 {
 		return journal.Begin(filename, checkSize, mime)
 	}
 	s.uploadMu.Lock()
@@ -109,12 +111,63 @@ func (s *Server) reserveQuota(ctx context.Context, journal *resources.Journal, f
 	if err := s.fitsQuota(ctx, journal, checkSize); err != nil {
 		return "", err
 	}
+	if err := s.fitsGlobalQuota(ctx, checkSize); err != nil {
+		return "", err
+	}
 	return journal.Begin(filename, checkSize, mime)
 }
 
 // ErrQuotaExceeded is returned by reserveQuota when the upload would
-// not fit; the HTTP layer maps it to 507.
+// not fit a notebook's own quota or the global one; the HTTP layer
+// maps it to 507.
 var ErrQuotaExceeded = errors.New("quota exceeded")
+
+// fitsGlobalQuota reports ErrQuotaExceeded when size more bytes would
+// pass NOTEROOT_GLOBAL_QUOTA_BYTES: committed + reserved bytes summed
+// across every notebook's own resource journal, on top of (not
+// instead of) each notebook's individual QuotaBytes. Same best-effort
+// posture as fitsQuota: a storage error is logged and treated as
+// "fits" rather than failing the request. Callers must hold uploadMu
+// when the answer feeds a reservation.
+func (s *Server) fitsGlobalQuota(ctx context.Context, size int64) error {
+	if s.cfg.GlobalQuotaBytes <= 0 {
+		return nil
+	}
+	used, reserved := s.globalUsedAndReserved(ctx)
+	if used+reserved+size > s.cfg.GlobalQuotaBytes {
+		return fmt.Errorf("%w: %d of %d bytes used globally", ErrQuotaExceeded, used+reserved, s.cfg.GlobalQuotaBytes)
+	}
+	return nil
+}
+
+// globalUsedAndReserved sums committed and in-flight resource bytes
+// across every notebook's own journal — the basis for the global
+// disk budget. A notebook whose state DB cannot be opened right now
+// is skipped and logged rather than failing the caller: availability
+// wins over precise accounting, same as fitsQuota degrades under DB
+// trouble. Each notebook's journal is opened and closed fresh, even
+// the caller's own notebook (already open elsewhere in the request):
+// that's a redundant but harmless extra connection, and far simpler
+// than threading the caller's already-open journal through here.
+func (s *Server) globalUsedAndReserved(ctx context.Context) (used, reserved int64) {
+	cutoff := s.quotaCutoff()
+	for _, nb := range s.reg.List() {
+		db, _, err := state.Open(ctx, nb.Layout.StateDB())
+		if err != nil {
+			s.log.Warn("global quota: state open failed", "notebook", nb.Manifest.Slug, "err", err)
+			continue
+		}
+		u, r, err := resources.NewJournal(db.DB).QuotaSnapshot(ctx, cutoff)
+		_ = db.Close()
+		if err != nil {
+			s.log.Warn("global quota: snapshot failed", "notebook", nb.Manifest.Slug, "err", err)
+			continue
+		}
+		used += u
+		reserved += r
+	}
+	return used, reserved
+}
 
 // uploadResource handles POST /n/{slug}/resources.
 //
@@ -406,12 +459,19 @@ func (s *Server) resourceStats(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.S3Enabled() {
 		backend = "s3"
 	}
+	var globalUsed, globalReserved int64
+	if s.cfg.GlobalQuotaBytes > 0 {
+		globalUsed, globalReserved = s.globalUsedAndReserved(r.Context())
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backend":       backend,
-		"journal":       counts,
-		"usedBytes":     used,
-		"reservedBytes": reserved,
-		"quotaBytes":    s.cfg.QuotaBytes,
+		"backend":             backend,
+		"journal":             counts,
+		"usedBytes":           used,
+		"reservedBytes":       reserved,
+		"quotaBytes":          s.cfg.QuotaBytes,
+		"globalUsedBytes":     globalUsed,
+		"globalReservedBytes": globalReserved,
+		"globalQuotaBytes":    s.cfg.GlobalQuotaBytes,
 	})
 }
 
@@ -519,6 +579,10 @@ func (s *Server) presignUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.fitsQuota(r.Context(), journal, checkSize); err != nil {
+		writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.fitsGlobalQuota(r.Context(), checkSize); err != nil {
 		writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
 		return
 	}

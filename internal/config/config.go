@@ -70,6 +70,10 @@ type Config struct {
 
 	// QuotaBytes is the per-notebook storage limit in bytes. 0 = unlimited.
 	QuotaBytes int64
+	// GlobalQuotaBytes is a ceiling on total resource storage across every
+	// notebook combined (committed + in-flight reservations), on top of
+	// each notebook's own QuotaBytes. 0 = unlimited.
+	GlobalQuotaBytes int64
 	// GCInterval is how often the background GC sweep runs (e.g. "24h").
 	GCInterval string
 	// ReadTimeout is the maximum duration for reading the entire request, including the body.
@@ -172,8 +176,9 @@ func Load() (Config, error) {
 		TLSClientCertFile: env("NOTEROOT_TLS_CLIENT_CERT_FILE", ""),
 		TLSClientKeyFile:  env("NOTEROOT_TLS_CLIENT_KEY_FILE", ""),
 
-		QuotaBytes: envInt64("NOTEROOT_QUOTA_BYTES", 0),
-		GCInterval: env("NOTEROOT_GC_INTERVAL", "24h"),
+		QuotaBytes:       envInt64("NOTEROOT_QUOTA_BYTES", 0),
+		GlobalQuotaBytes: envInt64("NOTEROOT_GLOBAL_QUOTA_BYTES", 0),
+		GCInterval:       env("NOTEROOT_GC_INTERVAL", "24h"),
 
 		ReadTimeout:    env("NOTEROOT_READ_TIMEOUT", "10s"),
 		WriteTimeout:   env("NOTEROOT_WRITE_TIMEOUT", "10s"),
@@ -193,6 +198,9 @@ func Load() (Config, error) {
 	}
 	if c.QuotaBytes < 0 {
 		return c, fmt.Errorf("NOTEROOT_QUOTA_BYTES must be >= 0, got %d", c.QuotaBytes)
+	}
+	if c.GlobalQuotaBytes < 0 {
+		return c, fmt.Errorf("NOTEROOT_GLOBAL_QUOTA_BYTES must be >= 0, got %d", c.GlobalQuotaBytes)
 	}
 	if c.GCInterval != "" {
 		if _, err := time.ParseDuration(c.GCInterval); err != nil {
