@@ -62,6 +62,10 @@ works in both the plain and Vim editors):
 - **Upload file…** — picks one or more files, uploads them and inserts the
   embed at the cursor (images become `![name](…)`, everything else
   `[name](…)`). Drag-and-drop and clipboard paste keep working as before.
+  Pasting or dragging an image straight from a web page (rather than an
+  OS file) carries only a generic placeholder name (`image`/`image.png`);
+  the editor recovers the source's real filename from the page's `<img>`
+  tag and uploads under that name instead.
 - **Insert link (URL)…** — a validated link: `http`, `https`, `mailto` or a
   relative path (`/n/…`, `../x.md`, `#anchor`). `javascript:`/`data:` URLs are
   rejected. The dialog previews the exact markdown as you type; spaces and

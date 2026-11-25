@@ -145,6 +145,7 @@ is held to 100 % Jest coverage:
 | `lib/plugins/html-renderer.js` | HTML renderer plugin: replaces ` ```html ` fenced blocks with sandboxed iframes on each `noteread` event |
 | `lib/plugins/calendar.js` | Calendar widget plugin: floating draggable monthly calendar toggled from the top bar |
 | `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating three-row timer (phase buttons / SVG ring countdown / Start-Reset), configurable sound + widget-flash notifications, background running indicator on the top-bar button; lengths and notification flags read from / written to the plugin preference store |
+| `lib/upload.js` | Upload helpers: presigned direct-to-S3 request/confirm flow, video-resource extraction from rendered HTML, and recovery of the real filename for images pasted/dragged from a web page (`resolveAttachmentFilename`, from the paste/drop HTML's `<img src>`) when the browser only hands over a generic placeholder name |
 
 Preferences are per browser (`localStorage`), never server state. Layout is
 CSS-only: `body[data-tree=left|right|hidden]` selects the grid, and below
