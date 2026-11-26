@@ -6,7 +6,7 @@ import {
   restoreTrashFolder, deleteTrashFolder,
   saveNote, exportNotebook, exportSelection, importNotebook, createBackup, resourceStats,
   createNotebook, renameNotebook, deleteNotebook,
-  listResources, deleteResource, verifyResource, listResourceRefs, listTags, listKarakeepBookmarks,
+  listResources, deleteResource, verifyResource, listResourceRefs, fetchResourceFromUrl, listTags, listKarakeepBookmarks,
   lockStatus, setLock, removeLock, unlock, relock,
   createExportJob, exportJobStatus, exportJobDownloadUrl, cancelExportJob, exportNotebookReady,
   createImportJob, importJobStatus, cancelImportJob, importNotebookResumable,
@@ -481,6 +481,21 @@ describe('resource attachments', () => {
     expect(await listResourceRefs('my nb', 'a/b', f)).toEqual({ refs: ['a.md', 'b.md'] });
     expect(f.calls[0].url).toBe('/n/my%20nb/resources/a%2Fb/refs');
     expect(f.calls[0].init.method).toBe('GET');
+  });
+
+  test('fetchResourceFromUrl POSTs the url as JSON', async () => {
+    const f = mockFetch([{ status: 201, body: { sha: 'a', filename: 'x.png', size: 10, mime: 'image/png', created: true } }]);
+    const res = await fetchResourceFromUrl('my nb', 'https://example.com/x.png', f);
+    expect(res).toEqual({ sha: 'a', filename: 'x.png', size: 10, mime: 'image/png', created: true });
+    expect(f.calls[0].url).toBe('/n/my%20nb/resources/fetch');
+    expect(f.calls[0].init.method).toBe('POST');
+    expect(JSON.parse(f.calls[0].init.body)).toEqual({ url: 'https://example.com/x.png' });
+    expect(f.calls[0].init.headers['Content-Type']).toBe('application/json');
+  });
+
+  test('fetchResourceFromUrl surfaces a failure', async () => {
+    const f = mockFetch([{ status: 502, body: { error: 'fetch failed: refused' } }]);
+    await expect(fetchResourceFromUrl('nb', 'https://example.com/x.png', f)).rejects.toThrow('fetch failed: refused');
   });
 });
 

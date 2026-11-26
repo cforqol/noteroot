@@ -106,9 +106,25 @@ v1. Upload journal with resume, verification, dedup, GC with grace.
 interface allows a vips-backed swap later.
 
 **Quota** — `NOTEROOT_QUOTA_BYTES` per notebook (0 = unlimited), enforced at
-every upload entry point (direct and presign) with HTTP 507. Stats expose
-`usedBytes`/`quotaBytes`; usage is dedup-aware (content-addressed bytes
-counted once).
+every upload entry point (direct, presign, and server-side URL fetch) with
+HTTP 507. Stats expose `usedBytes`/`quotaBytes`; usage is dedup-aware
+(content-addressed bytes counted once).
+
+**Import attachment fetch** — `POST /n/{slug}/resources/fetch` (#107) lets
+plain-markdown note import resolve an attachment that is only an external
+URL in the source, not a bundled file: the server fetches it and runs it
+through the same `Policy.Validate` → quota reserve → `store.Put` → journal
+commit pipeline as a direct upload, rejecting the result on a short read
+or a declared/actual size mismatch rather than storing a truncated blob.
+This is the only outbound request in the codebase whose target comes from
+note content rather than admin config (Karakeep/Slink/S3/webhooks all dial
+addresses an operator typed into config), so it runs through a dedicated
+SSRF guard (`guardedFetchClient`) instead of the shared `transport`: a
+`net.Dialer.Control` hook checks the DNS-resolved IP — not the hostname —
+immediately before `connect(2)`, rejecting loopback/private/link-local
+(including the `169.254.169.254` cloud metadata address)/unspecified/
+multicast ranges, and redirects are never followed. See
+[threat-model.md](threat-model.md).
 
 **Global quota** — `NOTEROOT_GLOBAL_QUOTA_BYTES` (0 = unlimited) is a
 second ceiling on top of (not instead of) each notebook's own quota: the
@@ -185,6 +201,7 @@ is held to 100 % Jest coverage:
 | `lib/plugins/calendar.js` | Calendar widget plugin: floating draggable monthly calendar toggled from the top bar |
 | `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating three-row timer (phase buttons / SVG ring countdown / Start-Reset), configurable sound + widget-flash notifications, background running indicator on the top-bar button; lengths and notification flags read from / written to the plugin preference store |
 | `lib/upload.js` | Upload helpers: presigned direct-to-S3 request/confirm flow, video-resource extraction from rendered HTML, and recovery of the real filename for images pasted/dragged from a web page (`resolveAttachmentFilename`, from the paste/drop HTML's `<img src>`) when the browser only hands over a generic placeholder name |
+| `lib/import-attachments.js` | Plain-markdown import attachment resolution (#107): finds markdown/`<img>` references in imported note text, classifies each as an already-resolved resource link, an external URL, a local companion-file path, or unresolvable, and rewrites a resolved reference to the new `/n/{slug}/resources/{sha}` link |
 
 Most preferences are per browser (`localStorage`), never server state — the
 exception is per-folder emoji/color, which lives in `.notebook/folder-prefs.json`

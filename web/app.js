@@ -39,6 +39,7 @@ import {
   isValidLinkUrl, buildLinkMarkdown, buildNoteLinkMarkdown,
   collectNotePaths, resolveNotePath, filterNotePaths, bodyInsert, adjacentNote,
 } from '/lib/attach.js';
+import { extractAttachmentRefs, rewriteAttachmentRef } from '/lib/import-attachments.js';
 import * as notesApi from '/lib/notes-api.js';
 import { fetchIntegrationStatus, resetIntegrationStatus, karakeepArchive, slinkUpload, isHttpUrl } from '/lib/services.js';
 import {
@@ -5346,14 +5347,20 @@ async function importArchive(file) {
   });
 }
 
+// files may include non-note companions (images etc.) dropped alongside
+// the note(s) being imported — see importFiles below — which resolveImportAttachments
+// matches imported notes' attachment references against. Only the note
+// files themselves (.md/.markdown/.txt) become new notes.
 async function importMarkdown(files) {
   if (!treeData) return;
+  const noteFiles = files.filter((f) => isMarkdown(f.name) || isTextFile(f.name));
+  if (!noteFiles.length) return;
   const choices = folderChoices(treeData).map((c) => ({
     value: c.value,
     label: `${"\u2003".repeat(c.depth)}${c.label}`,
   }));
   const r = await formDialog({
-    title: files.length === 1 ? "Import note" : `Import ${files.length} notes`,
+    title: noteFiles.length === 1 ? "Import note" : `Import ${noteFiles.length} notes`,
     message: "Choose where the notes should go. Existing names are kept.",
     // Defaults to the notebook root (#95), unlike New note's contextDir():
     // the reporter called this out explicitly, since "Import file…" is
@@ -5372,17 +5379,107 @@ async function importMarkdown(files) {
     };
     if (treeData) collect(treeData);
     let count = 0;
-    for (const file of files) {
+    let attachmentCount = 0;
+    for (const file of noteFiles) {
       const name = (file.name || "note.md").replace(/\.(md|markdown|txt)$/i, "");
       const target = uniquePath(joinPath(r.dest, `${cleanRelPath(name).ok ? cleanRelPath(name).path : name}.md`), (p) => taken.has(p) || false);
       const text = await file.text();
-      await notesApi.saveNote(slug, target, text, { createOnly: true });
+      const resolved = await resolveImportAttachments(text, files);
+      await notesApi.saveNote(slug, target, resolved.text, { createOnly: true });
       taken.add(target);
       count += 1;
+      attachmentCount += resolved.resolvedCount;
     }
     ensureExpanded(r.dest);
     await refreshTree();
-    toast(`Imported ${count} note${count === 1 ? "" : "s"}`);
+    const suffix = attachmentCount ? ` (${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"} resolved)` : "";
+    toast(`Imported ${count} note${count === 1 ? "" : "s"}${suffix}`);
+  });
+}
+
+// --- import attachment resolution (#107) ---
+//
+// A plain-markdown import has no bundled resources.json/resources/<sha>
+// the way a .tar.gz note/notebook export does: any attachment the note
+// references is only a path or URL that was meaningful on the system it
+// came from. For each reference found: a same-named file imported
+// alongside the note is uploaded automatically; an external http(s) URL
+// is fetched by the server; anything else (or a failed auto-resolution)
+// falls back to resolveAttachmentDialog so the user can supply either.
+// A reference the user skips is left exactly as it was in the source text.
+async function resolveImportAttachments(text, siblingFiles) {
+  if (!slug) return { text, resolvedCount: 0 };
+  const refs = extractAttachmentRefs(text, slug);
+  if (!refs.length) return { text, resolvedCount: 0 };
+  let out = text;
+  let resolvedCount = 0;
+  for (const ref of refs) {
+    let sha = await autoResolveAttachmentRef(ref, siblingFiles);
+    if (!sha) {
+      const chosen = await resolveAttachmentDialog(ref.target);
+      if (!chosen) continue; // user skipped: leave the original reference untouched
+      try {
+        const res = chosen.kind === "file"
+          ? await uploadResource(chosen.file)
+          : await notesApi.fetchResourceFromUrl(slug, chosen.url);
+        sha = res.sha;
+      } catch (e) {
+        toast(`Could not resolve attachment "${ref.target}": ${e.message}`, true);
+        continue;
+      }
+    }
+    out = rewriteAttachmentRef(out, ref.target, `/n/${slug}/resources/${sha}`);
+    resolvedCount += 1;
+  }
+  return { text: out, resolvedCount };
+}
+
+// Try to resolve one reference without asking the user: an http(s) URL
+// is fetched server-side; a local path/filename is matched against the
+// other files imported in the same batch, by basename. Returns the new
+// resource sha, or null when neither applies (or either one fails).
+async function autoResolveAttachmentRef(ref, siblingFiles) {
+  try {
+    if (ref.kind === "http") {
+      const res = await notesApi.fetchResourceFromUrl(slug, ref.target);
+      return res.sha;
+    }
+    const match = siblingFiles.find((f) => f.name === ref.filename);
+    if (!match) return null;
+    const res = await uploadResource(match);
+    return res.sha;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Ask the user to resolve one unmatched attachment reference: fetch
+ * from a URL, or upload a file. Resolves null when the user skips. */
+async function resolveAttachmentDialog(target) {
+  const r = await formDialog({
+    title: "Attachment not found",
+    message: `“${target}” could not be located automatically. Enter a URL to fetch it from, or upload the file.`,
+    fields: [{ name: "url", label: "URL", placeholder: "https://example.com/image.png" }],
+    actions: [{ label: "Upload file\u2026", name: "upload" }],
+    okLabel: "Fetch",
+    cancelLabel: "Skip",
+  });
+  if (!r) return null;
+  if (r.__action === "upload") {
+    const file = await pickAnyFile();
+    return file ? { kind: "file", file } : null;
+  }
+  const url = (r.url || "").trim();
+  return url ? { kind: "url", url } : null;
+}
+
+/** Open a file picker for any file type; resolves to null on cancel. */
+function pickAnyFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = () => resolve(input.files?.[0] || null);
+    input.click();
   });
 }
 
@@ -5395,7 +5492,10 @@ function importFiles(files) {
   const list = [...files];
   if (list.some((f) => isArchive(f.name))) {
     importArchive(list.find((f) => isArchive(f.name)));
-  } else if (list.every((f) => isMarkdown(f.name) || isTextFile(f.name))) {
+  } else if (list.some((f) => isMarkdown(f.name) || isTextFile(f.name))) {
+    // Any non-note files in the same drop are attachment companions
+    // (#107): resolveImportAttachments matches them against the
+    // note(s)' own attachment references by filename.
     importMarkdown(list);
   } else {
     toast("Import accepts a .tar.gz export, .md or .txt files.", true);

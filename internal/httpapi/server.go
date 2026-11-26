@@ -44,6 +44,14 @@ type Server struct {
 	// process; fall back to the default transport rather than panic.
 	transport http.RoundTripper
 
+	// fetchClient is used by fetchResource (#107) to fetch an
+	// attachment URL found in imported note content. Unlike transport
+	// above, it is nil in production — guardedFetchClient builds one
+	// lazily per request so its SSRF dial guard always runs — and is
+	// only ever set directly by tests, which point it at an httptest
+	// server the guard would otherwise block (loopback).
+	fetchClient *http.Client
+
 	gitMu sync.Mutex
 	git   map[string]*git.Flusher
 
@@ -160,6 +168,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/resources/presign", nbMutating(s.presignUpload))
 	mux.Handle("POST /n/{slug}/resources/confirm", nbMutating(s.confirmUpload))
 	mux.Handle("POST /n/{slug}/resources/gc", nbMutating(s.gcResources))
+	mux.Handle("POST /n/{slug}/resources/fetch", nbMutating(s.fetchResource))
 
 	// Diagnostics bundle (#49): version info, DB stats, vault row
 	// count, circuit breaker state, global quota snapshot, recent

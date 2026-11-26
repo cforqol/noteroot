@@ -219,6 +219,14 @@ async function fakeFetch(url, init = {}) {
         created: true,
         size: 0,
       });
+    case 'POST /n/nb/resources/fetch':
+      return respond(201, {
+        sha: 'd'.repeat(64),
+        filename: new URL(body.url).pathname.split('/').pop(),
+        mime: 'image/jpeg',
+        created: true,
+        size: 0,
+      });
     default: return respond(200, {}); // locks etc.
   }
 }
@@ -1674,6 +1682,74 @@ describe('drop image upload (#111)', () => {
     expect(requests).toContain('POST /n/nb/resources?filename=report.png');
     $('closebtn').click();
     await until(() => $('editor').hidden, 'editor closed');
+  });
+});
+
+describe('import attachment resolution (#107)', () => {
+  // jsdom's File has no .text()/.arrayBuffer() (see upload.test.js's
+  // fileNamed helper for the same workaround): a plain object matching
+  // the File contract that importMarkdown/uploadResource actually use.
+  const textFile = (name, text, type = 'text/markdown') => ({
+    name, type, size: text.length,
+    text: async () => text,
+    arrayBuffer: async () => new TextEncoder().encode(text).buffer,
+  });
+  const binaryFile = (name, type = 'image/png') => ({
+    name, type, size: 4,
+    text: async () => '',
+    arrayBuffer: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer,
+  });
+  const dropOnSidebar = (files) => {
+    const e = new Event('drop', { bubbles: true, cancelable: true });
+    e.dataTransfer = { files, getData: () => '' };
+    $('sidebar').dispatchEvent(e);
+  };
+
+  test('auto-resolves a sibling file match and an external URL, then prompts for the rest', async () => {
+    const noteText = [
+      '# Imported',
+      '![local](sidecar-107.png)',
+      '![remote](https://example.com/photo-107.jpg)',
+      '![missing](ghost-107.png)',
+    ].join('\n');
+    const noteFile = textFile('imported-107.md', noteText);
+    const sidecarFile = binaryFile('sidecar-107.png');
+
+    dropOnSidebar([noteFile, sidecarFile]);
+    await submitDialog({ dest: '' }); // "Import note" destination dialog
+    await until(() => q('.dialog form'), 'attachment resolution dialog');
+    await submitDialog({ url: 'https://example.com/ghost-107-resolved.jpg' });
+
+    await until(() => notes.has('imported-107.md'), 'note imported');
+    const saved = notes.get('imported-107.md');
+    expect(saved).toContain(`/n/nb/resources/${'a'.repeat(64)}`); // sibling file upload
+    expect(saved).toContain(`/n/nb/resources/${'d'.repeat(64)}`); // url fetch(es)
+    expect(saved).not.toContain('sidecar-107.png');
+    expect(saved).not.toContain('example.com');
+    expect(saved).not.toContain('ghost-107.png');
+    expect(requests).toContain('POST /n/nb/resources?filename=sidecar-107.png');
+    expect(requests.filter((r) => r === 'POST /n/nb/resources/fetch')).toHaveLength(2);
+  });
+
+  test('skipping the resolution dialog leaves the original reference untouched', async () => {
+    const noteText = '![missing](ghost-skip-107.png)';
+    const noteFile = textFile('imported-skip-107.md', noteText);
+
+    dropOnSidebar([noteFile]);
+    await submitDialog({ dest: '' });
+    await until(() => q('.dialog form'), 'attachment resolution dialog');
+    [...qa('.dialog-buttons .btn')].find((b) => b.textContent === 'Skip').click();
+
+    await until(() => notes.has('imported-skip-107.md'), 'note imported');
+    expect(notes.get('imported-skip-107.md')).toBe(noteText);
+  });
+
+  test('a note with no attachment references imports without any resolution dialog', async () => {
+    const noteFile = textFile('imported-plain-107.md', '# Plain note, nothing to resolve');
+    dropOnSidebar([noteFile]);
+    await submitDialog({ dest: '' });
+    await until(() => notes.has('imported-plain-107.md'), 'note imported');
+    expect(notes.get('imported-plain-107.md')).toBe('# Plain note, nothing to resolve');
   });
 });
 

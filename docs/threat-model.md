@@ -31,6 +31,16 @@ consequences for design decisions elsewhere.
 6. **Bugs in our own code** — atomic writes, bounded failure domains,
    per-notebook isolation (server-side circuit breaker after repeated
    5xx failures), quarantine over repair.
+7. **Malicious imported note content** — a plain-markdown note import can
+   reference an attachment by an external URL, making its fetch
+   (`POST /n/{slug}/resources/fetch`, #107) the only outbound request in
+   the codebase whose target comes from content rather than admin config
+   (Karakeep/Slink/S3/webhooks all dial addresses an operator typed into
+   config). Mitigated by a dedicated SSRF guard: the dial is checked
+   against the DNS-resolved IP, not the hostname, immediately before
+   `connect(2)` (defeats DNS rebinding), rejecting loopback/private/
+   link-local (including the `169.254.169.254` cloud metadata address)/
+   unspecified/multicast ranges; redirects are never followed.
 
 ## Explicitly out of scope
 

@@ -416,6 +416,15 @@ export function verifyResource(slug, sha, f) {
   return request('GET', `/n/${enc(slug)}/resources/${enc(sha)}/verify`, {}, f);
 }
 
+/**
+ * Ask the server to fetch an external URL and store it as a resource
+ * (#107 import attachment resolution). Same response shape as a direct
+ * upload: {sha, filename, size, mime, created}.
+ */
+export function fetchResourceFromUrl(slug, url, f) {
+  return request('POST', `/n/${enc(slug)}/resources/fetch`, { body: JSON.stringify({ url }), headers: JSON_TYPE }, f);
+}
+
 /** Vault-relative paths of every note that links to a resource. */
 export function listResourceRefs(slug, sha, f) {
   return request('GET', `/n/${enc(slug)}/resources/${enc(sha)}/refs`, {}, f);
