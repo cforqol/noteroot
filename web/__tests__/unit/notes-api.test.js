@@ -6,7 +6,7 @@ import {
   restoreTrashFolder, deleteTrashFolder,
   saveNote, exportNotebook, exportSelection, importNotebook, createBackup, resourceStats,
   createNotebook, renameNotebook, deleteNotebook,
-  listResources, deleteResource, listTags, listKarakeepBookmarks,
+  listResources, deleteResource, verifyResource, listResourceRefs, listTags, listKarakeepBookmarks,
   lockStatus, setLock, removeLock, unlock, relock,
   createExportJob, exportJobStatus, exportJobDownloadUrl, cancelExportJob, exportNotebookReady,
   createImportJob, importJobStatus, cancelImportJob, importNotebookResumable,
@@ -384,6 +384,8 @@ test('every client falls back to the global fetch and default options', async ()
     await deleteFolder('nb', 'f');
     await getFolderPrefs('nb');
     await setFolderPref('nb', 'f', { emoji: 'x' });
+    await verifyResource('nb', 'a');
+    await listResourceRefs('nb', 'a');
     await listTrash('nb');
     await deleteTrashEntry('nb', 'x.md');
     await setTrashRetention('nb', 7);
@@ -465,6 +467,20 @@ describe('resource attachments', () => {
   test('deleteResource surfaces a failure', async () => {
     const f = mockFetch([{ status: 404, body: { error: 'no such resource' } }]);
     await expect(deleteResource('nb', 'x', f)).rejects.toThrow('no such resource');
+  });
+
+  test('verifyResource GETs the per-sha verify endpoint', async () => {
+    const f = mockFetch([{ status: 200, body: { sha: 'a', status: 'ok', size: 10 } }]);
+    expect(await verifyResource('my nb', 'a', f)).toEqual({ sha: 'a', status: 'ok', size: 10 });
+    expect(f.calls[0].url).toBe('/n/my%20nb/resources/a/verify');
+    expect(f.calls[0].init.method).toBe('GET');
+  });
+
+  test('listResourceRefs GETs the per-sha refs endpoint', async () => {
+    const f = mockFetch([{ status: 200, body: { refs: ['a.md', 'b.md'] } }]);
+    expect(await listResourceRefs('my nb', 'a/b', f)).toEqual({ refs: ['a.md', 'b.md'] });
+    expect(f.calls[0].url).toBe('/n/my%20nb/resources/a%2Fb/refs');
+    expect(f.calls[0].init.method).toBe('GET');
   });
 });
 

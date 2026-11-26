@@ -213,18 +213,18 @@ test('the attachments manager lists, filters, uploads and closes on Esc', async 
     { name: 'pixel.png', mimeType: 'image/png', buffer: Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') },
   ]);
-  await expect(page.locator('.attach-card')).toHaveCount(2);
+  await expect(page.locator('.attach-row')).toHaveCount(2);
   await expect(page.locator('#attachments-summary')).toHaveText('2 of 2 files');
 
   await page.fill('#attachments-search', 'notes');
-  await expect(page.locator('.attach-card')).toHaveCount(1);
+  await expect(page.locator('.attach-row')).toHaveCount(1);
   await expect(page.locator('.attach-name')).toHaveText('notes.txt');
   await page.fill('#attachments-search', '');
   await page.selectOption('#attachments-filter', 'image');
   await expect(page.locator('.attach-name')).toHaveText('pixel.png');
 
-  await page.locator('.attach-card .btn', { hasText: 'References' }).click();
-  await expect(page.locator('.attach-refs')).toHaveText('Used in: none');
+  await page.locator('.attach-row .btn', { hasText: 'References' }).click();
+  await expect(page.locator('.attach-refs-count')).toHaveText('Used in: none');
 
   await page.keyboard.press('Escape');
   await expect(page.locator('#attachments-modal')).toBeHidden();

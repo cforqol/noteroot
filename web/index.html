@@ -603,7 +603,14 @@
           <p class="help-text">Uploaded files stored in this notebook. Images, videos, audio and PDFs linked in notes are rendered inline.</p>
           <div class="setting">
             <div class="setting-label">Uploaded files<small>Browse, insert, and delete uploads in the current notebook.</small></div>
-            <button id="attachments-manage" class="btn primary">Open manager…</button>
+            <div class="lock-actions">
+              <button id="attachments-manage" class="btn primary">Open manager…</button>
+              <button id="attachments-verify" class="btn" title="Re-hash every attachment against its recorded sha to find missing or corrupted files">Verify…</button>
+            </div>
+          </div>
+          <div id="attachments-verify-progress" class="verify-progress" hidden>
+            <div class="verify-progress-bar"><div id="attachments-verify-bar" class="verify-progress-fill"></div></div>
+            <span id="attachments-verify-text" class="verify-progress-text"></span>
           </div>
         </section>
 
@@ -707,7 +714,7 @@
     </div>
     <div class="modal-body attachments-body">
       <div id="attachments-summary" class="attachments-summary" aria-live="polite"></div>
-      <div id="attachments-grid" class="attachments-grid">
+      <div id="attachments-grid" class="attach-list">
         <p class="muted small">Open a notebook to see its attachments.</p>
       </div>
     </div>

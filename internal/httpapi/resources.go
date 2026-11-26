@@ -3,6 +3,8 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -731,6 +733,60 @@ func (s *Server) presignRead(w http.ResponseWriter, r *http.Request) {
 		"url":       readURL,
 		"expiresIn": int(ttl.Seconds()),
 	})
+}
+
+// verifyResource serves GET /n/{slug}/resources/{sha}/verify — recomputes
+// the blob's sha256 by streaming it from the store and compares it to the
+// requested sha (which is also the content key), so a bit-rotted or
+// truncated blob is caught even though Has/Size alone would not notice.
+//
+// Response (200):
+//
+//	{"sha":"...", "status":"ok"|"missing"|"corrupted", "size":1234}
+//
+// size is the number of bytes actually read; for "missing" it is 0, and
+// for "corrupted" it is however many bytes were there (which may differ
+// from what the journal recorded).
+func (s *Server) verifyResource(w http.ResponseWriter, r *http.Request) {
+	nb, ok := s.reg.Get(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such notebook"})
+		return
+	}
+	sha := strings.ToLower(r.PathValue("sha"))
+	if !resources.ValidSHA(sha) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sha"})
+		return
+	}
+	store, _, cleanup, err := s.openResources(r.Context(), nb)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resources unavailable"})
+		return
+	}
+	defer cleanup()
+
+	rc, err := store.Get(sha)
+	if err != nil {
+		if errors.Is(err, resources.ErrNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{"sha": sha, "status": "missing", "size": 0})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read failed"})
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	h := sha256.New()
+	n, err := io.Copy(h, rc)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read failed"})
+		return
+	}
+	status := "ok"
+	if hex.EncodeToString(h.Sum(nil)) != sha {
+		status = "corrupted"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sha": sha, "status": status, "size": n})
 }
 
 // listResourceRefs serves GET /n/{slug}/resources/{sha}/refs.

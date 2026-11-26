@@ -198,6 +198,97 @@ function attachImgLightbox(container) {
   });
 }
 
+// --- broken attachment recovery ---
+// A note's <img> pointing at this notebook's own resource storage that
+// fails to load (blob deleted, corrupted, or a vault restored without
+// its store) gets an inline recovery card instead of a dead icon: a
+// link into the attachment manager (pre-filtered to the sha) and a
+// "Replace…" file picker that uploads a new file and repoints this
+// note's link at it — the only reasonable "replace" for content-
+// addressed storage, since the old sha can never again resolve to new
+// bytes at the same URL.
+const RESOURCE_SHA_RE = /\/resources\/([a-f0-9]{64})/i;
+
+function attachBrokenImageRecovery(container, notePath) {
+  if (!notePath) return;
+  container.querySelectorAll("img").forEach((img) => {
+    const m = RESOURCE_SHA_RE.exec(img.src);
+    if (!m) return; // not one of this notebook's own attachments
+    const sha = m[1].toLowerCase();
+    img.addEventListener("error", () => showBrokenAttachment(img, sha, notePath), { once: true });
+  });
+}
+
+function showBrokenAttachment(img, sha, notePath) {
+  if (!img.isConnected) return; // the note was already re-rendered/closed
+  const card = document.createElement("div");
+  card.className = "broken-attachment";
+  const msg = document.createElement("div");
+  msg.className = "broken-attachment-msg";
+  msg.append(document.createTextNode("\u26a0\ufe0f "));
+  const strong = document.createElement("strong");
+  strong.textContent = "Attachment unavailable.";
+  msg.append(strong, document.createTextNode(" The original file is missing or could not be loaded."));
+
+  const acts = document.createElement("div");
+  acts.className = "broken-attachment-actions";
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "btn small ghost";
+  openBtn.textContent = "Open attachment manager";
+  openBtn.onclick = () => { closeSettingsModal(); openAttachmentsModal(sha); };
+
+  const replaceBtn = document.createElement("button");
+  replaceBtn.type = "button";
+  replaceBtn.className = "btn small";
+  replaceBtn.textContent = "Replace…";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.hidden = true;
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    if (!file) return;
+    replaceBtn.disabled = true;
+    replaceBtn.textContent = "Replacing…";
+    try {
+      await replaceAttachmentInNote(notePath, sha, file);
+      toast("Attachment replaced.");
+    } catch (e) {
+      toast(`Replace failed: ${e.message}`, true);
+      replaceBtn.disabled = false;
+      replaceBtn.textContent = "Replace…";
+    }
+  });
+  replaceBtn.onclick = () => fileInput.click();
+  acts.append(openBtn, replaceBtn, fileInput);
+  card.append(msg, acts);
+  img.replaceWith(card);
+}
+
+/**
+ * Upload `file` as a new resource and repoint every occurrence of
+ * `oldSha` in `notePath`'s source at the new one, saving the note.
+ * Resources are content-addressed, so there is no in-place replace at
+ * the old URL — this is scoped to the note that showed the broken
+ * image, not every note that might reference the same sha.
+ */
+async function replaceAttachmentInNote(notePath, oldSha, file) {
+  const res = await uploadResource(file);
+  const newSha = res?.sha;
+  if (!newSha) throw new Error("upload did not return a sha");
+  if (newSha === oldSha) throw new Error("the replacement file is identical to the original");
+  const src = await notesApi.getSource(slug, notePath);
+  const rewritten = src.text.split(oldSha).join(newSha);
+  if (rewritten === src.text) {
+    throw new Error("that attachment is no longer linked from this note");
+  }
+  await notesApi.saveNote(slug, notePath, rewritten, { baseSha: src.sha });
+  if (current === notePath) await openNote(notePath, null);
+  if (splitPath === notePath) await openInSplit(notePath);
+}
+
 // Wrap each bare <table> in a .table-scroll div so wide tables scroll
 // within their own container rather than forcing the whole article to
 // scroll horizontally (which would detach the gutter background).
@@ -1089,6 +1180,7 @@ function renderRead(n) {
   renderCodeHighlighting($("note"));
   wrapTables($("note"));
   attachImgLightbox($("note"));
+  attachBrokenImageRecovery($("note"), n.path || current);
   setupHeadingFolds($("note"));
   activateTaskCheckboxes($("note"), n);
   // The note body stays the note: contents, tags and links live in the
@@ -1425,6 +1517,7 @@ function renderSplitRead(n) {
   renderCodeHighlighting($("split-note"));
   wrapTables($("split-note"));
   attachImgLightbox($("split-note"));
+  attachBrokenImageRecovery($("split-note"), n.path || splitPath);
   setupHeadingFolds($("split-note"));
   $("split-note").append(linksPanels(n));
   $("split-note").scrollTop = 0;
@@ -6273,12 +6366,17 @@ window.nr = { openNote, openEditor, current: () => current };
 // --- Attachments manager (dedicated window) ---
 
 let _attachmentsCache = [];
+// sha -> "ok" | "missing" | "corrupted" | "error", populated by runVerifyAll().
+// Absent = not yet verified this session.
+const _verifyStatus = new Map();
 
-function openAttachmentsModal() {
+/** Open the manager, optionally pre-filtering to one sha/name (e.g. from
+ * a broken-attachment recovery card in a rendered note). */
+function openAttachmentsModal(filterTerm = "") {
   if (!slug) { toast("Open a notebook first.", true); return; }
   const m = $("attachments-modal");
   if (m) m.hidden = false;
-  const s = $("attachments-search"); if (s) s.value = "";
+  const s = $("attachments-search"); if (s) s.value = filterTerm;
   const f = $("attachments-filter"); if (f) f.value = "all";
   loadAttachmentsManager();
 }
@@ -6322,6 +6420,19 @@ async function loadAttachmentsManager() {
   }
 }
 
+/** {icon, cls, title} for a sha's cached verify result (or "unknown"
+ * before Verify has ever run on it this session). */
+function statusInfoFor(sha) {
+  const status = _verifyStatus.get(sha);
+  switch (status) {
+    case "ok": return { icon: "●", cls: "ok", title: "Verified: matches its recorded hash" };
+    case "missing": return { icon: "✕", cls: "bad", title: "Missing: the file is no longer in storage" };
+    case "corrupted": return { icon: "✕", cls: "bad", title: "Corrupted: contents no longer match the recorded hash" };
+    case "error": return { icon: "?", cls: "error", title: "Verification failed (network or server error)" };
+    default: return { icon: "○", cls: "unknown", title: "Not yet verified — use Settings → Attachments → Verify…" };
+  }
+}
+
 function renderAttachmentsManager(items) {
   const grid = $("attachments-grid");
   const sum = $("attachments-summary");
@@ -6349,8 +6460,29 @@ function renderAttachmentsManager(items) {
     const size = humanBytes(Number(res.Size || res.size) || 0);
     const kind = attachKind(mime, name);
     const url = `/n/${encodeURIComponent(slug)}/resources/${sha}`;
-    const card = document.createElement("article");
-    card.className = "attach-card";
+    const row = document.createElement("article");
+    row.className = "attach-row";
+    row.dataset.sha = sha;
+
+    const main = document.createElement("div");
+    main.className = "attach-row-main";
+
+    const info = statusInfoFor(sha);
+    const statusEl = document.createElement("span");
+    statusEl.className = `attach-status ${info.cls}`;
+    statusEl.title = info.title;
+    statusEl.textContent = info.icon;
+    statusEl.setAttribute("role", "status");
+    statusEl.setAttribute("aria-label", info.title);
+    const hint = document.createElement("div");
+    hint.className = "attach-status-hint";
+    hint.textContent = info.title;
+    if (info.cls === "bad" || info.cls === "error") {
+      // Hover already shows `title` on desktop; a tap toggles the same
+      // text inline for mobile, which has no reliable hover.
+      statusEl.addEventListener("click", () => hint.classList.toggle("shown"));
+    }
+
     const thumb = document.createElement("div");
     thumb.className = "attach-thumb";
     if (kind === "image" && sha) {
@@ -6407,24 +6539,34 @@ function renderAttachmentsManager(items) {
     const refs = document.createElement("button");
     refs.className = "btn small ghost";
     refs.textContent = "References";
+    let refsBox = null;
     refs.onclick = async () => {
+      // Toggle: a second click on an already-loaded panel just hides it.
+      if (refsBox) { refsBox.remove(); refsBox = null; refs.textContent = "References"; return; }
       refs.disabled = true;
       refs.textContent = "…";
       try {
-        const r = await fetch(`/n/${encodeURIComponent(slug)}/resources/${sha}/refs`);
-        const rd = await r.json();
-        const paths = rd.refs || [];
-        let box = card.querySelector(".attach-refs");
-        if (!box) { box = document.createElement("div"); box.className = "attach-refs"; card.append(box); }
-        box.textContent = paths.length ? "Used in: " : "Used in: none";
-        paths.forEach((p, i) => {
-          if (i > 0) box.append(", ");
+        const { refs: paths = [] } = await notesApi.listResourceRefs(slug, sha);
+        refsBox = document.createElement("div");
+        refsBox.className = "attach-refs-list";
+        const count = document.createElement("div");
+        count.className = "attach-refs-count";
+        count.textContent = paths.length ? `Used in ${paths.length} note${paths.length === 1 ? "" : "s"}:` : "Used in: none";
+        refsBox.append(count);
+        // Every reference is listed — even at 50+ — with no truncation;
+        // the panel itself scrolls instead of growing past a bound, so
+        // one heavily-referenced attachment doesn't dwarf the rest of
+        // the list.
+        for (const p of paths) {
           const a = document.createElement("a");
           a.href = "#";
           a.textContent = p;
           a.onclick = (e) => { e.preventDefault(); closeAttachmentsModal(); closeSettingsModal(); openNote(p, null); };
-          box.append(a);
-        });
+          refsBox.append(a);
+        }
+        row.append(refsBox);
+        refs.disabled = false;
+        refs.textContent = "Hide references";
       } catch {
         refs.disabled = false; refs.textContent = "References";
         toast("Could not load references.", true);
@@ -6447,13 +6589,70 @@ function renderAttachmentsManager(items) {
       }
     };
     acts.append(ins, openBtn, copy, refs, del);
-    card.append(thumb, meta, acts);
-    grid.append(card);
+    main.append(statusEl, thumb, meta, acts);
+    row.append(main, hint);
+    grid.append(row);
   }
   // Click an image thumbnail for the same full-size lightbox a note's
-  // own inline images use — this grid otherwise had no way to see a
+  // own inline images use — this list otherwise had no way to see a
   // thumbnail at its real size short of the separate "Open" button.
   attachImgLightbox(grid);
+}
+
+/**
+ * Re-hash every committed attachment in the current notebook against
+ * its recorded sha (server-side; see GET .../resources/{sha}/verify)
+ * and cache the per-sha status, driving the manager's status icons.
+ * Runs sequentially so the progress bar tracks real completions
+ * rather than a guess.
+ */
+async function runVerifyAll() {
+  if (!slug) { toast("Open a notebook first.", true); return; }
+  const btn = $("attachments-verify");
+  const box = $("attachments-verify-progress");
+  const bar = $("attachments-verify-bar");
+  const text = $("attachments-verify-text");
+  let items;
+  try {
+    const data = await notesApi.listResources(slug, "committed");
+    items = Array.isArray(data) ? data : (data?.resources || []);
+  } catch (e) {
+    toast(`Verify failed: ${e.message}`, true);
+    return;
+  }
+  if (items.length === 0) { toast("No attachments to verify."); return; }
+
+  if (btn) btn.disabled = true;
+  if (box) box.hidden = false;
+  const total = items.length;
+  let done = 0;
+  const update = () => {
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    if (bar) bar.style.width = `${pct}%`;
+    if (text) text.textContent = `${done}/${total} (${pct}%)`;
+  };
+  update();
+  let missing = 0, corrupted = 0;
+  for (const res of items) {
+    const sha = res.SHA || res.sha;
+    try {
+      const r = await notesApi.verifyResource(slug, sha);
+      _verifyStatus.set(sha, r.status);
+      if (r.status === "missing") missing += 1;
+      else if (r.status === "corrupted") corrupted += 1;
+    } catch {
+      _verifyStatus.set(sha, "error");
+    }
+    done += 1;
+    update();
+  }
+  if (btn) btn.disabled = false;
+  const problems = missing + corrupted;
+  toast(problems
+    ? `Verified ${total} attachment${total === 1 ? "" : "s"}: ${problems} with issues (${missing} missing, ${corrupted} corrupted).`
+    : `Verified ${total} attachment${total === 1 ? "" : "s"}: all OK.`,
+    problems > 0);
+  if (!$("attachments-modal")?.hidden) renderAttachmentsManager(_attachmentsCache);
 }
 
 document.addEventListener("click", (e) => {
@@ -6490,6 +6689,7 @@ function initAttachmentsEvents() {
       loadAttachmentsManager();
     });
   }
+  $("attachments-verify")?.addEventListener("click", runVerifyAll);
 }
 
 // Module loads after DOM in both the browser (type=module defer) and jsdom tests.

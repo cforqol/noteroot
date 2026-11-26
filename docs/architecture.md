@@ -129,6 +129,14 @@ vault markdown, git history, state/index/platform DB files, or backups.
 manual trigger `POST /n/{slug}/resources/gc`; deletes unreferenced blobs
 past their grace period and returns removal counts.
 
+**Verify** — `GET /n/{slug}/resources/{sha}/verify` streams the stored blob
+through SHA-256 and compares the result to `sha` (the content-addressed
+store key), returning `{sha,status,size}` with `status` one of
+`ok`/`missing`/`corrupted`. Catches truncation and bit-rot that a bare
+existence check (the journal, or a 404 on `GET .../{sha}`) would miss. The
+attachment manager calls this once per committed attachment, sequentially,
+rather than trusting the journal alone; it does not run automatically.
+
 **Rebuild reconciliation (S3)** — `state.Open`'s rebuild of a corrupted
 `state.db` (ADR 0002) wipes the upload journal, the only local record of
 which blobs a notebook owns. When the resource store is S3-backed,

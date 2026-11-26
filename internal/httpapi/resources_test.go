@@ -289,6 +289,124 @@ func TestGetResource_notFound(t *testing.T) {
 	}
 }
 
+func TestVerifyResource_ok(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	up := postResource(t, srv, "work", "v.txt", "text/plain", []byte("verify me"))
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	rec := get(t, srv, "/n/work/resources/"+sha+"/verify", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	if resp["status"] != "ok" {
+		t.Errorf("status = %v, want ok", resp["status"])
+	}
+	if resp["size"].(float64) != float64(len("verify me")) {
+		t.Errorf("size = %v, want %d", resp["size"], len("verify me"))
+	}
+	if resp["sha"] != sha {
+		t.Errorf("sha = %v, want %s", resp["sha"], sha)
+	}
+}
+
+func TestVerifyResource_missing(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	fake := strings.Repeat("b", 64)
+	rec := get(t, srv, "/n/work/resources/"+fake+"/verify", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	if resp["status"] != "missing" {
+		t.Errorf("status = %v, want missing", resp["status"])
+	}
+	if resp["size"].(float64) != 0 {
+		t.Errorf("size = %v, want 0", resp["size"])
+	}
+}
+
+// A blob whose on-disk bytes no longer match its sha (bit rot, a stray
+// write) is reported as corrupted rather than silently served as-is.
+func TestVerifyResource_corrupted(t *testing.T) {
+	reg := resourceFixture(t)
+	srv := newTestServer(t, config.AuthNone, reg)
+	up := postResource(t, srv, "work", "c.txt", "text/plain", []byte("original bytes"))
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	nb, ok := reg.Get("work")
+	if !ok {
+		t.Fatal("no notebook work")
+	}
+	blobPath := filepath.Join(nb.Layout.Resources(), sha[:2], sha)
+	if err := os.WriteFile(blobPath, []byte("tampered bytes!!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := get(t, srv, "/n/work/resources/"+sha+"/verify", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	if resp["status"] != "corrupted" {
+		t.Errorf("status = %v, want corrupted", resp["status"])
+	}
+	if resp["size"].(float64) != float64(len("tampered bytes!!")) {
+		t.Errorf("size = %v, want the actual (tampered) byte count", resp["size"])
+	}
+}
+
+// A blob path that is unreadable (here: a directory sits where the
+// blob file should be) surfaces as a 500 rather than a false "ok".
+func TestVerifyResource_readError(t *testing.T) {
+	reg := resourceFixture(t)
+	srv := newTestServer(t, config.AuthNone, reg)
+	up := postResource(t, srv, "work", "r.txt", "text/plain", []byte("x"))
+	var raw map[string]any
+	decodeJSON(t, up, &raw)
+	sha := raw["sha"].(string)
+
+	nb, ok := reg.Get("work")
+	if !ok {
+		t.Fatal("no notebook work")
+	}
+	blobPath := filepath.Join(nb.Layout.Resources(), sha[:2], sha)
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blobPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := get(t, srv, "/n/work/resources/"+sha+"/verify", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyResource_invalidSHA(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	rec := get(t, srv, "/n/work/resources/not-a-sha/verify", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestVerifyResource_unknownNotebook(t *testing.T) {
+	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
+	rec := get(t, srv, "/n/nope/resources/"+strings.Repeat("a", 64)+"/verify", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
 func TestListResources(t *testing.T) {
 	srv := newTestServer(t, config.AuthNone, resourceFixture(t))
 	postResource(t, srv, "work", "a.txt", "text/plain", []byte("a"))

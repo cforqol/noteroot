@@ -721,23 +721,23 @@ describe('attach', () => {
     ]);
     items[1].click(); // opens the attachments manager modal
     await until(() => !$('attachments-modal').hidden, 'attachments modal open');
-    await until(() => qa('#attachments-grid .attach-card').length === 2, 'cards loaded');
+    await until(() => qa('#attachments-grid .attach-row').length === 2, 'rows loaded');
 
     // The search box filters by name.
     $('attachments-search').value = 'pic';
     $('attachments-search').dispatchEvent(new Event('input'));
-    expect(qa('#attachments-grid .attach-card').length).toBe(1);
+    expect(qa('#attachments-grid .attach-row').length).toBe(1);
     expect(q('#attachments-grid .attach-name').textContent).toBe('pic.png');
 
     // Clear the filter.
     $('attachments-search').value = '';
     $('attachments-search').dispatchEvent(new Event('input'));
-    await until(() => qa('#attachments-grid .attach-card').length === 2, 'all cards back');
+    await until(() => qa('#attachments-grid .attach-row').length === 2, 'all rows back');
 
     // "Insert into note" inserts the markdown embed and does not upload.
-    const picCard = [...qa('#attachments-grid .attach-card')]
+    const picRow = [...qa('#attachments-grid .attach-row')]
       .find((c) => c.querySelector('.attach-name').textContent === 'pic.png');
-    picCard.querySelector('button').click(); // first button is Insert into note
+    picRow.querySelector('.attach-actions button').click(); // first action button is Insert into note
     await until(() => $('editbody').value.includes(`/n/nb/resources/${'b'.repeat(64)}`), 'link inserted');
     expect($('editbody').value).toContain(`![pic.png](/n/nb/resources/${'b'.repeat(64)})`);
     expect(requests.some((r) => r.startsWith('POST /n/nb/resources?'))).toBe(false);

@@ -89,6 +89,48 @@ at 640×360 and shrinks with the reading column. Seeking works: resource
 serving honours HTTP byte ranges (`Range` → `206`). Images already render as
 resized thumbnails; links to other file types stay download links.
 
+**Manager**: Settings → *Attachments* → **Open manager…** lists every
+committed attachment as a scrollable, full-width row (not a fixed-width card
+grid, so long filenames no longer get clipped). Each row has, in order: a
+status icon, a thumbnail, name/mime/size/sha8, and its action buttons
+(**Insert**, **Open**, **Copy URL**, **References**, **Delete**).
+
+- The **status icon** is gray `○` (not yet verified this session), green `●`
+  (verified against its recorded hash), red `✕` (missing or corrupted), or
+  `?` (the verify request itself failed — network or server error, not a
+  statement about the file). Desktop gets a native tooltip; tapping a bad/`?`
+  icon toggles an inline text line instead, since touch has no reliable
+  hover.
+- **Verify…**, next to *Open manager…*, re-hashes every committed attachment
+  one at a time against the new `GET /n/{slug}/resources/{sha}/verify`
+  endpoint (below), driving a real `done/total (pct%)` progress bar — not a
+  simulated one — and ends with a summary toast. Results are cached in
+  memory per sha for the rest of the page session (cleared on reload) and
+  are what the status icons read; opening the manager alone does not verify
+  anything.
+- **References** expands an in-place panel listing every note that links to
+  the attachment, each as its own link — nothing is truncated even past 50
+  references. The panel itself scrolls (capped height) instead of growing,
+  so one heavily-referenced attachment doesn't push the rest of the list
+  off-screen. Clicking **References** again (now **Hide references**)
+  collapses it.
+
+**Broken attachment recovery**: in a rendered note (the main reader or the
+split pane), an `<img>` pointing at this notebook's own `/resources/{sha}`
+storage that fails to load gets an inline recovery card in place of a dead
+image icon, instead of silently failing, with two actions:
+
+- **Open attachment manager** — opens the manager pre-filtered to that sha.
+- **Replace…** — a file picker that uploads the chosen file as a new
+  resource, then rewrites every occurrence of the old sha in *this note's*
+  source to the new one and saves it. Resources are content-addressed, so
+  there is no in-place replace at a fixed URL; the rewrite is scoped to the
+  note that showed the broken image, not every note that links to the same
+  sha.
+
+An image whose `src` is not one of this notebook's own resources (an
+external URL, say) is left alone — no recovery card.
+
 ## Task-list checkboxes
 
 Task-list items in a note (`- [ ] …` / `- [x] …`) render as real interactive
@@ -227,6 +269,7 @@ Settings → *About*, read once from `GET /healthz` (`version` field;
 | `DELETE /n/{slug}/folder?path=` | — | 200 `{"path","trashed":[...]}`; 404 missing; 400 if the path is a note; drops the folder's decoration (and any descendants') |
 | `GET /n/{slug}/folder-prefs` | — | 200 `{"prefs": {"projects": {"emoji","color"}}}` — every folder's emoji/color, keyed by path |
 | `PUT /n/{slug}/folder-prefs` | `{"path","emoji","color"}` | 200 `{"path","emoji","color"}`; empty emoji and color clears the folder's decoration |
+| `GET /n/{slug}/resources/{sha}/verify` | — | 200 `{"sha","status":"ok"\|"missing"\|"corrupted","size"}`; re-hashes the stored blob and compares it to `sha` (the content-addressed key) — catches truncation/bit-rot that a mere existence check would miss |
 | `GET /n/{slug}/trash` | — | 200 `{"entries":[...],"retentionDays":N}`; each entry has `name,origPath,actor,sha,size,deletedAt,expiresAt`; `retentionDays` 0 = never, default 30, max 3650 |
 | `PUT /n/{slug}/trash/settings` | `{"retentionDays":N}` | 200 `{"retentionDays":N,"purged":M}`; shortens retention immediately, purges stale entries |
 | `POST /n/{slug}/trash/purge` | `?all=1` optional | 200 `{"purged":M}`; removes entries past their expiry; `?all=1` empties the entire trash |

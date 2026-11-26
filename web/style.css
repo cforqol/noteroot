@@ -858,6 +858,56 @@ article .wikilink.dead { color: var(--muted); text-decoration: underline dotted;
 .attach-refs a:hover { text-decoration: underline; }
 .attachments-empty { grid-column: 1 / -1; }
 
+/* Attachment manager: a scrollable list of rows (not a grid of cards) —
+   a fixed-width grid cell clipped long filenames and rendered badly at
+   odd widths; a full-width row lets the name wrap and only that row
+   grows, leaving the rest of the list's sizing untouched. */
+.attach-list { display: flex; flex-direction: column; gap: 6px; }
+.attach-row { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); overflow: hidden; }
+.attach-row-main { display: flex; align-items: center; gap: 10px; padding: 7px 9px; min-width: 0; }
+.attach-row .attach-thumb {
+  height: 44px; width: 44px; flex: none; border-radius: var(--radius-sm);
+}
+.attach-row .attach-meta { flex: 1; min-width: 0; padding: 0; }
+.attach-row .attach-name {
+  white-space: normal; overflow-wrap: anywhere; text-overflow: clip;
+}
+.attach-row .attach-actions { flex: none; padding: 0; }
+.attach-status {
+  flex: none; width: 18px; height: 18px; border-radius: 50%; cursor: default;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1;
+}
+.attach-status.unknown { background: var(--subtle); color: var(--muted); }
+.attach-status.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.attach-status.bad { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); cursor: pointer; }
+.attach-status.error { background: var(--subtle); color: var(--muted); cursor: pointer; }
+.attach-status-hint {
+  font-size: 11px; color: var(--danger); padding: 0 9px 8px; display: none;
+}
+.attach-status-hint.shown { display: block; }
+.attach-refs-list {
+  font-size: 11px; padding: 6px 9px; border-top: 1px solid var(--line); background: var(--subtle);
+  max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.attach-refs-list a { color: var(--accent); text-decoration: none; }
+.attach-refs-list a:hover { text-decoration: underline; }
+.attach-refs-count { font-weight: 500; color: var(--fg); margin-bottom: 2px; }
+
+/* --- attachment verify progress ---------------------------------------- */
+.verify-progress { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.verify-progress-bar { width: 160px; height: 8px; border-radius: 4px; background: var(--subtle); overflow: hidden; flex: none; }
+.verify-progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s var(--ease); }
+.verify-progress-text { font-size: 12px; color: var(--muted); }
+
+/* --- broken attachment recovery (inline, in a rendered note) ---------- */
+.broken-attachment {
+  border: 1px dashed var(--danger); border-radius: var(--radius); padding: 10px 12px;
+  margin: 6px 0; display: flex; flex-direction: column; gap: 6px; background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.broken-attachment-msg { font-size: 13px; color: var(--fg); }
+.broken-attachment-msg strong { color: var(--danger); }
+.broken-attachment-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* --- settings --------------------------------------------------------- */
 .settings-content { max-width: 840px; }
 .settings-layout { display: grid; grid-template-columns: 172px minmax(0, 1fr); min-height: 0; flex: 1; }

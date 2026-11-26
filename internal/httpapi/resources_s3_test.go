@@ -921,6 +921,7 @@ func TestS3_corruptStateDBReturns500(t *testing.T) {
 		{"GET", "/n/work/resources", "", ""},
 		{"GET", "/n/work/resources/stats", "", ""},
 		{"GET", "/n/work/resources/" + sha, "", ""},
+		{"GET", "/n/work/resources/" + sha + "/verify", "", ""},
 		{"GET", "/n/work/resources/" + sha + "/presign-read", "", ""},
 		{"DELETE", "/n/work/resources/" + sha, "", ""},
 		{"POST", "/n/work/resources/presign",

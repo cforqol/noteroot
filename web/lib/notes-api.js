@@ -409,6 +409,19 @@ export function deleteResource(slug, sha, f) {
 }
 
 /**
+ * Re-hash a stored blob and compare it to its sha (the content key):
+ * {sha, status: "ok" | "missing" | "corrupted", size}.
+ */
+export function verifyResource(slug, sha, f) {
+  return request('GET', `/n/${enc(slug)}/resources/${enc(sha)}/verify`, {}, f);
+}
+
+/** Vault-relative paths of every note that links to a resource. */
+export function listResourceRefs(slug, sha, f) {
+  return request('GET', `/n/${enc(slug)}/resources/${enc(sha)}/refs`, {}, f);
+}
+
+/**
  * Content-lock status for a path: {path, locked, unlocked, locks, exact?,
  * kind?, params}. `locked` is true when any lock covers the path;
  * `unlocked` is true when the current session has opened them all.

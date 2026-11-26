@@ -196,6 +196,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /n/{slug}/resources/{sha}/poster", nbAuth(s.posterResource))
 	mux.Handle("GET /n/{slug}/resources/{sha}/presign-read", nbAuth(s.presignRead))
 	mux.Handle("GET /n/{slug}/resources/{sha}/refs", nbAuth(s.listResourceRefs))
+	mux.Handle("GET /n/{slug}/resources/{sha}/verify", nbAuth(s.verifyResource))
 	mux.Handle("DELETE /n/{slug}/resources/{sha}", nbMutating(s.deleteResource))
 	mux.Handle("GET /n/{slug}/integrations/karakeep/bookmarks", nbAuth(s.listKarakeepBookmarks))
 
@@ -245,6 +246,7 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/thumb", s.bearer("resources", "read", qsha, s.thumbResource))
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/poster", s.bearer("resources", "read", qsha, s.posterResource))
 	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/refs", s.bearer("resources", "read", qsha, s.listResourceRefs))
+	mux.Handle("GET /api/v1/n/{slug}/resources/{sha}/verify", s.bearer("resources", "read", qsha, s.verifyResource))
 	mux.Handle("DELETE /api/v1/n/{slug}/resources/{sha}", s.bearer("resources", "write", qsha, s.deleteResource))
 	mux.Handle("GET /api/v1/n/{slug}/export", s.bearer("export", "read", qnone, s.exportNotebook))
 	mux.Handle("GET /api/v1/n/{slug}/note/export/archive", s.bearer("export", "read", qpath, s.exportNoteArchive))
