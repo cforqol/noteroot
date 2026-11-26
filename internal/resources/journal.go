@@ -425,6 +425,28 @@ func (j *Journal) CountByState() (map[string]int, error) {
 	return out, rows.Err()
 }
 
+// AdoptRecovered inserts a committed journal entry for a blob that
+// object storage still has but this journal does not — the gap a
+// state.db rebuild opens for a blob that was confirmed (Commit) before
+// the rebuild wiped the table. The original filename is not
+// recoverable from the object store alone, so the entry is recorded
+// under a synthetic name; mime is the generic fallback every unknown
+// upload already gets. Called at most once per sha per rebuild by the
+// caller (see httpapi's post-rebuild reconciliation), so no dedup
+// guard is needed here.
+func (j *Journal) AdoptRecovered(sha string, size int64) error {
+	id := newID()
+	now := time.Now().UnixMilli()
+	_, err := j.db.Exec(`
+		INSERT INTO upload_journal (id, filename, size, mime, sha, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, "recovered-"+sha[:12], size, "application/octet-stream", sha, StateCommitted, now, now)
+	if err != nil {
+		return fmt.Errorf("journal adopt recovered %s: %w", sha, err)
+	}
+	return nil
+}
+
 // LiveSHAs returns the set of SHAs a store sweep must never remove:
 // every blob with a committed journal entry. Soft-deleted entries are
 // not live — MarkDeleted exists precisely so a later GC can take the

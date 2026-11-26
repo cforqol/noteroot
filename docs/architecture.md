@@ -129,6 +129,22 @@ vault markdown, git history, state/index/platform DB files, or backups.
 manual trigger `POST /n/{slug}/resources/gc`; deletes unreferenced blobs
 past their grace period and returns removal counts.
 
+**Rebuild reconciliation (S3)** — `state.Open`'s rebuild of a corrupted
+`state.db` (ADR 0002) wipes the upload journal, the only local record of
+which blobs a notebook owns. When the resource store is S3-backed,
+`openResources` detects a rebuild just happened and runs
+`reconcileAfterRebuild`: scan the notebook's own vault markdown for
+`/n/{slug}/resources/{sha}` links (`referencedSHAs`), and for each
+referenced sha not already live in the journal, `HEAD` it against the
+bucket (`S3Store.Size`) and re-adopt it as a committed `upload_journal` row
+(`Journal.AdoptRecovered`) if the bucket still has it — otherwise a blob
+confirmed via presigned upload before the rebuild would look orphaned and
+be swept by the next GC pass despite still being linked from a note.
+Deliberately not a bucket-wide listing: every notebook shares one S3
+bucket via server-wide config, so a listing can't attribute an object to
+one notebook — the vault's own note links are the ownership signal
+instead. Runs at most meaningfully once per `state.db` rebuild.
+
 ## 7. Dedup
 
 Media: exact by `blob_sha`, notebook-scoped. Text: SimHash,
@@ -153,8 +169,8 @@ is held to 100 % Jest coverage:
 | `lib/stats.js` | word/char/paragraph/reading-time counts, row:col, human sizes, `describeStatus` |
 | `lib/tree.js` | counts per folder, tree status text, path validation (`cleanRelPath`, `resolveChild`) |
 | `lib/tree-view.js` | collapsible tree renderer: icons, colors, `[n]` badges, row actions, drag-and-drop note → folder |
-| `lib/prefs.js` | browser-local theme, tree placement, folder icon/color, collapsed state |
-| `lib/notes-api.js` | note/folder/trash HTTP client (CSRF-safe JSON types) |
+| `lib/prefs.js` | browser-local theme, tree placement, collapsed state |
+| `lib/notes-api.js` | note/folder/trash HTTP client (CSRF-safe JSON types), plus the server-side per-folder emoji/color (`getFolderPrefs`/`setFolderPref`) |
 | `lib/dialog.js` | promise-based form/confirm dialogs and context menu (no `window.prompt`) |
 | `lib/ui-plugins.js` | built-in UI plugin registry: per-notebook localStorage enable state, `syncUiPlugins` / `destroyAllUiPlugins` lifecycle |
 | `lib/plugins/html-renderer.js` | HTML renderer plugin: replaces ` ```html ` fenced blocks with sandboxed iframes on each `noteread` event |
@@ -162,7 +178,10 @@ is held to 100 % Jest coverage:
 | `lib/plugins/pomodoro.js` | Pomodoro timer plugin: floating three-row timer (phase buttons / SVG ring countdown / Start-Reset), configurable sound + widget-flash notifications, background running indicator on the top-bar button; lengths and notification flags read from / written to the plugin preference store |
 | `lib/upload.js` | Upload helpers: presigned direct-to-S3 request/confirm flow, video-resource extraction from rendered HTML, and recovery of the real filename for images pasted/dragged from a web page (`resolveAttachmentFilename`, from the paste/drop HTML's `<img src>`) when the browser only hands over a generic placeholder name |
 
-Preferences are per browser (`localStorage`), never server state. Layout is
+Most preferences are per browser (`localStorage`), never server state — the
+exception is per-folder emoji/color, which lives in `.notebook/folder-prefs.json`
+(notebook-scoped, not `state.db` — see ADR 0002), so it's consistent across
+browsers. Layout is
 CSS-only: `body[data-tree=left|right|hidden]` selects the grid, and below
 720 px the tree becomes an off-canvas drawer (`body.tree-open`). The status
 bar reads the textarea live; vim.wasm exposes no buffer, cursor or selection

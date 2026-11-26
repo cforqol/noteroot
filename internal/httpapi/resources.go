@@ -50,11 +50,14 @@ func (s *Server) openResources(ctx context.Context, nb *notebooks.Notebook) (
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open store: %w", err)
 	}
-	db, _, err := state.Open(ctx, nb.Layout.StateDB())
+	db, rebuilt, err := state.Open(ctx, nb.Layout.StateDB())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open state: %w", err)
 	}
 	journal := resources.NewJournal(db.DB)
+	if rebuilt {
+		s.reconcileAfterRebuild(ctx, nb, journal, store)
+	}
 	cleanup := func() { _ = db.Close() }
 	return store, journal, cleanup, nil
 }

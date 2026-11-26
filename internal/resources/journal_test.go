@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -518,5 +519,50 @@ func TestLiveSHAs_emptyJournal(t *testing.T) {
 	}
 	if len(live) != 0 {
 		t.Errorf("live = %v, want empty", live)
+	}
+}
+
+// AdoptRecovered is what a post-rebuild reconciliation uses to close
+// the gap: the journal was wiped, but the blob is still in the store.
+func TestAdoptRecovered_insertsCommittedEntry(t *testing.T) {
+	j := newTestJournal(t)
+	sha := strings.Repeat("3", 63) + "a"
+
+	if err := j.AdoptRecovered(sha, 2048); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err := j.LiveSHAs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live[sha] {
+		t.Errorf("live = %v, want it to contain the recovered sha", live)
+	}
+
+	entries, err := j.List(StateCommitted, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].SHA != sha || entries[0].Size != 2048 {
+		t.Errorf("entries = %+v", entries)
+	}
+	if entries[0].MIME != "application/octet-stream" {
+		t.Errorf("mime = %q, want the generic fallback", entries[0].MIME)
+	}
+}
+
+func TestAdoptRecovered_countsTowardTotalStoredBytes(t *testing.T) {
+	j := newTestJournal(t)
+	sha := strings.Repeat("4", 63) + "b"
+	if err := j.AdoptRecovered(sha, 512); err != nil {
+		t.Fatal(err)
+	}
+	total, err := j.TotalStoredBytes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 512 {
+		t.Errorf("TotalStoredBytes() = %d, want 512", total)
 	}
 }

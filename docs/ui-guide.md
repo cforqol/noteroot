@@ -1,7 +1,9 @@
 # Workspace UI guide
 
-How the browser UI behaves. Everything here is per browser: preferences live
-in `localStorage` and are never sent to the server.
+How the browser UI behaves. Most of what follows is per browser: preferences
+live in `localStorage` and are never sent to the server. The exception is
+per-folder emoji/color (see Sidebar, below), which is notebook-scoped server
+state, not a browser preference.
 
 ## Sidebar
 
@@ -12,11 +14,15 @@ in `localStorage` and are never sent to the server.
   `N notes · M folders` for the whole notebook.
 - **Icon and name color** are assigned by you: ⋯ (or right-click) →
   *Icon & color…*. Unset folders show 📁 / 📂 by state. *Reset* clears both.
-  Decorations follow a folder when you rename or move it and are forgotten
-  when you delete it.  The picker shows ~300 icons split across 10 named
-  category tabs (Files, Docs, Work, Tech, Creative, Life, Fitness, Travel,
-  Nature, Symbols) plus an *All* tab. A filter input above the tabs narrows
-  the grid as you type.
+  Decorations are stored server-side, per notebook (`GET`/`PUT
+  /n/{slug}/folder-prefs`, in `.notebook/folder-prefs.json` — not a
+  `state.db` table, since that data has no vault-derived source and the
+  rebuild path wipes anything that isn't reconstructible), so the same
+  decoration shows in every browser. Decorations follow a folder when you
+  rename or move it and are dropped when you delete it. The picker shows
+  ~300 icons split across 10 named category tabs (Files, Docs, Work, Tech,
+  Creative, Life, Fitness, Travel, Nature, Symbols) plus an *All* tab. A
+  filter input above the tabs narrows the grid as you type.
 - The folder you last clicked is underlined and is where **+ Note** and
   **+ Folder** create things; otherwise they use the open note's folder, then
   the notebook root.
@@ -174,7 +180,6 @@ per notebook in the browser (`nr.homepage`).
 |---|---|
 | `nr.theme` | `auto` / `light` / `dark` / `solarized-light` / `solarized-dark` |
 | `nr.treePlacement`, `nr.treeLast` | `left` / `right` / `hidden`, and the last visible side |
-| `nr.folderDeco` | `{notebook: {folder: {emoji, color}}}` |
 | `nr.treeCollapsed` | `{notebook: [collapsed folders]}` |
 | `nr.homepage` | `{notebook: note path}` — the start page, if any |
 | `nr.editorPref`, `nr.vimMode` | editor preference and the Vim circuit breaker |
@@ -218,8 +223,10 @@ Settings → *About*, read once from `GET /healthz` (`version` field;
 | Route | Body / query | Result |
 |---|---|---|
 | `POST /n/{slug}/folder` | `{"path"}` | 201; 409 if it exists; 400 for hidden / `.md` / invalid names |
-| `PATCH /n/{slug}/folder` | `{"from","to"}` | 200; 404 missing source; 409 destination exists or into itself; 400 if the source is a note |
-| `DELETE /n/{slug}/folder?path=` | — | 200 `{"path","trashed":[...]}`; 404 missing; 400 if the path is a note |
+| `PATCH /n/{slug}/folder` | `{"from","to"}` | 200; 404 missing source; 409 destination exists or into itself; 400 if the source is a note; moves the folder's decoration (and any descendants') to the new path too |
+| `DELETE /n/{slug}/folder?path=` | — | 200 `{"path","trashed":[...]}`; 404 missing; 400 if the path is a note; drops the folder's decoration (and any descendants') |
+| `GET /n/{slug}/folder-prefs` | — | 200 `{"prefs": {"projects": {"emoji","color"}}}` — every folder's emoji/color, keyed by path |
+| `PUT /n/{slug}/folder-prefs` | `{"path","emoji","color"}` | 200 `{"path","emoji","color"}`; empty emoji and color clears the folder's decoration |
 | `GET /n/{slug}/trash` | — | 200 `{"entries":[...],"retentionDays":N}`; each entry has `name,origPath,actor,sha,size,deletedAt,expiresAt`; `retentionDays` 0 = never, default 30, max 3650 |
 | `PUT /n/{slug}/trash/settings` | `{"retentionDays":N}` | 200 `{"retentionDays":N,"purged":M}`; shortens retention immediately, purges stale entries |
 | `POST /n/{slug}/trash/purge` | `?all=1` optional | 200 `{"purged":M}`; removes entries past their expiry; `?all=1` empties the entire trash |
@@ -237,6 +244,5 @@ Notebook CRUD also lives in the notebook selector as pseudo-options (**＋ New n
 - **Delete confirmation dialog**: The delete operation lacks a warning/confirm dialog showing the number of folders and notes that will be affected. This would improve safety for bulk operations.
 - **Vim viewport offset**: The Vim edit window may need a slight bottom offset so the top few lines are not cut off on certain viewports. This requires CSS adjustments to `#vim-container` or the Vim drawing logic.
 - **Modified note re-edit**: When a note is modified and the user navigates to another note and back, the note cannot be edited again until the page is refreshed. This is a state management issue that needs fixing.
-- **Folder icon decorations server-side**: Icon/color decorations are currently browser-local (`localStorage`). Future work would sync them through the server so the same decoration appears across browsers.
 - **Calendar reminders**: The calendar widget is display-only. Integration with a reminder or alarm system (e.g. a Lua hook that fires before an event) is deferred.
 - **Pomodoro session count**: Phase lengths are saved in your plugin preferences and survive a restart; the session completed count still resets on page reload. A server-side or localStorage-backed counter would preserve it across sessions.
