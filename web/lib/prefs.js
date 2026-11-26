@@ -1,7 +1,11 @@
 /**
  * Per-browser UI preferences (localStorage): theme, tree placement,
- * user-assigned folder icons/colors, collapsed-folder state, the general
- * settings registry, status-bar fields, first-run help and drafts.
+ * collapsed-folder state, the general settings registry, status-bar
+ * fields, first-run help and drafts.
+ *
+ * Per-folder emoji/color lives server-side (lib/notes-api.js
+ * getFolderPrefs/setFolderPref) so it follows the user across
+ * browsers — only the collapsed-folder set stays here.
  *
  * Storage is injectable and every access is guarded: quota errors,
  * privacy mode and corrupt JSON degrade to defaults, never throw.
@@ -13,7 +17,6 @@ export const PLACEMENTS = ['left', 'right', 'hidden'];
 const K_THEME = 'nr.theme';
 const K_PLACE = 'nr.treePlacement';
 const K_LAST = 'nr.treeLast';
-const K_DECO = 'nr.folderDeco';
 const K_COLLAPSED = 'nr.treeCollapsed';
 
 function defaultStorage() {
@@ -113,35 +116,12 @@ export function applyPlacement(placement, doc = document) {
   doc.body.dataset.tree = PLACEMENTS.includes(placement) ? placement : 'left';
 }
 
-// --- folder decorations ------------------------------------------------
-
-const COLOR = /^#[0-9a-fA-F]{6}$/;
-const MAX_EMOJI = 16;
-
-function cleanDeco({ emoji = '', color = '' } = {}) {
-  return {
-    emoji: String(emoji).trim().slice(0, MAX_EMOJI),
-    color: COLOR.test(color) ? color.toLowerCase() : '',
-  };
-}
-
-/** {folderPath: {emoji, color}} for one notebook. */
-export function getDecorations(slug, storage = defaultStorage()) {
-  const all = readJSON(K_DECO, storage);
-  return all[slug] && typeof all[slug] === 'object' ? all[slug] : {};
-}
-
-/** Set (or, when both parts are empty, clear) a folder's icon and color. */
-export function setDecoration(slug, folder, deco, storage = defaultStorage()) {
-  const all = readJSON(K_DECO, storage);
-  const mine = { ...(all[slug] || {}) };
-  const d = cleanDeco(deco);
-  if (d.emoji || d.color) mine[folder] = d;
-  else delete mine[folder];
-  all[slug] = mine;
-  writeJSON(K_DECO, all, storage);
-  return d;
-}
+// --- folder tree state (local only) -------------------------------------
+//
+// Folder emoji/color decorations themselves are not here: they are
+// server-side state (lib/notes-api.js), so every browser sees the same
+// value. Only the collapsed-folder set — a per-browser view
+// preference — is rekeyed/dropped here on a folder rename or delete.
 
 /** Re-key `map` so entries at or under `from` move under `to`. */
 function rekey(map, from, to) {
@@ -154,19 +134,8 @@ function rekey(map, from, to) {
   return out;
 }
 
-function drop(map, folder) {
-  const out = {};
-  for (const [k, v] of Object.entries(map)) {
-    if (k !== folder && !k.startsWith(`${folder}/`)) out[k] = v;
-  }
-  return out;
-}
-
-/** A folder was renamed or moved: carry its decorations (and children's) along. */
+/** A folder was renamed or moved: carry its collapsed state along. */
 export function moveFolderPrefs(slug, from, to, storage = defaultStorage()) {
-  const deco = readJSON(K_DECO, storage);
-  if (deco[slug]) deco[slug] = rekey(deco[slug], from, to);
-  writeJSON(K_DECO, deco, storage);
   const col = readJSON(K_COLLAPSED, storage);
   if (Array.isArray(col[slug])) {
     col[slug] = Object.keys(rekey(Object.fromEntries(col[slug].map((p) => [p, 1])), from, to));
@@ -174,11 +143,8 @@ export function moveFolderPrefs(slug, from, to, storage = defaultStorage()) {
   writeJSON(K_COLLAPSED, col, storage);
 }
 
-/** A folder was deleted: forget its decorations and collapsed state. */
+/** A folder was deleted: forget its collapsed state. */
 export function removeFolderPrefs(slug, folder, storage = defaultStorage()) {
-  const deco = readJSON(K_DECO, storage);
-  if (deco[slug]) deco[slug] = drop(deco[slug], folder);
-  writeJSON(K_DECO, deco, storage);
   const col = readJSON(K_COLLAPSED, storage);
   if (Array.isArray(col[slug])) {
     col[slug] = col[slug].filter((p) => p !== folder && !p.startsWith(`${folder}/`));
@@ -724,7 +690,7 @@ export function toggleBookmark(slug, path, storage = defaultStorage()) {
  * write these keys.
  */
 const PREF_KEYS = [
-  K_THEME, K_PLACE, K_LAST, K_DECO, K_COLLAPSED, K_HOMEPAGE, K_STATUS, K_HELP,
+  K_THEME, K_PLACE, K_LAST, K_COLLAPSED, K_HOMEPAGE, K_STATUS, K_HELP,
   K_KEYBINDINGS, K_TEMPLATES,
   'nr.editorPref', 'nr.vimMode', 'nr.bookmarks', 'nr.vimrc',
   ...Object.values(SETTINGS).map((s) => s.key),

@@ -52,7 +52,7 @@ import {
 import {
   getTheme, setTheme, nextTheme, applyTheme as applyUserTheme,
   getPlacement, setPlacement, togglePlacement, applyPlacement,
-  getDecorations, setDecoration, getCollapsed, setCollapsed, replaceCollapsed,
+  getCollapsed, setCollapsed, replaceCollapsed,
   moveFolderPrefs, removeFolderPrefs,
   getHomepage, setHomepage,
   getSetting, setSetting, getSettings, STATUS_FIELDS, getStatusFields, setStatusField,
@@ -776,7 +776,7 @@ function drawTree() {
         await notesApi.moveFolder(slug, folderPath, t.path);
         moveFolderPrefs(slug, folderPath, t.path);
         collapsed = getCollapsed(slug);
-        decorations = getDecorations(slug);
+        decorations = await notesApi.getFolderPrefs(slug);
         if (selectedFolder && isWithin(selectedFolder, folderPath)) selectedFolder = t.path + selectedFolder.slice(folderPath.length);
         followMove(folderPath, t.path, true);
         ensureExpanded(t.path);
@@ -2029,7 +2029,7 @@ async function loadTree(s) {
   multiSelected = new Set();
   multiAnchor = null;
   collapsed = getCollapsed(s);
-  decorations = getDecorations(s);
+  decorations = await notesApi.getFolderPrefs(s);
   setStatus("Read", { text: null });
   showNoSelection();
   // Reset lock state so drawTree() shows the correct placeholder for the
@@ -4135,7 +4135,7 @@ async function actionRename(node) {
       await notesApi.moveFolder(slug, node.path, t.path);
       moveFolderPrefs(slug, node.path, t.path);
       collapsed = getCollapsed(slug);
-      decorations = getDecorations(slug);
+      decorations = await notesApi.getFolderPrefs(slug);
       if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = t.path + selectedFolder.slice(node.path.length);
     } else {
       await notesApi.moveNote(slug, node.path, t.path);
@@ -4211,7 +4211,7 @@ async function actionMove(node) {
       await notesApi.moveFolder(slug, node.path, t.path);
       moveFolderPrefs(slug, node.path, t.path);
       collapsed = getCollapsed(slug);
-      decorations = getDecorations(slug);
+      decorations = await notesApi.getFolderPrefs(slug);
       if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = t.path + selectedFolder.slice(node.path.length);
     } else {
       await notesApi.moveNote(slug, node.path, t.path);
@@ -4240,7 +4240,7 @@ async function actionDelete(node) {
       await notesApi.deleteFolder(slug, node.path);
       removeFolderPrefs(slug, node.path);
       collapsed = getCollapsed(slug);
-      decorations = getDecorations(slug);
+      decorations = await notesApi.getFolderPrefs(slug);
       if (selectedFolder && isWithin(selectedFolder, node.path)) selectedFolder = null;
     } else {
       await notesApi.deleteNote(slug, node.path);
@@ -4376,7 +4376,7 @@ async function actionDecorate(node) {
 
   const pending = formDialog({
     title: `Icon & color — ${baseName(node.path)}`,
-    message: "Shown in this browser only.",
+    message: "Shared with anyone who opens this notebook.",
     extra,
     okLabel: "Save",
     actions: [{ label: "Reset", name: "reset" }],
@@ -4385,9 +4385,11 @@ async function actionDecorate(node) {
   const r = await pending;
   if (!r) return;
   const deco = r.__action === "reset" ? {} : { emoji: icon, color: useColor.checked ? color.value : "" };
-  setDecoration(slug, node.path, deco);
-  decorations = getDecorations(slug);
-  drawTree();
+  await guarded(async () => {
+    await notesApi.setFolderPref(slug, node.path, deco);
+    decorations = await notesApi.getFolderPrefs(slug);
+    drawTree();
+  });
 }
 
 function showNodeMenu(node, x, y) {

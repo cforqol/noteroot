@@ -136,6 +136,8 @@ func New(cfg config.Config, log *slog.Logger, reg *notebooks.Registry) *Server {
 	mux.Handle("POST /n/{slug}/folder", nbMutating(s.createFolder))
 	mux.Handle("PATCH /n/{slug}/folder", nbMutating(s.moveFolder))
 	mux.Handle("DELETE /n/{slug}/folder", nbMutating(s.deleteFolder))
+	mux.Handle("GET /n/{slug}/folder-prefs", nbAuth(s.listFolderPrefs))
+	mux.Handle("PUT /n/{slug}/folder-prefs", nbMutating(s.setFolderPref))
 	mux.Handle("POST /n/{slug}/trash/restore", nbMutating(s.restoreTrash))
 	mux.Handle("POST /n/{slug}/trash/restore-folder", nbMutating(s.restoreTrashFolder))
 	mux.Handle("DELETE /n/{slug}/trash", nbMutating(s.deleteTrashEntry))

@@ -19,6 +19,12 @@ const (
 	StateDB         = "state.db"
 	IndexDB         = "index.db"
 	PlatformDB      = "platform.db"
+
+	// FolderPrefsFile holds the per-folder emoji/color a user assigns
+	// from the sidebar. It is deliberately not a state.db table: that
+	// data has no vault-derived source, and state.db's rebuild path
+	// (ADR 0002) wipes everything that isn't reconstructible.
+	FolderPrefsFile = "folder-prefs.json"
 )
 
 const (
@@ -30,19 +36,20 @@ type Layout struct{ root string }
 
 func NewLayout(root string) Layout { return Layout{root: root} }
 
-func (l Layout) Root() string       { return l.root }
-func (l Layout) Manifest() string   { return filepath.Join(l.root, ManifestFile) }
-func (l Layout) Vault() string      { return filepath.Join(l.root, VaultDir) }
-func (l Layout) App() string        { return filepath.Join(l.root, AppDir) }
-func (l Layout) Resources() string  { return filepath.Join(l.root, AppDir, ResourcesDir) }
-func (l Layout) Cache() string      { return filepath.Join(l.root, AppDir, CacheDir) }
-func (l Layout) Drafts() string     { return filepath.Join(l.root, AppDir, DraftsDir) }
-func (l Layout) Trash() string      { return filepath.Join(l.root, AppDir, TrashDir) }
-func (l Layout) StateDB() string    { return filepath.Join(l.root, AppDir, StateDB) }
-func (l Layout) IndexDB() string    { return filepath.Join(l.root, AppDir, IndexDB) }
-func (l Layout) PlatformDB() string { return filepath.Join(l.root, AppDir, PlatformDB) }
-func (l Layout) Backups() string    { return filepath.Join(l.root, AppDir, BackupsDir) }
-func (l Layout) Plugins() string    { return filepath.Join(l.root, AppDir, PluginsDir) }
+func (l Layout) Root() string        { return l.root }
+func (l Layout) Manifest() string    { return filepath.Join(l.root, ManifestFile) }
+func (l Layout) Vault() string       { return filepath.Join(l.root, VaultDir) }
+func (l Layout) App() string         { return filepath.Join(l.root, AppDir) }
+func (l Layout) Resources() string   { return filepath.Join(l.root, AppDir, ResourcesDir) }
+func (l Layout) Cache() string       { return filepath.Join(l.root, AppDir, CacheDir) }
+func (l Layout) Drafts() string      { return filepath.Join(l.root, AppDir, DraftsDir) }
+func (l Layout) Trash() string       { return filepath.Join(l.root, AppDir, TrashDir) }
+func (l Layout) StateDB() string     { return filepath.Join(l.root, AppDir, StateDB) }
+func (l Layout) IndexDB() string     { return filepath.Join(l.root, AppDir, IndexDB) }
+func (l Layout) PlatformDB() string  { return filepath.Join(l.root, AppDir, PlatformDB) }
+func (l Layout) Backups() string     { return filepath.Join(l.root, AppDir, BackupsDir) }
+func (l Layout) Plugins() string     { return filepath.Join(l.root, AppDir, PluginsDir) }
+func (l Layout) FolderPrefs() string { return filepath.Join(l.root, AppDir, FolderPrefsFile) }
 
 // Transfers holds in-progress resumable import/export job state
 // (staged upload bytes, built-but-undownloaded export archives). Nothing

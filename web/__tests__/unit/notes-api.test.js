@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import {
   getTree, createNote, deleteNote, moveNote, createFolder, moveFolder,
-  deleteFolder, listTrash, restoreTrash, getNote, getSource, getRaw,
+  deleteFolder, getFolderPrefs, setFolderPref, listTrash, restoreTrash, getNote, getSource, getRaw,
   deleteTrashEntry, setTrashRetention, purgeTrash,
   restoreTrashFolder, deleteTrashFolder,
   saveNote, exportNotebook, exportSelection, importNotebook, createBackup, resourceStats,
@@ -90,6 +90,38 @@ test('deleteFolder uses the path query', async () => {
   await deleteFolder('nb', 'a b', f);
   expect(f.calls[0].url).toBe('/n/nb/folder?path=a%20b');
   expect(f.calls[0].init.method).toBe('DELETE');
+});
+
+describe('folder prefs (server-side icon/color)', () => {
+  test('getFolderPrefs GETs and unwraps prefs, defaulting to {}', async () => {
+    const f = mockFetch([
+      { status: 200, body: { prefs: { work: { emoji: '💼', color: '#aabbcc' } } } },
+      { status: 200, body: {} },
+    ]);
+    expect(await getFolderPrefs('my nb', f)).toEqual({ work: { emoji: '💼', color: '#aabbcc' } });
+    expect(f.calls[0].url).toBe('/n/my%20nb/folder-prefs');
+    expect(f.calls[0].init.method).toBe('GET');
+    expect(await getFolderPrefs('nb', f)).toEqual({});
+  });
+
+  test('setFolderPref PUTs path/emoji/color as JSON, defaulting unset parts', async () => {
+    const f = mockFetch([{ status: 200, body: {} }, { status: 200, body: {} }]);
+    await setFolderPref('nb', 'work', { emoji: '💼', color: '#aabbcc' }, f);
+    expect(f.calls[0].url).toBe('/n/nb/folder-prefs');
+    expect(f.calls[0].init.method).toBe('PUT');
+    expect(f.calls[0].init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(f.calls[0].init.body)).toEqual({ path: 'work', emoji: '💼', color: '#aabbcc' });
+
+    await setFolderPref('nb', 'work', {}, f); // clearing: no emoji/color given
+    expect(JSON.parse(f.calls[1].init.body)).toEqual({ path: 'work', emoji: '', color: '' });
+  });
+
+  test('setFolderPref surfaces a server error', async () => {
+    const f = mockFetch([{ status: 400, body: { error: 'path is required' } }]);
+    await expect(setFolderPref('nb', '', { emoji: 'x' }, f)).rejects.toMatchObject({
+      status: 400, message: 'path is required',
+    });
+  });
 });
 
 test('listTrash returns entries with the notebook retention', async () => {
@@ -350,6 +382,8 @@ test('every client falls back to the global fetch and default options', async ()
     await createFolder('nb', 'f');
     await moveFolder('nb', 'f', 'g');
     await deleteFolder('nb', 'f');
+    await getFolderPrefs('nb');
+    await setFolderPref('nb', 'f', { emoji: 'x' });
     await listTrash('nb');
     await deleteTrashEntry('nb', 'x.md');
     await setTrashRetention('nb', 7);

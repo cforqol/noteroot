@@ -138,6 +138,24 @@ export function deleteFolder(slug, path, f) {
 }
 
 /**
+ * {folderPath: {emoji, color}} for every folder with a user-assigned
+ * icon/color — the notebook's own server-side state, so it follows
+ * the user to any browser or device.
+ */
+export async function getFolderPrefs(slug, f) {
+  const data = await request('GET', `/n/${enc(slug)}/folder-prefs`, {}, f);
+  return data.prefs || {};
+}
+
+/** Set (or, when both parts are empty, clear) a folder's icon and color. */
+export function setFolderPref(slug, path, { emoji = '', color = '' } = {}, f) {
+  return request('PUT', `/n/${enc(slug)}/folder-prefs`, {
+    headers: JSON_TYPE,
+    body: JSON.stringify({ path, emoji, color }),
+  }, f);
+}
+
+/**
  * The trash: `{entries, retentionDays}`. `retentionDays` is 0 when the
  * notebook never purges automatically; each entry then has no
  * `expiresAt`.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"noteroot/internal/folderprefs"
 	"noteroot/internal/git"
 	"noteroot/internal/notebooks"
 	"noteroot/internal/state"
@@ -109,6 +110,10 @@ func (s *Server) moveFolder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renameIdentityPrefix(r, nb, req.From, req.To)
+	if err := folderprefs.RenamePrefix(nb.Layout.FolderPrefs(), req.From, req.To); err != nil {
+		s.log.Warn("folder move: folder-prefs rename failed",
+			"notebook", nb.Manifest.Slug, "from", req.From, "to", req.To, "err", err)
+	}
 	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "move", Path: req.To, Actor: actorFrom(r)})
 	s.emit(r, nb, "folder.rename", req.To, map[string]any{"from": req.From})
@@ -170,6 +175,9 @@ func (s *Server) deleteFolder(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("folder delete: remove failed", "notebook", nb.Manifest.Slug, "path", rel, "err", err)
 	}
 
+	if err := folderprefs.DeletePrefix(nb.Layout.FolderPrefs(), rel); err != nil {
+		s.log.Warn("folder delete: folder-prefs cleanup failed", "notebook", nb.Manifest.Slug, "path", rel, "err", err)
+	}
 	s.reindex(r.Context(), nb, v)
 	s.markGitDirty(nb, git.Op{Action: "delete", Path: rel, Actor: actor})
 	names := make([]string, 0, len(entries))

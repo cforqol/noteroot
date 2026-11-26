@@ -1,7 +1,7 @@
 import {
   THEMES, PLACEMENTS, getTheme, setTheme, nextTheme, applyTheme,
   getPlacement, setPlacement, togglePlacement, applyPlacement,
-  getDecorations, setDecoration, moveFolderPrefs, removeFolderPrefs,
+  moveFolderPrefs, removeFolderPrefs,
   getCollapsed, setCollapsed, replaceCollapsed,
   getHomepage, setHomepage,
   SETTINGS, getSetting, setSetting, getSettings,
@@ -83,41 +83,12 @@ describe('tree placement', () => {
   });
 });
 
-describe('folder decorations', () => {
-  test('set / get / sanitise / clear', () => {
-    expect(getDecorations('nb')).toEqual({});
-    expect(setDecoration('nb', 'work', { emoji: ' 💼 ', color: '#AABBCC' })).toEqual({ emoji: '💼', color: '#aabbcc' });
-    expect(getDecorations('nb')).toEqual({ work: { emoji: '💼', color: '#aabbcc' } });
-    expect(setDecoration('nb', 'work', { emoji: 'x'.repeat(40), color: 'red; background:url(x)' }).emoji).toHaveLength(16);
-    expect(getDecorations('nb').work.color).toBe('');
-    setDecoration('nb', 'work', {});
-    expect(getDecorations('nb')).toEqual({});
-    setDecoration('nb', 'other', undefined);
-    expect(getDecorations('nb')).toEqual({});
-  });
-  test('notebooks are independent; corrupt storage is tolerated', () => {
-    setDecoration('a', 'f', { emoji: '1' });
-    expect(getDecorations('b')).toEqual({});
-    localStorage.setItem('nr.folderDeco', '{not json');
-    expect(getDecorations('a')).toEqual({});
-    localStorage.setItem('nr.folderDeco', '[1,2]');
-    expect(getDecorations('a')).toEqual({});
-    localStorage.setItem('nr.folderDeco', JSON.stringify({ a: 'oops' }));
-    expect(getDecorations('a')).toEqual({});
-  });
+describe('folder tree state (collapsed set follows rename/delete)', () => {
   test('moveFolderPrefs carries a folder and its children', () => {
-    setDecoration('nb', 'old', { emoji: 'O' });
-    setDecoration('nb', 'old/sub', { emoji: 'S' });
-    setDecoration('nb', 'older', { emoji: 'X' });
     setCollapsed('nb', 'old', true);
     setCollapsed('nb', 'old/sub', true);
     setCollapsed('nb', 'keep', true);
     moveFolderPrefs('nb', 'old', 'new/place');
-    expect(getDecorations('nb')).toEqual({
-      'new/place': { emoji: 'O', color: '' },
-      'new/place/sub': { emoji: 'S', color: '' },
-      older: { emoji: 'X', color: '' },
-    });
     expect([...getCollapsed('nb')].sort()).toEqual(['keep', 'new/place', 'new/place/sub']);
   });
   test('moveFolderPrefs / removeFolderPrefs on a notebook with no data', () => {
@@ -125,14 +96,10 @@ describe('folder decorations', () => {
     expect(() => removeFolderPrefs('none', 'a')).not.toThrow();
   });
   test('removeFolderPrefs drops a folder subtree only', () => {
-    setDecoration('nb', 'gone', { emoji: 'G' });
-    setDecoration('nb', 'gone/child', { emoji: 'C' });
-    setDecoration('nb', 'gone2', { emoji: 'K' });
     setCollapsed('nb', 'gone', true);
     setCollapsed('nb', 'gone/child', true);
     setCollapsed('nb', 'gone2', true);
     removeFolderPrefs('nb', 'gone');
-    expect(Object.keys(getDecorations('nb'))).toEqual(['gone2']);
     expect([...getCollapsed('nb')]).toEqual(['gone2']);
   });
 });
@@ -181,7 +148,6 @@ test('inaccessible localStorage falls back to defaults without throwing', () => 
     });
     expect(getTheme()).toBe('auto');
     expect(getPlacement()).toBe('left');
-    expect(getDecorations('nb')).toEqual({});
     expect(getCollapsed('nb').size).toBe(0);
     expect(() => setTheme('dark')).not.toThrow();
   } finally {
@@ -284,13 +250,12 @@ describe('first-run help flag', () => {
 });
 
 describe('resetPreferences', () => {
-  test('drops appearance/editor/status prefs but keeps decorations, collapsed, drafts and help', () => {
+  test('drops appearance/editor/status prefs but keeps collapsed, drafts and help', () => {
     setTheme('dark');
     setPlacement('right');
     setStatusField('words', false);
     setSetting('fontSize', 'large');
     setCollapsed('nb', 'a', true);
-    setDecoration('nb', 'f', { emoji: 'E' });
     markHelpSeen();
     localStorage.setItem('nr.pad.s.nb.a.md', JSON.stringify({ savedAt: 1, content: 'x' }));
 
@@ -301,7 +266,6 @@ describe('resetPreferences', () => {
     expect(getStatusFields().words).toBe(true);
     expect(getSetting('fontSize')).toBe('medium');
     expect(isHelpSeen()).toBe(true);
-    expect(getDecorations('nb').f).toEqual({ emoji: 'E', color: '' });
     expect([...getCollapsed('nb')]).toEqual(['a']);
     expect(listDrafts()).toHaveLength(1);
   });

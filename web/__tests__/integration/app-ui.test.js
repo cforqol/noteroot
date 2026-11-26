@@ -22,6 +22,7 @@ const notes = new Map([
   ['work/deep/x.md', 'x'],
 ]);
 const folders = new Set(['work', 'work/deep', 'empty']);
+const folderPrefs = new Map(); // path -> {emoji, color}, the server-side store
 const trash = [];
 const requests = [];
 // Git history for welcome.md, newest first, as the server would report it.
@@ -131,6 +132,13 @@ async function fakeFetch(url, init = {}) {
       for (const n of [...notes.keys()]) {
         if (n.startsWith(`${body.from}/`)) { notes.set(body.to + n.slice(body.from.length), notes.get(n)); notes.delete(n); }
       }
+      for (const k of [...folderPrefs.keys()]) {
+        if (k === body.from || k.startsWith(`${body.from}/`)) {
+          const v = folderPrefs.get(k);
+          folderPrefs.delete(k);
+          folderPrefs.set(body.to + k.slice(body.from.length), v);
+        }
+      }
       return respond(200, body);
     }
     case 'DELETE /n/nb/folder':
@@ -138,7 +146,14 @@ async function fakeFetch(url, init = {}) {
         if (n.startsWith(`${p}/`)) { trash.push({ name: `t-${trash.length}`, origPath: n, deletedAt: 1700000000 }); notes.delete(n); }
       }
       for (const d of [...folders]) if (d === p || d.startsWith(`${p}/`)) folders.delete(d);
+      for (const k of [...folderPrefs.keys()]) if (k === p || k.startsWith(`${p}/`)) folderPrefs.delete(k);
       return respond(200, { path: p, trashed: [] });
+    case 'GET /n/nb/folder-prefs':
+      return respond(200, { prefs: Object.fromEntries(folderPrefs) });
+    case 'PUT /n/nb/folder-prefs':
+      if (body.emoji || body.color) folderPrefs.set(body.path, { emoji: body.emoji || '', color: body.color || '' });
+      else folderPrefs.delete(body.path);
+      return respond(200, body);
     case 'GET /n/nb/trash':
       return respond(200, {
         entries: trash.map((t) => (retention > 0
@@ -428,14 +443,15 @@ describe('CRUD', () => {
     expect(notes.has('work/plan2.md')).toBe(false);
   });
 
-  test('folder icon & color are user-assigned, stored locally and rendered', async () => {
+  test('folder icon & color are user-assigned, stored server-side and rendered', async () => {
     await menuAction('empty', 'Icon & color…');
     await until(() => q('.icon-choice[data-icon="🌱"]'), 'icon picker');
     q('.icon-choice[data-icon="🌱"]').click();
     await submitDialog({ useColor: true, color: '#00ff00' });
     await until(() => node('empty').querySelector('.icon').textContent === '🌱', 'icon');
     expect(node('empty').querySelector('.label').style.color).toBe('rgb(0, 255, 0)');
-    expect(JSON.parse(localStorage.getItem('nr.folderDeco')).nb.empty).toEqual({ emoji: '🌱', color: '#00ff00' });
+    expect(folderPrefs.get('empty')).toEqual({ emoji: '🌱', color: '#00ff00' });
+    expect(localStorage.getItem('nr.folderDeco')).toBeNull();
 
     // Reset clears both.
     await menuAction('empty', 'Icon & color…');
