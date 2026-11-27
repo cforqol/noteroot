@@ -80,3 +80,53 @@ export function retentionChoices(current) {
   return [...RETENTION_CHOICES, { value: n, label: `After ${n} days` }]
     .sort((a, b) => a.value - b.value);
 }
+
+/**
+ * Days left before a trashed note is purged, rounded up like
+ * describeExpiry(). null when the notebook never purges or the entry
+ * carries no deadline (so callers can hide the "(#)" prefix entirely),
+ * 0 when already due.
+ *
+ * @param {number} [expiresAt] unix seconds
+ * @param {number} [now] unix milliseconds
+ */
+export function daysLeft(expiresAt, now = Date.now()) {
+  const at = Number(expiresAt);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const ms = at * 1000 - now;
+  if (ms <= 0) return 0;
+  return Math.ceil(ms / DAY_MS);
+}
+
+/** Numeric-aware title comparison, so "2" sorts before "13" and "100". */
+export function compareTrashTitles(a, b) {
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/**
+ * Sort trash entries for the sidebar section.
+ *
+ * @param {{origPath?:string,name:string,expiresAt?:number}[]} entries
+ * @param {{by?:'title'|'expires', dir?:'asc'|'desc'}} [o]
+ * @param {number} [now] unix milliseconds, for deterministic "expires" sorts
+ * @returns a new array; entries are never mutated, and under "expires"
+ *   an entry with no deadline always sorts last — there is nothing to
+ *   compare it against — regardless of direction.
+ */
+export function sortTrashEntries(entries, { by = 'title', dir = 'asc' } = {}, now = Date.now()) {
+  const sign = dir === 'desc' ? -1 : 1;
+  const list = [...entries];
+  if (by === 'expires') {
+    list.sort((a, b) => {
+      const da = daysLeft(a.expiresAt, now);
+      const db = daysLeft(b.expiresAt, now);
+      if (da === null && db === null) return 0;
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return (da - db) * sign;
+    });
+  } else {
+    list.sort((a, b) => compareTrashTitles(a.origPath || a.name, b.origPath || b.name) * sign);
+  }
+  return list;
+}

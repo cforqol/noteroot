@@ -230,7 +230,7 @@ test('user-assigned folder icon and color persist and follow a rename', async ({
   await expect(row(page, 'work').locator('.count')).toHaveText('[1]');
 });
 
-test('rename a note, then delete it, then restore it from the trash panel', async ({ page }) => {
+test('rename a note, then delete it, then restore it from the sidebar Trash section', async ({ page }) => {
   await openApp(page);
   await rowMenu(page, 'work/active/roadmap.md', 'Rename…');
   await fillDialog(page, { name: 'plan' });
@@ -251,13 +251,11 @@ test('rename a note, then delete it, then restore it from the trash panel', asyn
   await expect(row(page, 'work/plan.md')).toHaveCount(0);
   await expect(page.locator('#editbtn')).toBeHidden();
 
-  await page.click('#trash-btn');
-  await expect(page.locator('#trash-list .trash-path', { hasText: 'work/plan.md' })).toBeVisible();
-  await page.locator('#trash-list li', { hasText: 'work/plan.md' })
-    .getByRole('button', { name: 'Restore' }).click();
+  await expect(page.locator('#trash-sidebar-list .trash-path', { hasText: 'work/plan.md' })).toBeVisible();
+  await page.locator('#trash-sidebar-list .trash-item', { hasText: 'work/plan.md' })
+    .getByRole('button', { name: /^Restore/ }).click();
   await expect(row(page, 'work/plan.md')).toBeVisible();
-  await page.click('#trash-close');
-  await expect(page.locator('#trash-modal')).toBeHidden();
+  await expect(page.locator('#trash-sidebar-list .trash-path', { hasText: 'work/plan.md' })).toHaveCount(0);
 });
 
 test('deleting a folder trashes its notes; they restore into a recreated folder', async ({ page }) => {
@@ -268,14 +266,11 @@ test('deleting a folder trashes its notes; they restore into a recreated folder'
   await expect(row(page, 'work')).toHaveCount(0);
   await expect(page.locator('#tree-status')).toContainText('folder');
 
-  await page.click('#trash-btn');
-  // One folder header ("work") plus the nested note row.
-  await expect(page.locator('#trash-list li')).toHaveCount(2);
-  await expect(page.locator('#trash-list li.trash-folder .trash-path')).toContainText('work/');
-  await page.locator('#trash-list li.nested', { hasText: 'work/plan.md' })
-    .getByRole('button', { name: 'Restore' }).click();
+  await expect(page.locator('#trash-sidebar-list .trash-item')).toHaveCount(1);
+  await expect(page.locator('#trash-sidebar-list .trash-path')).toContainText('work/plan.md');
+  await page.locator('#trash-sidebar-list .trash-item', { hasText: 'work/plan.md' })
+    .getByRole('button', { name: /^Restore/ }).click();
   await expect(row(page, 'work/plan.md')).toBeVisible();
-  await page.click('#trash-close');
 });
 
 test('the editor blocks moving a note that is open for editing', async ({ page }) => {

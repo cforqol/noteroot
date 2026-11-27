@@ -425,6 +425,44 @@ export function setDailyNotesCollapsed(collapsed, storage = defaultStorage()) {
   return Boolean(collapsed);
 }
 
+const K_TRASH_COLLAPSED = 'nr.trashCollapsed';
+
+/** Whether the sidebar Trash section is folded away (open by default). */
+export function getTrashCollapsed(storage = defaultStorage()) {
+  try {
+    return storage?.getItem(K_TRASH_COLLAPSED) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setTrashCollapsed(collapsed, storage = defaultStorage()) {
+  writeRaw(K_TRASH_COLLAPSED, collapsed ? '1' : '0', storage);
+  return Boolean(collapsed);
+}
+
+const K_TRASH_SORT_BY = 'nr.trashSortBy';
+const K_TRASH_SORT_DIR = 'nr.trashSortDir';
+const TRASH_SORT_FIELDS = ['title', 'expires'];
+const SORT_DIRS = ['asc', 'desc'];
+
+/** How the Trash section orders its notes; defaults to title, ascending. */
+export function getTrashSort(storage = defaultStorage()) {
+  return {
+    by: readChoice(K_TRASH_SORT_BY, TRASH_SORT_FIELDS, 'title', storage),
+    dir: readChoice(K_TRASH_SORT_DIR, SORT_DIRS, 'asc', storage),
+  };
+}
+
+/** Persist a sort choice; unknown values fall back to the default. Returns it. */
+export function setTrashSort(by, dir, storage = defaultStorage()) {
+  const b = TRASH_SORT_FIELDS.includes(by) ? by : 'title';
+  const d = SORT_DIRS.includes(dir) ? dir : 'asc';
+  writeRaw(K_TRASH_SORT_BY, b, storage);
+  writeRaw(K_TRASH_SORT_DIR, d, storage);
+  return { by: b, dir: d };
+}
+
 const K_VIMRC = 'nr.vimrc';
 
 /** The user's vimrc text (plain text, empty = none). */
@@ -492,7 +530,7 @@ export const KEYBINDING_LABELS = {
   'refresh-note':   'Refresh open note',
   'toggle-split':   'Toggle split pane',
   'new-folder':     'New folder',
-  'trash':          'Open trash',
+  'trash':          'Reveal trash section',
   'settings':       'Open settings',
   'focus-sidebar':  'Focus sidebar',
   'toggle-sidebar': 'Toggle sidebar',

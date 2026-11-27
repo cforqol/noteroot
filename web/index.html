@@ -45,7 +45,6 @@
       <span class="spacer"></span>
       <button id="tree-expand" class="btn small icon-btn ghost" aria-label="Expand all folders" title="Expand all">⊞</button>
       <button id="tree-collapse" class="btn small icon-btn ghost" aria-label="Collapse all folders" title="Collapse all">⊟</button>
-      <button id="trash-btn" class="btn small icon-btn ghost" aria-label="Trashbin" title="Trashbin">🗑</button>
     </div>
     <div id="multi-bar" class="multi-bar" hidden>
       <span id="multi-count" class="multi-count"></span>
@@ -79,6 +78,17 @@
         <span id="tags-caret" class="caret">▾</span><span>Tags</span>
       </button>
       <div id="tags-list" class="tags-list" role="list" aria-label="Tags"></div>
+    </div>
+    <div id="trash-section" class="trash-section" hidden>
+      <div class="trash-header">
+        <button id="trash-toggle" type="button" class="trash-toggle" aria-expanded="true" aria-controls="trash-sidebar-list">
+          <span id="trash-caret" class="caret">▾</span><span>Trash</span><span id="trash-section-count" class="count"></span>
+        </button>
+        <button id="trash-sort-field" class="btn small icon-btn ghost" aria-label="Sort trash by" title="Sort trash by…">⇅</button>
+        <button id="trash-sort-dir" class="btn small icon-btn ghost" aria-label="Sort direction: ascending" title="Sort direction: ascending (click to reverse)">▲</button>
+        <button id="trash-empty-all" class="btn small icon-btn ghost-danger" aria-label="Empty trash" title="Permanently delete everything in the trash">🗑</button>
+      </div>
+      <div id="trash-sidebar-list" class="trash-sidebar-list" role="list" aria-label="Trashed notes"></div>
     </div>
     <div id="tree-status" class="tree-status" aria-live="polite"></div>
     <div class="drop-hint" aria-hidden="true">Drop .md files or a .tar.gz archive to import</div>
@@ -198,26 +208,6 @@
 <footer id="plugin-status" class="plugin-status" hidden>
   <div id="plugin-panels" class="plugin-panels"></div>
 </footer>
-
-<div id="trash-modal" class="modal" hidden>
-  <div class="modal-backdrop"></div>
-  <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="trash-title">
-    <div class="modal-header">
-      <h2 id="trash-title">Trashbin</h2>
-      <button id="trash-close" class="btn icon-btn ghost" aria-label="Close">×</button>
-    </div>
-    <div class="modal-body">
-      <p class="help-text">Deleted notes (folders are trashed note by note). Restore puts a note back at its original path.</p>
-      <p class="help-text" id="trash-retention-note">Trashed notes are kept until you delete them.</p>
-      <ul id="trash-list" class="trash-list"></ul>
-    </div>
-    <div class="modal-footer">
-      <button id="trash-settings" class="btn">Retention…</button>
-      <span class="spacer"></span>
-      <button id="trash-empty-modal" class="btn danger">Clean up…</button>
-    </div>
-  </div>
-</div>
 
 <div id="help-modal" class="modal" hidden>
   <div class="modal-backdrop"></div>

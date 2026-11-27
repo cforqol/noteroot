@@ -48,7 +48,7 @@ import {
 } from '/lib/transfer.js';
 import { renderHelp, isTypingTarget, shortcutFor } from '/lib/help.js';
 import {
-  RETENTION_NEVER, normalizeRetention, describeRetention, describeExpiry, retentionChoices,
+  RETENTION_NEVER, normalizeRetention, describeRetention, retentionChoices, daysLeft, sortTrashEntries,
 } from '/lib/trash.js';
 import {
   getTheme, setTheme, nextTheme, applyTheme as applyUserTheme,
@@ -62,6 +62,7 @@ import {
   exportPreferences, importPreferences,
   getBookmarks, toggleBookmark, removeBookmark,
   getTagsCollapsed, setTagsCollapsed, getDailyNotesCollapsed, setDailyNotesCollapsed, getVimrc, setVimrc,
+  getTrashCollapsed, setTrashCollapsed, getTrashSort, setTrashSort,
   getKeybindings, setKeybinding, resetKeybindings, DEFAULT_KEYBINDINGS,
   KEYBINDING_LABELS, matchesBinding,
 } from '/lib/prefs.js';
@@ -734,6 +735,7 @@ async function deleteMultiNotes() {
     }
     clearMultiNotes();
     await refreshTree();
+    refreshTrashSection();
     if (done) toast(`Moved ${done} note${done === 1 ? "" : "s"} to the trash.`);
   });
 }
@@ -791,6 +793,7 @@ function drawTree() {
     $("bookmarks-section")?.setAttribute("hidden", "");
     $("daily-notes-section")?.setAttribute("hidden", "");
     $("tags-section")?.setAttribute("hidden", "");
+    $("trash-section")?.setAttribute("hidden", "");
     return;
   }
   if (treeLocked) treeLocked.hidden = true;
@@ -802,6 +805,7 @@ function drawTree() {
     wasLockHidden = false;
     refreshDailyNotes();
     scheduleTags();
+    refreshTrashSection();
   }
   drawBookmarks();
   const displayData = treeWithoutDailyFolder(treeData);
@@ -897,7 +901,7 @@ async function refreshTree() {
 async function globalRefresh() {
   if (!slug) return;
   await refreshTree();
-  refreshTrashState();
+  refreshTrashSection();
   refreshNotebookLock();
   refreshPluginPanels(slug);
   syncUiPlugins(slug, UI_PLUGIN_REGISTRY);
@@ -2090,7 +2094,7 @@ async function refreshNotebookList(selectSlug) {
     current = null;
     lastNote = null;
     showNoNotebooks();
-    refreshTrashState();
+    refreshTrashSection();
   }
 }
 
@@ -2138,7 +2142,7 @@ async function loadTree(s) {
   refreshNotebookLock();
   refreshPluginPanels(s);
   syncUiPlugins(s, UI_PLUGIN_REGISTRY);
-  refreshTrashState();
+  refreshTrashSection();
   refreshTags();
   refreshDailyNotes();
 }
@@ -3800,7 +3804,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (action === "trash") {
-    if (slug) { e.preventDefault(); openTrash(); }
+    if (slug) { e.preventDefault(); revealTrashSection(); }
     return;
   }
   if (action === "settings") {
@@ -4341,7 +4345,8 @@ async function actionDelete(node) {
     }
     clearViewIfGone(node.path, node.isDir);
     await refreshTree();
-    toast("Moved to trash. Restore it from the trash panel.");
+    refreshTrashSection();
+    toast("Moved to trash. Restore it from the sidebar's Trash section.");
   });
 }
 
@@ -4753,134 +4758,102 @@ $("tree-collapse")?.addEventListener("click", () => {
   drawTree();
 });
 
-// --- trash panel ---
+// --- trash: sidebar section (#109; was a modal opened from the topbar) ---
 
 // The notebook's retention, as last read from the server. Settings and
-// the trash panel both render from this so they cannot disagree.
+// the sidebar section both render from this so they cannot disagree.
 let trashRetention = RETENTION_NEVER;
 let trashCount = 0;
 let trashExpired = 0; // entries already past their deadline
+let trashEntries = []; // last fetch, re-sorted in place by drawTrashList()
 
-async function renderTrash() {
-  const list = $("trash-list");
-  list.replaceChildren();
-  let entries = [];
+/** Fetch the trash and redraw both the sidebar section and Settings. */
+async function refreshTrashSection() {
+  const section = $("trash-section");
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) {
+    trashRetention = RETENTION_NEVER;
+    trashCount = 0;
+    trashExpired = 0;
+    trashEntries = [];
+    syncTrashSettings();
+    if (section) section.hidden = true;
+    return;
+  }
+  const mine = slug;
   try {
-    const data = await notesApi.listTrash(slug);
-    entries = data.entries;
+    const data = await notesApi.listTrash(mine);
+    if (mine !== slug) return; // notebook switched while this was in flight
+    trashEntries = data.entries;
     trashRetention = normalizeRetention(data.retentionDays);
-    trashCount = entries.length;
-    trashExpired = countExpired(entries);
-  } catch (e) {
-    list.textContent = e.message;
-    return;
+    trashCount = trashEntries.length;
+    trashExpired = countExpired(trashEntries);
+  } catch {
+    /* a failed fetch just leaves the section showing the last good data */
   }
-  $("trash-retention-note").textContent = describeRetention(trashRetention);
   syncTrashSettings();
-  $("trash-empty-modal").disabled = !trashCount;
-  if (!entries.length) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "Trashbin is empty.";
-    list.append(li);
-    return;
-  }
-  // Group by originating folder so a deleted folder reads as one unit.
-  const groups = new Map();
-  for (const en of entries) {
-    const p = en.origPath || "";
-    const i = p.lastIndexOf("/");
-    const folder = i === -1 ? "" : p.slice(0, i);
-    if (!groups.has(folder)) groups.set(folder, []);
-    groups.get(folder).push(en);
-  }
-  const folders = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-  for (const folder of folders) {
-    const members = groups.get(folder);
-    if (folder) {
-      list.append(trashFolderRow(folder, members.length));
-      for (const en of members) {
-        const li = trashRow(en);
-        li.classList.add("nested");
-        list.append(li);
-      }
-    } else {
-      for (const en of members) list.append(trashRow(en));
-    }
-  }
+  drawTrashList();
 }
 
-function trashFolderRow(folder, count) {
-  const li = document.createElement("li");
-  li.className = "trash-folder";
-  const path = document.createElement("span");
-  path.className = "trash-path";
-  path.textContent = `${folder}/  (${count} note${count === 1 ? "" : "s"})`;
+/** Redraw the sidebar list from the cached fetch — no refetch needed for a sort change. */
+function drawTrashList() {
+  const section = $("trash-section");
+  const list = $("trash-sidebar-list");
+  if (!section || !list) return;
+  if (!slug || (notebookLock.locked && !notebookLock.unlocked)) { section.hidden = true; return; }
 
-  const restore = document.createElement("button");
-  restore.className = "btn small";
-  restore.textContent = "Restore folder";
-  restore.title = `Restore every note from “${folder}/”`;
-  restore.onclick = () => guarded(async () => {
-    const res = await notesApi.restoreTrashFolder(slug, { path: folder });
-    toast(res.skipped.length
-      ? `Restored ${res.restored.length}, ${res.skipped.length} stayed in the trash.`
-      : `Restored ${res.restored.length} note${res.restored.length === 1 ? "" : "s"}.`);
-    await refreshTree();
-    await renderTrash();
-  });
+  $("trash-section-count").textContent = `(${trashCount})`;
+  let sort = getTrashSort();
+  // A deadline nobody has is nothing to sort by: fall back once retention
+  // turns off while "days left" was selected, instead of leaving the
+  // list sorted by a field the header can no longer offer.
+  if (sort.by === "expires" && trashRetention === RETENTION_NEVER) sort = setTrashSort("title", sort.dir);
+  syncTrashSortUI();
 
-  const forget = document.createElement("button");
-  forget.className = "btn small danger";
-  forget.textContent = "Delete folder";
-  forget.title = `Delete every note from “${folder}/” permanently`;
-  forget.onclick = () => guarded(async () => {
-    const ok = await confirmDialog({
-      title: "Delete folder permanently",
-      message: `Delete all ${count} note${count === 1 ? "" : "s"} from “${folder}/” for good? This cannot be undone.`,
-      okLabel: "Delete",
-      danger: true,
-    });
-    if (!ok) return;
-    const res = await notesApi.deleteTrashFolder(slug, folder);
-    toast(`Deleted ${res.purged} note${res.purged === 1 ? "" : "s"}.`);
-    await renderTrash();
-  });
-
-  li.append(path, restore, forget);
-  return li;
+  list.replaceChildren();
+  if (!trashEntries.length) {
+    const p = document.createElement("p");
+    p.className = "muted small";
+    p.textContent = "Trash is empty.";
+    list.append(p);
+  } else {
+    const ordered = sortTrashEntries(trashEntries, sort);
+    for (const en of ordered) list.append(trashRow(en));
+  }
+  section.hidden = false;
+  drawTrashCollapsed();
 }
 
 function trashRow(en) {
-  const li = document.createElement("li");
+  const item = document.createElement("div");
+  item.className = "trash-item";
+  const daysLeftEl = document.createElement("span");
+  daysLeftEl.className = "trash-days-left";
+  if (trashRetention !== RETENTION_NEVER) {
+    const days = daysLeft(en.expiresAt);
+    daysLeftEl.textContent = days === null ? "" : `(${days})`;
+  }
   const path = document.createElement("span");
   path.className = "trash-path";
   path.textContent = en.origPath || en.name;
-  const when = document.createElement("span");
-  when.className = "trash-when";
-  when.textContent = formatDateTime(new Date(en.deletedAt * 1000), effectiveTimezone());
-  const due = describeExpiry(en.expiresAt);
-  if (due) {
-    const tag = document.createElement("span");
-    tag.className = "trash-due";
-    tag.textContent = due;
-    when.append(" · ", tag);
-  }
+  path.title = `${en.origPath || en.name} — deleted ${formatDateTime(new Date(en.deletedAt * 1000), effectiveTimezone())}`;
 
   const restore = document.createElement("button");
-  restore.className = "btn small";
-  restore.textContent = "Restore";
+  restore.className = "btn small icon-btn ghost";
+  restore.textContent = "↺";
+  restore.title = "Restore";
+  restore.setAttribute("aria-label", `Restore ${en.origPath || en.name}`);
   restore.onclick = () => guarded(async () => {
     const res = await notesApi.restoreTrash(slug, en.name);
     toast(`Restored ${res.path}`);
     await refreshTree();
-    await renderTrash();
+    await refreshTrashSection();
   });
 
   const forget = document.createElement("button");
-  forget.className = "btn small danger";
-  forget.textContent = "Delete";
+  forget.className = "btn small icon-btn ghost-danger";
+  forget.textContent = "×";
   forget.title = "Delete this note permanently";
+  forget.setAttribute("aria-label", `Delete ${en.origPath || en.name} permanently`);
   forget.onclick = () => guarded(async () => {
     const ok = await confirmDialog({
       title: "Delete permanently",
@@ -4891,11 +4864,78 @@ function trashRow(en) {
     if (!ok) return;
     await notesApi.deleteTrashEntry(slug, en.name);
     toast(`Deleted ${en.origPath}`);
-    await renderTrash();
+    await refreshTrashSection();
   });
 
-  li.append(path, when, restore, forget);
-  return li;
+  item.append(daysLeftEl, path, restore, forget);
+  return item;
+}
+
+function drawTrashCollapsed() {
+  const on = getTrashCollapsed();
+  $("trash-sidebar-list").hidden = on;
+  $("trash-caret").textContent = on ? "▸" : "▾";
+  $("trash-toggle").setAttribute("aria-expanded", String(!on));
+}
+
+$("trash-toggle")?.addEventListener("click", () => {
+  setTrashCollapsed(!getTrashCollapsed());
+  drawTrashCollapsed();
+});
+
+/** Reflect the current sort in the field/direction buttons' glyphs and labels. */
+function syncTrashSortUI() {
+  const { by, dir } = getTrashSort();
+  const fieldLabel = by === "expires" ? "days until delete" : "title";
+  $("trash-sort-field").title = `Sort trash by… (currently: ${fieldLabel})`;
+  const dirBtn = $("trash-sort-dir");
+  dirBtn.textContent = dir === "desc" ? "▼" : "▲";
+  dirBtn.setAttribute("aria-label", `Sort direction: ${dir === "desc" ? "descending" : "ascending"}`);
+  dirBtn.title = `Sort direction: ${dir === "desc" ? "descending" : "ascending"} (click to reverse)`;
+}
+
+$("trash-sort-field")?.addEventListener("click", (e) => {
+  const { by, dir } = getTrashSort();
+  const r = e.currentTarget.getBoundingClientRect();
+  const pick = (field) => () => {
+    setTrashSort(field, dir);
+    drawTrashList();
+  };
+  const items = [{ value: "title", label: "Title (A→Z)" }];
+  // Nothing to sort by a deadline nobody has: offered only when the
+  // notebook actually purges trashed notes automatically.
+  if (trashRetention !== RETENTION_NEVER) items.push({ value: "expires", label: "Days until delete" });
+  showMenu(r.left, Math.min(r.bottom + 4, window.innerHeight - 80), items.map((i) => ({
+    label: (i.value === by ? "✓ " : "") + i.label,
+    onSelect: pick(i.value),
+  })));
+});
+
+$("trash-sort-dir")?.addEventListener("click", () => {
+  const { by, dir } = getTrashSort();
+  setTrashSort(by, dir === "desc" ? "asc" : "desc");
+  drawTrashList();
+});
+
+$("trash-empty-all")?.addEventListener("click", () => guarded(async () => {
+  if (!slug || !trashCount) return;
+  const ok = await confirmDialog({
+    title: "Empty trash",
+    message: `Permanently delete everything in the trash — ${plural(trashCount)}? This cannot be undone.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
+  const res = await notesApi.purgeTrash(slug, { all: true });
+  toast(res.purged ? `Deleted ${plural(res.purged)} from the trash.` : "Nothing was due for deletion.");
+  await refreshTrashSection();
+}));
+
+/** Unfold the Trash section (if folded) and bring it into view. */
+function revealTrashSection() {
+  if (getTrashCollapsed()) { setTrashCollapsed(false); drawTrashCollapsed(); }
+  $("trash-section")?.scrollIntoView({ block: "nearest" });
+  $("trash-toggle")?.focus();
 }
 
 // --- trash retention (a notebook setting, not a browser preference) ---
@@ -4928,26 +4968,6 @@ function syncTrashSettings() {
     : "Open a notebook to see its trash.";
 }
 
-/** Read the trash without opening the panel, to keep Settings honest. */
-async function refreshTrashState() {
-  if (!slug) {
-    trashRetention = RETENTION_NEVER;
-    trashCount = 0;
-    trashExpired = 0;
-    syncTrashSettings();
-    return;
-  }
-  try {
-    const data = await notesApi.listTrash(slug);
-    trashRetention = normalizeRetention(data.retentionDays);
-    trashCount = data.entries.length;
-    trashExpired = countExpired(data.entries);
-  } catch {
-    /* the panel reports its own failures; Settings just goes stale */
-  }
-  syncTrashSettings();
-}
-
 async function applyRetention(days) {
   await guarded(async () => {
     const res = await notesApi.setTrashRetention(slug, days);
@@ -4955,8 +4975,7 @@ async function applyRetention(days) {
     toast(res.purged
       ? `Saved. ${res.purged} trashed note${res.purged === 1 ? "" : "s"} removed.`
       : "Saved.");
-    await refreshTrashState();
-    if (!$("trash-modal").hidden) await renderTrash();
+    await refreshTrashSection();
   });
   // A rejected change must not leave the select showing something the
   // server never accepted.
@@ -5242,28 +5261,12 @@ async function cleanUpTrash() {
   await guarded(async () => {
     const res = await notesApi.purgeTrash(slug, r.scope === "all" ? { all: true } : {});
     toast(res.purged ? `Deleted ${plural(res.purged)} from the trash.` : "Nothing was due for deletion.");
-    await refreshTrashState();
-    if (!$("trash-modal").hidden) await renderTrash();
+    await refreshTrashSection();
   });
 }
 
 $("trash-retention")?.addEventListener("change", (e) => applyRetention(e.target.value));
 $("trash-empty")?.addEventListener("click", cleanUpTrash);
-$("trash-empty-modal")?.addEventListener("click", cleanUpTrash);
-$("trash-settings")?.addEventListener("click", () => {
-  closeTrash();
-  openSettingsModal("set-trash");
-});
-
-async function openTrash() {
-  if (!slug) return;
-  $("trash-modal").hidden = false;
-  await renderTrash();
-}
-const closeTrash = () => { $("trash-modal").hidden = true; };
-$("trash-btn")?.addEventListener("click", openTrash);
-$("trash-close")?.addEventListener("click", closeTrash);
-$("trash-modal")?.querySelector(".modal-backdrop")?.addEventListener("click", closeTrash);
 
 // --- import / export ---
 
@@ -5683,7 +5686,7 @@ function syncSettingsForm() {
   updateServerInfo();
   updateIntegrationsInfo();
   syncTrashSettings();
-  refreshTrashState();
+  refreshTrashSection();
   syncLockSettings();
   refreshNotebookLock();
   syncTemplatesSettings();
@@ -5917,6 +5920,9 @@ document.addEventListener("change", (e) => {
   // The daily-notes folder name controls which folder is hidden from the
   // main tree and shown in the daily-notes section — refresh both.
   if (key === "dailyNotesFolder") globalRefresh();
+  // Trash rows carry their "deleted at" moment in a tooltip, formatted
+  // with this setting — redraw so a change doesn't need a reload.
+  if (key === "timezone") drawTrashList();
 });
 
 document.addEventListener("change", (e) => {
@@ -6403,7 +6409,6 @@ window.addEventListener("keydown", (e) => {
   if (!$("vimrc-modal").hidden) closeVimrcModal();
   else if (!$("help-modal").hidden) closeHelp();
   else if (!$("settings-modal").hidden) closeSettingsModal();
-  else if (!$("trash-modal").hidden) closeTrash();
   else if (!$("attachments-modal").hidden) closeAttachmentsModal();
   else if (!$("bookmarks-modal").hidden) closeBookmarksModal();
   else if (!$("shortcuts-modal").hidden) closeShortcutsModal();
@@ -6434,7 +6439,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keydown", (e) => {
   if (editing || e.defaultPrevented) return;
   if (view !== "read" || isTypingTarget(e.target)) return;
-  if (!$("help-modal").hidden || !$("settings-modal").hidden || !$("trash-modal").hidden || !$("attachments-modal").hidden || !$("bookmarks-modal").hidden || !$("vimrc-modal").hidden) return;
+  if (!$("help-modal").hidden || !$("settings-modal").hidden || !$("attachments-modal").hidden || !$("bookmarks-modal").hidden || !$("vimrc-modal").hidden) return;
   if (document.querySelector(".ctx-menu")) return;
   const kb = getKeybindings();
   let delta = 0;

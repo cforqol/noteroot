@@ -89,6 +89,7 @@ describe('locked notebook', () => {
     expect($('tree-locked').hidden).toBe(false);
     expect($('tree').hidden).toBe(true);
     expect($('daily-notes-section').hidden).toBe(true);
+    expect($('trash-section').hidden).toBe(true);
   });
 
   test('an inactive but already-locked notebook shows 🔒 in the dropdown without switching to it', () => {
@@ -117,6 +118,9 @@ describe('locked notebook', () => {
       () => !$('daily-notes-section').hidden && $('daily-notes-list').textContent.includes('today'),
       'daily notes section to repopulate after unlock',
     );
+    // Same lifecycle for the Trash section (#109): force-hidden while
+    // locked, refetched and shown once unlocked.
+    await until(() => !$('trash-section').hidden, 'trash section to repopulate after unlock');
 
     // Unlocked: the empty state's "New note" button is back.
     expect(q('#note .empty-state button').textContent).toBe('New note');

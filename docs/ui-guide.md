@@ -27,6 +27,27 @@ state, not a browser preference.
   **+ Folder** create things; otherwise they use the open note's folder, then
   the notebook root.
 
+## Trash
+
+A **Trash** section sits in the sidebar alongside Daily Notes and Tags —
+outside the notebook tree, always visible, and collapsible the same way
+(fold state remembered per browser). Its header shows a count and, right
+aligned: a sort button, a direction toggle (▲/▼), and a red **Empty
+trash** button.
+
+- Each trashed note is a flat row: a `(#)` days-left-until-delete prefix
+  (hidden when retention is **Never**), the note's original path, a
+  restore button, and a permanent-delete button. There is no per-folder
+  grouping or bulk folder restore/delete — every entry stands on its own.
+- **Sort** offers by title (numeric-aware — `2` sorts before `13`, not
+  lexicographically) or by days left; "days left" is only offered when the
+  notebook's retention isn't **Never**. The choice and direction persist
+  per browser.
+- **Empty trash** asks for confirmation (red *Delete* / *Cancel*) before
+  permanently purging everything in the trash.
+- `Ctrl`/`Cmd+Shift+T` ("Reveal trash section" in Settings → Shortcuts)
+  unfolds the section and focuses it.
+
 ## Create, rename, move, delete
 
 | Action | How | Notes |
@@ -35,8 +56,8 @@ state, not a browser preference.
 | New folder | **+ Folder**, or ⋯ → *New folder here* | Empty folders are real and show in the sidebar. |
 | Rename / move | ⋯ → *Rename / move…* | Type the new full path; slashes move between folders. Folders move with all contents; note ids (and so wikilinks) are preserved. |
 | Delete | ⋯ → *Delete…* | Notes go to the trash. A folder's notes are trashed individually and the folder is removed. |
-| Restore | 🗑 (trash panel) → *Restore* | Puts the note back at its original path, recreating folders as needed. The panel groups entries by their original folder, so a deleted folder shows one header with **Restore folder** / **Delete folder** plus its notes beneath. |
-| Retention | ⋯ → *Retention…* | Opens a Settings panel where you can choose how long trashed notes are kept: **Never** (retain forever), a fixed number of **days** (default 30), or **After 3650 days** (~10 years). Trashed notes matching their expiry are automatically removed. The trash panel shows each entry's expiry date and offers **Restore** and **Delete** (permanently) buttons. |
+| Restore | Trash section (sidebar) → restore icon | Puts the note back at its original path, recreating folders as needed. |
+| Retention | ⚙ Settings → *Trash* | Choose how long trashed notes are kept: **Never** (retain forever), a fixed number of **days** (default 30), or **After 3650 days** (~10 years). Trashed notes matching their expiry are automatically removed. The Trash section shows each entry's days left and offers restore and permanent-delete buttons per row. |
 
 **Drag-and-drop a note to a folder**: grab any note row in the sidebar and drop it onto any folder row to move it there. The note keeps its filename; if a file with the same name already exists in the target folder the server returns an error and the tree is unchanged.
 
@@ -228,6 +249,8 @@ per notebook in the browser (`nr.homepage`).
 | `noteroot_uiplugins_<slug>` | per-notebook built-in UI plugin enabled state (`{html-renderer: true, …}`) |
 | `noteroot_uipluginprefs` | per-user built-in UI plugin preferences, e.g. `{"pomodoro":{"work":50,"short":10,"long":15,"sound":true,"flash":false}}` — not tied to a notebook, so a duration or notification you set applies everywhere and survives a restart |
 | `nr.trashRetention` | **server-side**: notebook‑level auto‑delete after N days (default 30) or never; stored in `notebook.toml`, not in localStorage |
+| `nr.trashCollapsed` | fold state of the sidebar Trash section |
+| `nr.trashSortBy`, `nr.trashSortDir` | Trash section sort field (`title` / `expires`) and direction (`asc` / `desc`); defaults to title, ascending |
 
 Settings → *Data* can **Export preferences** (a dated `.json` snapshot of the
 keys above plus the editor/status/font choices) and **Import preferences…**

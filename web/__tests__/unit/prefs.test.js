@@ -9,6 +9,7 @@ import {
   isHelpSeen, markHelpSeen, resetPreferences, listDrafts, clearDrafts,
   exportPreferences, importPreferences,
   getTagsCollapsed, setTagsCollapsed, getDailyNotesCollapsed, setDailyNotesCollapsed, getVimrc, setVimrc,
+  getTrashCollapsed, setTrashCollapsed, getTrashSort, setTrashSort,
   getBookmarks, addBookmark, removeBookmark, toggleBookmark,
   DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, getKeybindings, setKeybinding,
   resetKeybindings, matchesBinding,
@@ -484,6 +485,52 @@ describe('daily notes section state (#96: same behaviour as Tags, not just the s
     const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
     expect(getDailyNotesCollapsed(broken)).toBe(false);
     expect(setDailyNotesCollapsed(true, broken)).toBe(true);
+  });
+});
+
+describe('trash section state (#109: same fold behaviour as Tags/Daily Notes)', () => {
+  test('open by default; the fold is remembered', () => {
+    expect(getTrashCollapsed()).toBe(false);
+    expect(setTrashCollapsed(true)).toBe(true);
+    expect(getTrashCollapsed()).toBe(true);
+    setTrashCollapsed(false);
+    expect(getTrashCollapsed()).toBe(false);
+  });
+  test('inaccessible storage reads as open', () => {
+    const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    expect(getTrashCollapsed(broken)).toBe(false);
+    expect(setTrashCollapsed(true, broken)).toBe(true);
+  });
+});
+
+describe('trash section sort (#109)', () => {
+  test('defaults to title ascending', () => {
+    expect(getTrashSort()).toEqual({ by: 'title', dir: 'asc' });
+  });
+
+  test('persists a valid choice', () => {
+    expect(setTrashSort('expires', 'desc')).toEqual({ by: 'expires', dir: 'desc' });
+    expect(getTrashSort()).toEqual({ by: 'expires', dir: 'desc' });
+    setTrashSort('title', 'asc');
+  });
+
+  test('rejects junk fields/directions back to the default', () => {
+    expect(setTrashSort('bogus', 'sideways')).toEqual({ by: 'title', dir: 'asc' });
+    expect(getTrashSort()).toEqual({ by: 'title', dir: 'asc' });
+  });
+
+  test('garbage values stored directly fall back to the default', () => {
+    window.localStorage.setItem('nr.trashSortBy', 'nonsense');
+    window.localStorage.setItem('nr.trashSortDir', 'sideways');
+    expect(getTrashSort()).toEqual({ by: 'title', dir: 'asc' });
+    window.localStorage.removeItem('nr.trashSortBy');
+    window.localStorage.removeItem('nr.trashSortDir');
+  });
+
+  test('inaccessible storage reads and writes as the default', () => {
+    const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    expect(getTrashSort(broken)).toEqual({ by: 'title', dir: 'asc' });
+    expect(setTrashSort('title', 'asc', broken)).toEqual({ by: 'title', dir: 'asc' });
   });
 });
 

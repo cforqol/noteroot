@@ -480,22 +480,20 @@ describe('CRUD', () => {
     expect(node('starred').querySelector('.icon').textContent).toBe('⭐');
   });
 
-  test('delete note → trash panel → restore', async () => {
+  test('delete note → sidebar Trash section → restore', async () => {
     await menuAction('welcome.md', 'Delete note…');
     await submitDialog();
     await until(() => !node('welcome.md'), 'note removed from tree');
     expect(requests).toContain('DELETE /n/nb/note?path=welcome.md');
 
-    $('trash-btn').click();
-    await until(() => qa('#trash-list li').length === 1, 'trash entry');
-    expect(q('#trash-list .trash-path').textContent).toBe('welcome.md');
+    await until(() => qa('#trash-sidebar-list .trash-item').length === 1, 'trash entry');
+    expect(q('#trash-sidebar-list .trash-path').textContent).toBe('welcome.md');
     // Each row offers Restore and a permanent Delete.
-    expect(qa('#trash-list li button').map((b) => b.textContent)).toEqual(['Restore', 'Delete']);
-    q('#trash-list button').click();
+    expect(qa('#trash-sidebar-list .trash-item button').map((b) => b.getAttribute('aria-label')))
+      .toEqual(['Restore welcome.md', 'Delete welcome.md permanently']);
+    q('#trash-sidebar-list .trash-item button').click();
     await until(() => node('welcome.md'), 'note restored in tree');
-    await until(() => q('#trash-list li.muted'), 'empty trash message');
-    $('trash-close').click();
-    expect($('trash-modal').hidden).toBe(true);
+    await until(() => q('#trash-sidebar-list .muted'), 'empty trash message');
   });
 
   test('delete a folder moves its notes to the trash after confirmation', async () => {
@@ -809,22 +807,18 @@ describe('trash retention', () => {
     $('settings-close').click();
   });
 
-  test('a trashed note can be deleted permanently from the panel', async () => {
-    $('trash-btn').click();
-    // work/deep/x.md and work/ideas/plan2.md: each folder gets a header
-    // row plus one nested note row.
-    await until(() => qa('#trash-list li').length === 4, 'grouped entries');
-    expect(q('#trash-list li.trash-folder .trash-path').textContent).toMatch(/work\/deep\//);
-    expect(q('#trash-list .trash-due')).toBeNull(); // retention is "never"
-    // The nested row under the first folder: Restore, Delete.
-    const noteRow = q('#trash-list li.nested');
-    expect(noteRow.querySelectorAll('button')[1].textContent).toBe('Delete');
-    noteRow.querySelectorAll('button')[1].click();
+  test('a trashed note can be deleted permanently from the sidebar section', async () => {
+    // work/deep/x.md and work/ideas/plan2.md, flat (no folder grouping).
+    await until(() => qa('#trash-sidebar-list .trash-item').length === 2, 'trash entries');
+    expect(qa('#trash-sidebar-list .trash-path').map((p) => p.textContent).sort())
+      .toEqual(['work/deep/x.md', 'work/ideas/plan2.md']);
+    expect(q('#trash-sidebar-list .trash-days-left').textContent).toBe(''); // retention is "never"
+    const row = q('#trash-sidebar-list .trash-item');
+    row.querySelectorAll('button')[1].click(); // the permanent-delete icon
     await until(() => q('.dialog'), 'confirm');
     await submitDialog();
     await until(() => trash.length === 1, 'one entry left');
-    await until(() => qa('#trash-list li').length === 2, 'panel refreshed');
-    $('trash-close').click();
+    await until(() => qa('#trash-sidebar-list .trash-item').length === 1, 'section refreshed');
   });
 
   test('choosing a retention persists it and sweeps what is already due', async () => {
@@ -838,6 +832,62 @@ describe('trash retention', () => {
     await until(() => /0 notes/.test($('trash-count').textContent), 'count refreshed');
     expect($('retention-info').textContent).toContain('30 days');
     $('settings-close').click();
+  });
+});
+
+describe('trash sidebar section (#109)', () => {
+  // Retention is 30 days from the previous describe block: these trash
+  // two fresh notes to exercise the days-left prefix and the sort menu's
+  // "Days until delete" option, which only appears while retention is on.
+  test('two notes land in the sidebar section, sorted by title numeric-aware, with days left shown', async () => {
+    for (const name of ['zz13', 'zz2']) {
+      $('new-note').click();
+      await submitDialog({ name });
+      await until(() => notes.has(`${name}.md`), `${name} created`);
+      $('closebtn').click();
+      await until(() => $('editor').hidden, `${name} editor closed`);
+    }
+    await menuAction('zz13.md', 'Delete note…');
+    await submitDialog();
+    await menuAction('zz2.md', 'Delete note…');
+    await submitDialog();
+
+    await until(() => qa('#trash-sidebar-list .trash-item').length === 2, 'both trashed');
+    // Plain lexicographic order would read "zz13" before "zz2"; numeric-aware does not.
+    expect(qa('#trash-sidebar-list .trash-path').map((p) => p.textContent)).toEqual(['zz2.md', 'zz13.md']);
+    expect(qa('#trash-sidebar-list .trash-days-left').every((el) => /^\(\d+\)$/.test(el.textContent))).toBe(true);
+  });
+
+  test('the sort direction button reverses the order', () => {
+    $('trash-sort-dir').click();
+    expect(qa('#trash-sidebar-list .trash-path').map((p) => p.textContent)).toEqual(['zz13.md', 'zz2.md']);
+    $('trash-sort-dir').click(); // back to ascending for the next test
+    expect(qa('#trash-sidebar-list .trash-path').map((p) => p.textContent)).toEqual(['zz2.md', 'zz13.md']);
+  });
+
+  test('the sort-by menu offers "Days until delete" while retention is enabled, and re-selecting Title keeps it closed', async () => {
+    $('trash-sort-field').click();
+    await until(() => q('.ctx-menu'), 'sort menu');
+    expect(qa('.ctx-menu .ctx-item').map((b) => b.textContent)).toEqual(['✓ Title (A→Z)', 'Days until delete']);
+    qa('.ctx-menu .ctx-item')[0].click(); // re-pick Title; also closes the menu
+    expect(q('.ctx-menu')).toBeNull();
+  });
+
+  test('the Trash header folds the list away and remembers it', () => {
+    $('trash-toggle').click();
+    expect($('trash-sidebar-list').hidden).toBe(true);
+    expect(localStorage.getItem('nr.trashCollapsed')).toBe('1');
+    $('trash-toggle').click();
+    expect($('trash-sidebar-list').hidden).toBe(false);
+  });
+
+  test('emptying the trash purges everything after confirmation', async () => {
+    $('trash-empty-all').click();
+    await until(() => q('.dialog'), 'confirm');
+    expect(q('.dialog-message').textContent).toMatch(/2 notes/);
+    await submitDialog();
+    await until(() => qa('#trash-sidebar-list .trash-item').length === 0, 'trash emptied');
+    expect(trash.length).toBe(0);
   });
 });
 
@@ -1168,16 +1218,14 @@ describe('localization settings', () => {
     await submitDialog();
     await until(() => !node('tz-demo.md'), 'note removed from tree');
 
-    // The formatted date is the .trash-when span's own first text node;
-    // a later test may have set a retention, which appends a sibling
-    // "· due for deletion" tag that's irrelevant here.
-    const trashRow = () => [...qa('#trash-list li')].find((li) => li.querySelector('.trash-path')?.textContent === 'tz-demo.md');
-    const whenText = () => trashRow().querySelector('.trash-when').firstChild.textContent;
-    $('trash-btn').click();
+    // The formatted date lives in the row's own title tooltip (the row
+    // itself just shows the path; days-left-until-delete is the only
+    // other thing shown inline, per #109).
+    const trashRow = () => qa('#trash-sidebar-list .trash-item').find((item) => item.querySelector('.trash-path')?.textContent === 'tz-demo.md');
+    const whenText = () => trashRow().querySelector('.trash-path').title.split(' — deleted ')[1];
     await until(() => trashRow(), 'trash entry');
     const utcText = whenText();
     expect(utcText).toBe(new Date(1700000000 * 1000).toLocaleString(undefined, { timeZone: 'UTC' })); // the fake server's reported default
-    $('trash-close').click();
 
     $('settingsbtn').click();
     const nav = q('#settings-modal .settings-nav button[data-target="set-localization"]');
@@ -1193,7 +1241,6 @@ describe('localization settings', () => {
     expect(localStorage.getItem('nr.timezone')).toBe('America/New_York');
     $('settings-close').click();
 
-    $('trash-btn').click();
     await until(() => trashRow(), 'trash entry still there');
     const nyText = whenText();
     expect(nyText).toBe(new Date(1700000000 * 1000).toLocaleString(undefined, { timeZone: 'America/New_York' }));
@@ -1205,7 +1252,6 @@ describe('localization settings', () => {
     trashRow().querySelectorAll('button')[1].click(); // Delete (permanent)
     await submitDialog();
     await until(() => !trashRow(), 'trash entry gone');
-    $('trash-close').click();
   });
 
   test('language only offers English today and still sets <html lang>', async () => {
